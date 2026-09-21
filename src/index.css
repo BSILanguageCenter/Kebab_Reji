@@ -1,3 +1,53 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "tailwindcss/utilities";
+
+/* ─── Touch-friendly базовые правила ──────────────────────────────────── */
+
+/* Отключаем «залипающий» hover на тач-устройствах */
+@media (hover: none) {
+  .hover\:bg-gray-100:hover { background-color: transparent; }
+  .hover\:bg-gray-200:hover { background-color: transparent; }
+  .hover\:border-orange-300:hover { border-color: inherit; }
+}
+
+/* Быстрые тапы без задержки 300мс */
+* {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Плавный momentum-скролл на iOS */
+html, body {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: none;
+}
+
+/* Убираем выделение текста при долгом тапе на кнопках */
+button, [role="button"], a {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Скроллбары тоньше и аккуратнее */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* Активная фаза нажатия — визуальный отклик */
+button:active:not(:disabled),
+[role="button"]:active {
+  transform: scale(0.97);
+  transition: transform 0.06s ease-out;
+}
