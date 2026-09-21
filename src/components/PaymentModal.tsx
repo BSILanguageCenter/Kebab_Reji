@@ -1,9 +1,11 @@
+// src/components/PaymentModal.tsx
 import { useState } from 'react';
 import { useI18n } from '@/lib/i18n';
 import { supabase } from '@/lib/supabase';
 import { formatYen } from '@/lib/format';
 import { X, Banknote, CreditCard, Wallet, CheckCircle } from 'lucide-react';
-import type { PaymentMethod } from '@/lib/types';
+import type { PaymentMethod, Order, OrderItem } from '@/lib/types';
+import { LocalPrinterService } from '@/lib/LocalPrinterService';
 
 interface CartItem {
   product_id: string;
@@ -29,6 +31,8 @@ interface Props {
 
   /** Режим 2 — оплатить уже существующий заказ (со страницы Заказы) */
   existingOrderId?: string | null;
+  /** Существующий заказ — для печати чека */
+  existingOrder?: Order | null;
 }
 
 export default function PaymentModal({
@@ -40,8 +44,9 @@ export default function PaymentModal({
   tableId,
   customerNote,
   existingOrderId,
+  existingOrder,
 }: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [method, setMethod] = useState<PaymentMethod>('cash');
   const [received, setReceived] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -59,8 +64,9 @@ export default function PaymentModal({
     try {
       let orderId = existingOrderId || null;
       const isNew = !existingOrderId;
+      let orderForPrint: Order | null = null;
 
-      // --- Создать новый заказ (режим POS) ---
+      // ─── Создать новый заказ (режим POS) ────────────────────────────────
       if (isNew) {
         const { data: orderData, error: orderError } = await supabase
           .from('orders')
@@ -92,10 +98,63 @@ export default function PaymentModal({
           status: 'completed',
         }));
 
-        const { error: itemsError } = await supabase.from('order_items').insert(items);
+        const { error: itemsError } = await supabase
+          .from('order_items')
+          .insert(items);
         if (itemsError) throw itemsError;
+
+        // Собираем объект заказа для печати
+        const od = orderData as {
+          id: string;
+          order_number: number;
+          created_at: string;
+        };
+
+        let tableObj = null;
+        if (orderType === 'dine_in' && tableId) {
+          const { data: tbl } = await supabase
+            .from('restaurant_tables')
+            .select('*')
+            .eq('id', tableId)
+            .maybeSingle();
+          tableObj = tbl ?? null;
+        }
+
+        orderForPrint = {
+          id: od.id,
+          order_number: od.order_number,
+          table_id: orderType === 'dine_in' ? tableId ?? null : null,
+          order_type: orderType ?? 'takeaway',
+          status: 'completed',
+          subtotal: total,
+          discount: 0,
+          total,
+          cashier_id: null,
+          customer_note: customerNote || null,
+          created_at: od.created_at,
+          sent_to_kitchen_at: null,
+          cooking_started_at: null,
+          ready_at: null,
+          completed_at: new Date().toISOString(),
+          order_items: (cart || []).map((c, i): OrderItem => ({
+            id: `temp-${i}`,
+            order_id: od.id,
+            product_id: c.product_id,
+            product_name_ru: c.name_ru,
+            product_name_ja: c.name_ja,
+            quantity: c.quantity,
+            unit_price: c.unit_price,
+            total_price: c.unit_price * c.quantity,
+            note: c.note || null,
+            kitchen_station_id: c.kitchen_station_id,
+            status: 'completed',
+            is_ready_product: false,
+            created_at: od.created_at,
+          })),
+          table: tableObj,
+        };
       } else {
-        // --- Оплата существующего заказа ---
+        // ─── Оплата существующего заказа ──────────────────────────────────
         await supabase
           .from('orders')
           .update({
@@ -108,9 +167,21 @@ export default function PaymentModal({
           .from('order_items')
           .update({ status: 'completed' })
           .eq('order_id', existingOrderId);
+
+        // Для печати — либо переданный заказ, либо загружаем из БД
+        if (existingOrder) {
+          orderForPrint = { ...existingOrder, status: 'completed' };
+        } else if (existingOrderId) {
+          const { data } = await supabase
+            .from('orders')
+            .select('*, order_items(*)')
+            .eq('id', existingOrderId)
+            .maybeSingle();
+          if (data) orderForPrint = data as Order;
+        }
       }
 
-      // --- Запись об оплате (в обоих режимах) ---
+      // ─── Запись об оплате ────────────────────────────────────────────────
       await supabase.from('payments').insert({
         order_id: orderId,
         amount: total,
@@ -119,9 +190,22 @@ export default function PaymentModal({
         change_amount: change,
       });
 
-      // --- Освободить стол, если dine_in ---
+      // ─── Освободить стол ────────────────────────────────────────────────
       if (orderType === 'dine_in' && tableId) {
-        await supabase.from('restaurant_tables').update({ status: 'free' }).eq('id', tableId);
+        await supabase
+          .from('restaurant_tables')
+          .update({ status: 'free' })
+          .eq('id', tableId);
+      }
+
+      // ─── ПЕЧАТЬ ЧЕКА КЛИЕНТУ ────────────────────────────────────────────
+      if (orderForPrint) {
+        try {
+          await LocalPrinterService.printReceipt(orderForPrint, lang);
+        } catch (printErr) {
+          console.error('Ошибка печати чека:', printErr);
+          // Не блокируем оплату, если чек не напечатался
+        }
       }
 
       setSuccess(true);
@@ -142,7 +226,9 @@ export default function PaymentModal({
       <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
         <div className="flex flex-col items-center gap-4 rounded-3xl bg-white p-12 shadow-2xl">
           <CheckCircle size={64} className="text-green-500" />
-          <p className="text-xl font-bold text-gray-900">{t('payment.success')}</p>
+          <p className="text-xl font-bold text-gray-900">
+            {t('payment.success')}
+          </p>
         </div>
       </div>
     );
@@ -152,7 +238,9 @@ export default function PaymentModal({
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
       <div className="flex w-full max-w-md flex-col rounded-3xl bg-white p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-bold text-gray-900">{t('payment.title')}</h2>
+          <h2 className="text-xl font-bold text-gray-900">
+            {t('payment.title')}
+          </h2>
           <button
             onClick={onClose}
             className="rounded-lg p-2 text-gray-400 hover:bg-gray-100"
@@ -164,17 +252,23 @@ export default function PaymentModal({
         {/* Total */}
         <div className="mb-6 rounded-2xl bg-gray-50 p-5 text-center">
           <p className="text-sm text-gray-500">{t('payment.total')}</p>
-          <p className="text-4xl font-bold text-orange-600">{formatYen(total)}</p>
+          <p className="text-4xl font-bold text-orange-600">
+            {formatYen(total)}
+          </p>
         </div>
 
         {/* Method */}
-        <p className="mb-2 text-sm font-semibold text-gray-700">{t('payment.method')}</p>
+        <p className="mb-2 text-sm font-semibold text-gray-700">
+          {t('payment.method')}
+        </p>
         <div className="mb-4 grid grid-cols-3 gap-2">
-          {([
-            { key: 'cash', icon: Banknote, label: t('payment.cash') },
-            { key: 'card', icon: CreditCard, label: t('payment.card') },
-            { key: 'other', icon: Wallet, label: t('payment.other') },
-          ] as const).map(({ key, icon: Icon, label }) => (
+          {(
+            [
+              { key: 'cash', icon: Banknote, label: t('payment.cash') },
+              { key: 'card', icon: CreditCard, label: t('payment.card') },
+              { key: 'other', icon: Wallet, label: t('payment.other') },
+            ] as const
+          ).map(({ key, icon: Icon, label }) => (
             <button
               key={key}
               onClick={() => setMethod(key)}
@@ -215,7 +309,9 @@ export default function PaymentModal({
               ))}
             </div>
             <div className="mb-4 flex items-center justify-between rounded-xl bg-gray-50 px-4 py-3">
-              <span className="text-sm text-gray-500">{t('payment.change')}</span>
+              <span className="text-sm text-gray-500">
+                {t('payment.change')}
+              </span>
               <span className="text-xl font-bold text-green-600">
                 {formatYen(change)}
               </span>

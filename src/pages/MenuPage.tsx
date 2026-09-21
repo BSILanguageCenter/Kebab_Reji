@@ -1,3 +1,4 @@
+// src/pages/MenuPage.tsx
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useI18n } from '@/lib/i18n';
@@ -7,6 +8,8 @@ import {
   Plus, Pencil, Trash2, X, UtensilsCrossed, Package, ChefHat,
 } from 'lucide-react';
 import ImageUploader from '@/components/ImageUploader';
+import { invalidateMenuCache } from '@/lib/menuCache';
+import { useSyncEvent, notifyChange } from '@/hooks/useSync';
 
 export default function MenuPage() {
   const { t, lang } = useI18n();
@@ -19,19 +22,39 @@ export default function MenuPage() {
   const [showCategoryForm, setShowCategoryForm] = useState(false);
 
   useEffect(() => {
-    supabase.from('categories').select('*').order('sort_order').then(({ data }) => {
-      if (data) {
-        setCategories(data);
-        if (data.length > 0 && !activeCategory) setActiveCategory(data[0].id);
+    Promise.all([
+      supabase.from('categories').select('*').order('sort_order'),
+      supabase.from('kitchen_stations').select('*').order('sort_order'),
+      supabase.from('products').select('*').order('sort_order'),
+    ]).then(([cats, st, prods]) => {
+      if (cats.data) {
+        setCategories(cats.data);
+        if (cats.data.length > 0 && !activeCategory) setActiveCategory(cats.data[0].id);
       }
+      if (st.data) setStations(st.data);
+      if (prods.data) setProducts(prods.data as Product[]);
     });
-    supabase.from('kitchen_stations').select('*').order('sort_order').then(({ data }) => setStations(data || []));
-    loadProducts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Синхронизация
+  useSyncEvent('menu-changed', (_event, source) => {
+    if (source === 'remote') {
+      Promise.all([
+        supabase.from('categories').select('*').order('sort_order'),
+        supabase.from('products').select('*').order('sort_order'),
+      ]).then(([cats, prods]) => {
+        if (cats.data) setCategories(cats.data);
+        if (prods.data) setProducts(prods.data as Product[]);
+      });
+    }
+  });
 
   async function loadProducts() {
     const { data } = await supabase.from('products').select('*').order('sort_order');
     if (data) setProducts(data as Product[]);
+    invalidateMenuCache();
+    notifyChange('menu-changed');
   }
 
   const filteredProducts = products.filter((p) => p.category_id === activeCategory);
@@ -48,7 +71,6 @@ export default function MenuPage() {
         <h2 className="text-xl font-bold text-gray-900">{t('menu.title')}</h2>
       </div>
 
-      {/* Category tabs */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {categories.map((cat) => (
           <button
@@ -92,7 +114,7 @@ export default function MenuPage() {
               <div key={product.id} className="flex items-center gap-3 rounded-2xl border border-gray-200 bg-white p-3">
                 <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-gray-50">
                   {product.image_url ? (
-                    <img src={product.image_url} alt="" className="h-full w-full rounded-xl object-cover" />
+                    <img src={product.image_url} alt="" loading="lazy" className="h-full w-full rounded-xl object-cover" />
                   ) : (
                     <UtensilsCrossed size={24} className="text-gray-300" />
                   )}
@@ -103,18 +125,14 @@ export default function MenuPage() {
                   </p>
                   <p className="text-sm text-gray-500">{formatYen(product.price)}</p>
                   <div className="mt-1 flex flex-wrap gap-1">
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
-                        product.is_available ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                      }`}
-                    >
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+                      product.is_available ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                    }`}>
                       {product.is_available ? t('menu.available') : t('menu.unavailable')}
                     </span>
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
-                        isReady ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
-                      }`}
-                    >
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+                      isReady ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                    }`}>
                       {isReady ? <Package size={12} /> : <ChefHat size={12} />}
                       {isReady ? 'Готовый' : 'На кухню'}
                     </span>
@@ -161,6 +179,8 @@ export default function MenuPage() {
           onClose={() => setShowCategoryForm(false)}
           onSaved={() => {
             supabase.from('categories').select('*').order('sort_order').then(({ data }) => setCategories(data || []));
+            invalidateMenuCache();
+            notifyChange('menu-changed');
             setShowCategoryForm(false);
           }}
         />
@@ -169,9 +189,7 @@ export default function MenuPage() {
   );
 }
 
-function ProductForm({
-  product, categories, stations, defaultCategoryId, onClose, onSaved,
-}: {
+function ProductForm({ product, categories, stations, defaultCategoryId, onClose, onSaved }: {
   product: Product | null;
   categories: Category[];
   stations: KitchenStation[];
@@ -254,8 +272,7 @@ function ProductForm({
   };
 
   const suggestions = [
-    'Без соуса', 'Мало соуса', 'Много соуса',
-    'Без лука', 'Без чеснока',
+    'Без соуса', 'Мало соуса', 'Много соуса', 'Без лука', 'Без чеснока',
     'Острый', 'Не острый', 'Без майонеза',
   ];
 
@@ -283,7 +300,6 @@ function ProductForm({
               options={categories.map((c) => ({ value: c.id, label: c.name_ru }))}
             />
             <Field label={t('menu.sortOrder')} value={form.sort_order} onChange={(v) => setForm({ ...form, sort_order: v })} type="number" />
-
             <div className="col-span-2 flex items-center gap-4">
               <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
                 <input
@@ -297,15 +313,10 @@ function ProductForm({
             </div>
           </div>
 
-          {/* === Изображение === */}
           <div className="mt-4">
-            <ImageUploader
-              value={form.image_url}
-              onChange={(url) => setForm({ ...form, image_url: url })}
-            />
+            <ImageUploader value={form.image_url} onChange={(url) => setForm({ ...form, image_url: url })} />
           </div>
 
-          {/* === Тип продукта === */}
           <div className="mt-5">
             <label className="mb-2 block text-xs font-semibold text-gray-500">Тип продукта</label>
             <div className="grid grid-cols-2 gap-2">
@@ -313,9 +324,7 @@ function ProductForm({
                 type="button"
                 onClick={() => setForm({ ...form, is_ready_product: false })}
                 className={`flex items-center gap-2 rounded-xl border-2 p-3 text-left transition-all ${
-                  !form.is_ready_product
-                    ? 'border-orange-500 bg-orange-50 text-orange-700'
-                    : 'border-gray-200 text-gray-600'
+                  !form.is_ready_product ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-gray-200 text-gray-600'
                 }`}
               >
                 <ChefHat size={22} />
@@ -328,9 +337,7 @@ function ProductForm({
                 type="button"
                 onClick={() => setForm({ ...form, is_ready_product: true })}
                 className={`flex items-center gap-2 rounded-xl border-2 p-3 text-left transition-all ${
-                  form.is_ready_product
-                    ? 'border-blue-500 bg-blue-50 text-blue-700'
-                    : 'border-gray-200 text-gray-600'
+                  form.is_ready_product ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-600'
                 }`}
               >
                 <Package size={22} />
@@ -342,7 +349,6 @@ function ProductForm({
             </div>
           </div>
 
-          {/* Кухонная станция — только для «готовится на кухне» */}
           {!form.is_ready_product && (
             <div className="mt-3">
               <SelectField
@@ -354,7 +360,6 @@ function ProductForm({
             </div>
           )}
 
-          {/* === Свойства === */}
           <div className="mt-5">
             <label className="mb-2 block text-xs font-semibold text-gray-500">
               Свойства (что можно выбрать при заказе)
@@ -365,9 +370,7 @@ function ProductForm({
                 type="text"
                 value={newModifier}
                 onChange={(e) => setNewModifier(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') { e.preventDefault(); addModifier(); }
-                }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModifier(); } }}
                 placeholder="Например: Без соуса"
                 className="flex-1 rounded-xl border border-gray-200 px-3 py-2.5 text-sm"
               />
@@ -380,20 +383,17 @@ function ProductForm({
               </button>
             </div>
 
-            {/* Подсказки */}
             <div className="mt-2 flex flex-wrap gap-1">
-              {suggestions
-                .filter((s) => !modifiers.includes(s))
-                .map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => setModifiers([...modifiers, s])}
-                    className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-200"
-                  >
-                    + {s}
-                  </button>
-                ))}
+              {suggestions.filter((s) => !modifiers.includes(s)).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setModifiers([...modifiers, s])}
+                  className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-200"
+                >
+                  + {s}
+                </button>
+              ))}
             </div>
 
             {modifiers.length > 0 && (
@@ -401,25 +401,9 @@ function ProductForm({
                 {modifiers.map((m, i) => (
                   <div key={m} className="flex items-center gap-2 rounded-xl bg-gray-50 px-3 py-2">
                     <span className="flex-1 text-sm font-semibold text-gray-800">{m}</span>
-                    <button
-                      type="button"
-                      onClick={() => moveModifier(i, -1)}
-                      className="rounded-md p-1 text-gray-400 hover:bg-gray-200"
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moveModifier(i, 1)}
-                      className="rounded-md p-1 text-gray-400 hover:bg-gray-200"
-                    >
-                      ↓
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeModifier(m)}
-                      className="rounded-md p-1 text-red-500 hover:bg-red-50"
-                    >
+                    <button type="button" onClick={() => moveModifier(i, -1)} className="rounded-md p-1 text-gray-400 hover:bg-gray-200">↑</button>
+                    <button type="button" onClick={() => moveModifier(i, 1)} className="rounded-md p-1 text-gray-400 hover:bg-gray-200">↓</button>
+                    <button type="button" onClick={() => removeModifier(m)} className="rounded-md p-1 text-red-500 hover:bg-red-50">
                       <X size={16} />
                     </button>
                   </div>
@@ -430,17 +414,10 @@ function ProductForm({
         </div>
 
         <div className="mt-4 flex gap-2">
-          <button
-            onClick={onClose}
-            className="h-12 flex-1 rounded-xl bg-gray-100 font-semibold text-gray-600 hover:bg-gray-200"
-          >
+          <button onClick={onClose} className="h-12 flex-1 rounded-xl bg-gray-100 font-semibold text-gray-600 hover:bg-gray-200">
             {t('menu.cancel')}
           </button>
-          <button
-            onClick={save}
-            disabled={saving}
-            className="h-12 flex-1 rounded-xl bg-orange-600 font-bold text-white hover:bg-orange-700 disabled:opacity-40"
-          >
+          <button onClick={save} disabled={saving} className="h-12 flex-1 rounded-xl bg-orange-600 font-bold text-white hover:bg-orange-700 disabled:opacity-40">
             {saving ? '…' : t('menu.save')}
           </button>
         </div>
@@ -453,14 +430,13 @@ function CategoryForm({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const { t } = useI18n();
   const [nameRu, setNameRu] = useState('');
   const [nameJa, setNameJa] = useState('');
-  const [icon, setIcon] = useState('UtensilsCrossed');
 
   const save = async () => {
     if (!nameRu || !nameJa) return;
     await supabase.from('categories').insert({
       name_ru: nameRu,
       name_ja: nameJa,
-      icon,
+      icon: 'UtensilsCrossed',
       sort_order: 99,
       is_active: true,
     });
