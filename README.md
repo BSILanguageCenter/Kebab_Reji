@@ -1,2 +1,6 @@
 # Kebab_Reji
 #cvcS7oKDRJRY6r8F
+
+
+192.168.100.22
+192.168.100.22

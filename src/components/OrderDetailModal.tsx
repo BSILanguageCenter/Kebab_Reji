@@ -1,3 +1,4 @@
+// src/components/OrderDetailModal.tsx
 import { useState } from 'react';
 import type { Order, Payment } from '@/lib/types';
 import { useI18n } from '@/lib/i18n';
@@ -12,7 +13,12 @@ interface Props {
   onPaid?: () => void;
 }
 
-export default function OrderDetailModal({ order, payment, onClose, onPaid }: Props) {
+export default function OrderDetailModal({
+  order,
+  payment,
+  onClose,
+  onPaid,
+}: Props) {
   const { t, lang } = useI18n();
   const [showPayment, setShowPayment] = useState(false);
 
@@ -35,7 +41,8 @@ export default function OrderDetailModal({ order, payment, onClose, onPaid }: Pr
                 #{order.order_number}
               </h2>
               <p className="text-sm text-gray-500">
-                {formatDate(order.created_at, lang)} · {formatTime(order.created_at, lang)}
+                {formatDate(order.created_at, lang)} ·{' '}
+                {formatTime(order.created_at, lang)}
               </p>
             </div>
             <button
@@ -46,9 +53,13 @@ export default function OrderDetailModal({ order, payment, onClose, onPaid }: Pr
             </button>
           </div>
 
-          {/* Status / type / table */}
+          {/* Status */}
           <div className="flex flex-wrap gap-2 border-b border-gray-100 px-6 py-3">
-            <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${statusColors[order.status]}`}>
+            <span
+              className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                statusColors[order.status]
+              }`}
+            >
               {t(`status.${order.status}`)}
             </span>
             <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600">
@@ -71,7 +82,9 @@ export default function OrderDetailModal({ order, payment, onClose, onPaid }: Pr
                 >
                   <div className="flex-1">
                     <p className="text-sm font-semibold text-gray-900">
-                      {lang === 'ru' ? item.product_name_ru : item.product_name_ja}
+                      {lang === 'ru'
+                        ? item.product_name_ru
+                        : item.product_name_ja}
                     </p>
                     {item.note && (
                       <p className="mt-0.5 text-xs font-semibold uppercase text-orange-600">
@@ -107,7 +120,7 @@ export default function OrderDetailModal({ order, payment, onClose, onPaid }: Pr
             </div>
           </div>
 
-          {/* Payment / action */}
+          {/* Payment */}
           <div className="border-t border-gray-100 p-6 pt-4">
             {payment ? (
               <div className="flex items-center gap-3 rounded-xl bg-green-50 p-3">
@@ -130,7 +143,9 @@ export default function OrderDetailModal({ order, payment, onClose, onPaid }: Pr
                 Оплатить
               </button>
             ) : (
-              <p className="text-center text-sm text-gray-500">{t('status.cancelled')}</p>
+              <p className="text-center text-sm text-gray-500">
+                {t('status.cancelled')}
+              </p>
             )}
           </div>
         </div>
@@ -140,6 +155,7 @@ export default function OrderDetailModal({ order, payment, onClose, onPaid }: Pr
         <PaymentModal
           total={order.total}
           existingOrderId={order.id}
+          existingOrder={order}
           tableId={order.table_id}
           orderType={order.order_type}
           onClose={() => setShowPayment(false)}

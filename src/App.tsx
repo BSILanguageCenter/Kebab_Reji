@@ -1,3 +1,4 @@
+// src/App.tsx
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { I18nProvider } from '@/lib/i18n';
 import { RoleProvider, useRole } from '@/lib/role';
@@ -10,6 +11,7 @@ import MenuPage from '@/pages/MenuPage';
 import TablesPage from '@/pages/TablesPage';
 import ReportsPage from '@/pages/ReportsPage';
 import SettingsPage from '@/pages/SettingsPage';
+import TicketLayoutPage from '@/pages/TicketLayoutPage';
 import ReadyNotifications from '@/components/ReadyNotifications';
 
 function App() {
@@ -28,7 +30,6 @@ function App() {
 function AppRoutes() {
   const { role } = useRole();
 
-  // Пока роль не выбрана — показываем экран выбора профиля
   if (!role) return <RoleSwitcher />;
 
   return (
@@ -60,6 +61,7 @@ function AppRoutes() {
             <Route path="/tables" element={<TablesPage />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings/tickets" element={<TicketLayoutPage />} />
             <Route path="/" element={<Navigate to="/pos" replace />} />
             <Route path="*" element={<Navigate to="/pos" replace />} />
           </>

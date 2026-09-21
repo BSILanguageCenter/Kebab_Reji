@@ -3,14 +3,19 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "css.lint.unknownAtRules": "ignore",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently --kill-others-on-fail -n VITE,PY -c cyan,magenta \"npm:dev:vite\" \"npm:dev:printer\"",
+    "dev:vite": "vite",
+    "dev:printer": "node scripts/start-printer.cjs",
+    "dev:only-vite": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {
+    "@point-of-sale/receipt-printer-encoder": "^4.0.1",
     "@supabase/supabase-js": "^2.57.4",
     "lucide-react": "^0.446.0",
     "react": "^18.3.1",
@@ -23,6 +28,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.18",
+    "concurrently": "^10.0.5",
     "eslint": "^9.9.1",
     "eslint-plugin-react-hooks": "^5.1.0-rc.0",
     "eslint-plugin-react-refresh": "^0.4.11",
