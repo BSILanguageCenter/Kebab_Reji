@@ -1,8 +1,21 @@
 // src/lib/deviceInfo.ts
 import { supabase } from '@/lib/supabase';
 
-const SERVER_URL = 'http://127.0.0.1:9999';
-const STORAGE_KEY_MY_IP = 'device_my_ip';
+// ─── Адреса Python-сервера ──────────────────────────────────────────────────
+// Если сайт открыт на компьютере, где запущен Python — 127.0.0.1.
+// Если сайт открыт на другом устройстве (телефон) — используем IP того хоста,
+// где сайт хостится (там же и Python).
+function getPythonServerUrl(): string {
+  const host = window.location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return 'http://127.0.0.1:9999';
+  }
+  return `http://${host}:9999`;
+}
+
+// ─── Ключи localStorage ────────────────────────────────────────────────────
+const STORAGE_KEY_MY_IP_MANUAL = 'device_my_ip_manual'; // ← IP, заданный вручную
+const STORAGE_KEY_MY_IP_AUTO = 'device_my_ip_auto';     // ← IP, полученный от Python
 const STORAGE_KEY_MY_ROLE = 'device_my_role';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -29,29 +42,75 @@ export interface SyncStatus {
   message: string;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// МОЙ IP — через локальный Python-сервер
-// ═══════════════════════════════════════════════════════════════════════════
-let cachedIp: string | null = null;
+export interface MyIpInfo {
+  ip: string | null;
+  source: 'manual' | 'auto' | 'none';
+  autoIp: string | null;
+}
 
+// ═══════════════════════════════════════════════════════════════════════════
+// МОЙ IP — приоритет: ручной → автоопределённый → null
+// ═══════════════════════════════════════════════════════════════════════════
+let cachedAutoIp: string | null = null;
+let cachedManualIp: string | null = null;
+
+export function getMyIpInfo(): MyIpInfo {
+  // 1. Ручной IP (наивысший приоритет)
+  if (cachedManualIp === null) {
+    cachedManualIp = localStorage.getItem(STORAGE_KEY_MY_IP_MANUAL);
+  }
+  if (cachedManualIp) {
+    return {
+      ip: cachedManualIp,
+      source: 'manual',
+      autoIp: cachedAutoIp || localStorage.getItem(STORAGE_KEY_MY_IP_AUTO),
+    };
+  }
+
+  // 2. Автоопределённый
+  if (cachedAutoIp === null) {
+    cachedAutoIp = localStorage.getItem(STORAGE_KEY_MY_IP_AUTO);
+  }
+  if (cachedAutoIp) {
+    return {
+      ip: cachedAutoIp,
+      source: 'auto',
+      autoIp: cachedAutoIp,
+    };
+  }
+
+  return { ip: null, source: 'none', autoIp: null };
+}
+
+/**
+ * Возвращает IP этого устройства.
+ * Если задан вручную — возвращает его. Иначе — автоопределённый с Python.
+ */
 export async function getMyIp(force = false): Promise<string | null> {
-  if (!force && cachedIp) return cachedIp;
+  // Ручной всегда приоритетнее
+  if (cachedManualIp === null) {
+    cachedManualIp = localStorage.getItem(STORAGE_KEY_MY_IP_MANUAL);
+  }
+  if (cachedManualIp) return cachedManualIp;
 
-  // Проверяем память сессии
-  const stored = localStorage.getItem(STORAGE_KEY_MY_IP);
+  // Иначе — авто
+  if (!force && cachedAutoIp) return cachedAutoIp;
+
+  const stored = localStorage.getItem(STORAGE_KEY_MY_IP_AUTO);
   if (!force && stored) {
-    cachedIp = stored;
+    cachedAutoIp = stored;
     return stored;
   }
 
+  // Запрашиваем у Python
   try {
-    const res = await fetch(`${SERVER_URL}/network-info`);
+    const res = await fetch(`${getPythonServerUrl()}/network-info`);
     if (!res.ok) return null;
     const data = (await res.json()) as NetworkInfo;
     const ip = data.primary_ip;
     if (ip) {
-      cachedIp = ip;
-      localStorage.setItem(STORAGE_KEY_MY_IP, ip);
+      cachedAutoIp = ip;
+      localStorage.setItem(STORAGE_KEY_MY_IP_AUTO, ip);
     }
     return ip;
   } catch (e) {
@@ -60,12 +119,35 @@ export async function getMyIp(force = false): Promise<string | null> {
   }
 }
 
+/**
+ * Задать свой IP вручную.
+ * Используется, когда автоопределение даёт неверный результат
+ * (например, на телефоне Python не запущен, и он видит IP компьютера).
+ */
+export function setMyIpManually(ip: string | null): void {
+  const clean = (ip || '').trim();
+  if (clean) {
+    localStorage.setItem(STORAGE_KEY_MY_IP_MANUAL, clean);
+    cachedManualIp = clean;
+  } else {
+    localStorage.removeItem(STORAGE_KEY_MY_IP_MANUAL);
+    cachedManualIp = null;
+  }
+}
+
+export function getManualIp(): string | null {
+  if (cachedManualIp === null) {
+    cachedManualIp = localStorage.getItem(STORAGE_KEY_MY_IP_MANUAL);
+  }
+  return cachedManualIp;
+}
+
 export function getCachedIp(): string | null {
-  return cachedIp || localStorage.getItem(STORAGE_KEY_MY_IP);
+  return getMyIpInfo().ip;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// СОХРАНЁННЫЕ IP УСТРОЙСТВ В SUPABASE (restaurant_settings)
+// СОХРАНЁННЫЕ IP УСТРОЙСТВ В SUPABASE
 // ═══════════════════════════════════════════════════════════════════════════
 const DB_KEY_CASHIER = 'device_cashier_ip';
 const DB_KEY_KITCHEN = 'device_kitchen_ip';
@@ -154,12 +236,12 @@ export async function detectMyRole(): Promise<{
     return { role: 'kitchen', myIp, hubIp: ips.cashier_ip, ips };
   }
 
-  // Не найдено — считаем неизвестным
+  // Не найдено
   saveMyRole('unknown');
   return {
     role: 'unknown',
     myIp,
-    hubIp: ips.cashier_ip, // fallback — пробуем подключиться к кассе
+    hubIp: ips.cashier_ip,
     ips,
   };
 }
