@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Kebab POS — Print Server
-- HTTP API на порту 9999
-- WebSocket hub на порту 9998
-- Печать на системные (USB) и сетевые (Wi-Fi) принтеры
+Kebab POS — Print Server + LAN Hub
+- HTTP API :9999
+- WebSocket hub :9998
+- UDP discovery :9997 (broadcast в локальную сеть)
+- Печать на системные и Wi-Fi принтеры
 """
 
 import os
 import sys
+import json
 import time
 import socket
 import platform
@@ -83,7 +85,32 @@ active_printers: dict[str, Optional[dict[str, Any]]] = {
 }
 
 ws_clients: set[Any] = set()
+peers: dict[str, Any] = {}
 ws_lock = threading.Lock()
+
+# ─── LAN hub (моё устройство как точка сбора) ──────────────────────────────
+lan_hub: dict[str, Any] = {
+    'active': False,
+    'name': '',
+    'password': '',
+    'hub_ip': None,
+    'created_at': 0.0,
+}
+
+# ─── LAN client (моё устройство как клиент чужого хаба) ────────────────────
+lan_client: dict[str, Any] = {
+    'joined': False,
+    'name': '',
+    'hub_ip': None,
+    'hub_port': 9998,
+    'has_password': False,
+    'last_error': None,
+}
+
+UDP_PORT = 9997
+_udp_socket: Optional[socket.socket] = None
+_udp_thread: Optional[threading.Thread] = None
+_udp_running = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -92,6 +119,213 @@ ws_lock = threading.Lock()
 http_app = Flask('kebab_http')
 if HAS_CORS and CORS is not None:
     CORS(http_app)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# УТИЛИТЫ СЕТИ
+# ═══════════════════════════════════════════════════════════════════════════
+def get_primary_ip() -> Optional[str]:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = str(s.getsockname()[0])
+        s.close()
+        return ip
+    except OSError:
+        return None
+
+
+def get_my_subnet() -> Optional[str]:
+    ip = get_primary_ip()
+    if not ip:
+        return None
+    return '.'.join(ip.split('.')[:3])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UDP DISCOVERY
+# ═══════════════════════════════════════════════════════════════════════════
+def start_udp_listener() -> None:
+    """Запускает поток, отвечающий на broadcast-запросы lan-discover."""
+    global _udp_socket, _udp_thread, _udp_running
+    if _udp_running:
+        return
+    _udp_running = True
+
+    def _loop() -> None:
+        global _udp_socket, _udp_running
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            s.bind(('', UDP_PORT))
+        except OSError as e:
+            print(f'[udp] bind failed: {e}')
+            _udp_running = False
+            return
+        _udp_socket = s
+        print(f'[udp] listening on 0.0.0.0:{UDP_PORT}')
+        while _udp_running:
+            try:
+                data, addr = s.recvfrom(2048)
+            except OSError:
+                break
+            try:
+                msg = json.loads(data.decode('utf-8'))
+            except Exception:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            if msg.get('type') == 'lan-discover' and lan_hub['active']:
+                with ws_lock:
+                    client_count = len(ws_clients)
+                reply = {
+                    'type': 'lan-announce',
+                    'name': lan_hub['name'],
+                    'ip': lan_hub['hub_ip'],
+                    'port': 9998,
+                    'has_password': bool(lan_hub['password']),
+                    'clients': client_count,
+                }
+                try:
+                    s.sendto(json.dumps(reply).encode('utf-8'), addr)
+                except OSError:
+                    pass
+        try:
+            s.close()
+        except OSError:
+            pass
+
+    _udp_thread = threading.Thread(target=_loop, daemon=True)
+    _udp_thread.start()
+
+
+def udp_discover(timeout: float = 2.0) -> list[dict[str, Any]]:
+    """Рассылает broadcast и собирает ответы от активных LAN."""
+    results: list[dict[str, Any]] = []
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    s.settimeout(0.4)
+    try:
+        payload = json.dumps({'type': 'lan-discover'}).encode('utf-8')
+        # Broadcast во всю подсеть
+        try:
+            s.sendto(payload, ('255.255.255.255', UDP_PORT))
+        except OSError:
+            pass
+
+        deadline = time.time() + timeout
+        seen: set[str] = set()
+        while time.time() < deadline:
+            try:
+                data, _addr = s.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                msg = json.loads(data.decode('utf-8'))
+            except Exception:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            if msg.get('type') == 'lan-announce':
+                key = f"{msg.get('ip')}:{msg.get('port')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(msg)
+    finally:
+        s.close()
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LAN ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+@http_app.route('/lan/create', methods=['POST'])
+def lan_create():
+    data: dict[str, Any] = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    password = (data.get('password') or '').strip()
+
+    if not name:
+        return jsonify({'success': False, 'error': 'name required'}), 400
+
+    ip = get_primary_ip()
+    if not ip:
+        return jsonify({
+            'success': False,
+            'error': 'cannot determine local IP',
+        }), 500
+
+    lan_hub['active'] = True
+    lan_hub['name'] = name
+    lan_hub['password'] = password
+    lan_hub['hub_ip'] = ip
+    lan_hub['created_at'] = time.time()
+
+    start_udp_listener()
+
+    return jsonify({
+        'success': True,
+        'name': name,
+        'ip': ip,
+        'port': 9998,
+        'has_password': bool(password),
+        'clients': 0,
+    })
+
+
+@http_app.route('/lan/stop', methods=['POST'])
+def lan_stop():
+    lan_hub['active'] = False
+    lan_hub['name'] = ''
+    lan_hub['password'] = ''
+    lan_hub['hub_ip'] = None
+    lan_hub['created_at'] = 0.0
+    return jsonify({'success': True})
+
+
+@http_app.route('/lan/status', methods=['GET'])
+def lan_status():
+    with ws_lock:
+        count = len(ws_clients)
+    return jsonify({
+        'active': lan_hub['active'],
+        'name': lan_hub['name'],
+        'ip': lan_hub['hub_ip'],
+        'port': 9998,
+        'has_password': bool(lan_hub['password']),
+        'clients': count,
+    })
+
+
+@http_app.route('/lan/discover', methods=['POST'])
+def lan_discover():
+    try:
+        lans = udp_discover(timeout=2.0)
+        return jsonify({'success': True, 'lans': lans})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@http_app.route('/lan/client-state', methods=['GET'])
+def lan_client_state():
+    return jsonify(lan_client)
+
+
+@http_app.route('/lan/client-set', methods=['POST'])
+def lan_client_set():
+    """Сохраняет состояние клиента в Python (для info-целей)."""
+    data: dict[str, Any] = request.get_json() or {}
+    lan_client['joined'] = bool(data.get('joined'))
+    lan_client['name'] = data.get('name') or ''
+    lan_client['hub_ip'] = data.get('hub_ip')
+    lan_client['hub_port'] = int(data.get('hub_port') or 9998)
+    lan_client['has_password'] = bool(data.get('has_password'))
+    lan_client['last_error'] = data.get('last_error')
+    return jsonify({'success': True})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -176,13 +410,8 @@ def set_printer():
                 'success': False, 'error': 'ip required for wifi'
             }), 400
         info: dict[str, Any] = {
-            'name': name,
-            'type': 'wifi',
-            'ip': ip,
-            'port': port,
-            'kind': 'thermal',
-            'columns': 42,
-            'paper_size': '80mm',
+            'name': name, 'type': 'wifi', 'ip': ip, 'port': port,
+            'kind': 'thermal', 'columns': 42, 'paper_size': '80mm',
         }
     else:
         base = detect_printer_info(name)
@@ -285,19 +514,8 @@ def print_raw():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ПОИСК WI-FI ПРИНТЕРОВ
+# ПОИСК WI-FI ПРИНТЕРОВ (mDNS + scan)
 # ═══════════════════════════════════════════════════════════════════════════
-def get_my_subnet() -> Optional[str]:
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return '.'.join(ip.split('.')[:3])
-    except OSError:
-        return None
-
-
 def probe_tcp(ip: str, port: int = 9100, timeout: float = 0.4) -> bool:
     try:
         with socket.create_connection((ip, port), timeout=timeout):
@@ -318,10 +536,7 @@ def discover_scan(port: int = 9100) -> list[dict[str, Any]]:
             try:
                 if fut.result():
                     result.append({
-                        'name': ip,
-                        'ip': ip,
-                        'port': port,
-                        'source': 'scan',
+                        'name': ip, 'ip': ip, 'port': port, 'source': 'scan',
                     })
             except Exception:
                 pass
@@ -329,7 +544,6 @@ def discover_scan(port: int = 9100) -> list[dict[str, Any]]:
 
 
 def _build_mdns_listener_class() -> Any:
-    """Создаёт класс listener'а с нужным базовым классом."""
     if not HAS_ZEROCONF or ServiceListener is None:
         return None
 
@@ -343,9 +557,7 @@ def _build_mdns_listener_class() -> Any:
                 return
             addrs = info.parsed_addresses()
             if addrs:
-                first = addrs[0]
-                # parsed_addresses может вернуть str или IPv4Address — приводим к str
-                ip_str = str(first)
+                ip_str = str(addrs[0])
                 self.found.append({
                     'name': name.replace(f'.{type_}', ''),
                     'ip': ip_str,
@@ -365,11 +577,9 @@ def _build_mdns_listener_class() -> Any:
 def discover_mdns(timeout: float = 2.5) -> list[dict[str, Any]]:
     if not HAS_ZEROCONF or Zeroconf is None or ServiceBrowser is None:
         return []
-
     listener_cls = _build_mdns_listener_class()
     if listener_cls is None:
         return []
-
     zc = Zeroconf()
     listener = listener_cls()
     try:
@@ -379,7 +589,6 @@ def discover_mdns(timeout: float = 2.5) -> list[dict[str, Any]]:
         time.sleep(timeout)
     finally:
         zc.close()
-
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
     for p in listener.found:
@@ -390,7 +599,7 @@ def discover_mdns(timeout: float = 2.5) -> list[dict[str, Any]]:
     return out
 
 
-def discover_all() -> list[dict[str, Any]]:
+def discover_all_wifi() -> list[dict[str, Any]]:
     mdns = discover_mdns(timeout=2.5)
     seen = {str(p['ip']) for p in mdns}
     scan = discover_scan(port=9100)
@@ -404,7 +613,7 @@ def discover_all() -> list[dict[str, Any]]:
 @http_app.route('/wifi-printers', methods=['GET'])
 def wifi_printers():
     try:
-        return jsonify({'success': True, 'printers': discover_all()})
+        return jsonify({'success': True, 'printers': discover_all_wifi()})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -416,7 +625,6 @@ def wifi_printers():
 def network_info():
     hostname = socket.gethostname()
     local_ips: list[str] = []
-
     try:
         for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
             ip = str(info[4][0])
@@ -424,33 +632,14 @@ def network_info():
                 local_ips.append(ip)
     except socket.gaierror:
         pass
-
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('8.8.8.8', 80))
-        primary = str(s.getsockname()[0])
-        s.close()
-        if primary not in local_ips:
-            local_ips.insert(0, primary)
-    except OSError:
-        pass
-
+    primary = get_primary_ip()
+    if primary and primary not in local_ips:
+        local_ips.insert(0, primary)
     return jsonify({
         'hostname': hostname,
         'local_ips': local_ips,
         'primary_ip': local_ips[0] if local_ips else None,
-        'ports': {'http': 9999, 'ws': 9998},
-    })
-
-
-@http_app.route('/sync-status', methods=['GET'])
-def sync_status():
-    with ws_lock:
-        count = len(ws_clients)
-    return jsonify({
-        'lan_sync_enabled': HAS_WS,
-        'connected_clients': count,
-        'is_hub_active': HAS_WS and count > 0,
+        'ports': {'http': 9999, 'ws': 9998, 'udp': 9997},
     })
 
 
@@ -460,22 +649,89 @@ def sync_status():
 ws_app = Flask('kebab_ws')
 sock: Any = None
 
+
+def broadcast_client_count() -> None:
+    with ws_lock:
+        count = len(ws_clients)
+        targets = list(ws_clients)
+    msg = json.dumps({'type': 'client-count', 'count': count})
+    for peer in targets:
+        try:
+            peer.send(msg)
+        except Exception:
+            pass
+
+
 if HAS_WS and Sock is not None:
     sock = Sock(ws_app)
 
     @sock.route('/sync')
     def sync_endpoint(ws: Any) -> None:
+        # Первое сообщение — hello с паролем
+        try:
+            first = ws.receive()
+        except Exception:
+            return
+        if first is None:
+            return
+        try:
+            hello = json.loads(first)
+        except Exception:
+            try:
+                ws.close()
+            except Exception:
+                pass
+            return
+
+        if not isinstance(hello, dict) or hello.get('type') != 'hello':
+            try:
+                ws.close()
+            except Exception:
+                pass
+            return
+
+        # Проверка пароля (только если hub активен)
+        if lan_hub['active']:
+            expected = lan_hub['password'] or ''
+            provided = hello.get('password') or ''
+            if expected and provided != expected:
+                try:
+                    ws.send(json.dumps({'type': 'auth-failed'}))
+                except Exception:
+                    pass
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+                return
+
+        peer_id = str(hello.get('peer') or f'peer-{int(time.time())}')
+
         with ws_lock:
             ws_clients.add(ws)
-        print(f'[ws] client connected (total: {len(ws_clients)})')
+            peers[peer_id] = ws
+
+        try:
+            ws.send(json.dumps({
+                'type': 'hello-ok',
+                'peer_id': peer_id,
+                'hub': lan_hub['name'],
+                'clients': len(ws_clients),
+            }))
+        except Exception:
+            pass
+
+        broadcast_client_count()
+        print(f'[ws] client {peer_id} connected (total: {len(ws_clients)})')
+
         try:
             while True:
                 msg = ws.receive()
                 if msg is None:
                     break
                 with ws_lock:
-                    peers = [c for c in ws_clients if c is not ws]
-                for peer in peers:
+                    others = [c for c in ws_clients if c is not ws]
+                for peer in others:
                     try:
                         peer.send(msg)
                     except Exception:
@@ -485,7 +741,10 @@ if HAS_WS and Sock is not None:
         finally:
             with ws_lock:
                 ws_clients.discard(ws)
-            print(f'[ws] client disconnected (total: {len(ws_clients)})')
+                peers.pop(peer_id, None)
+            broadcast_client_count()
+            print(f'[ws] client {peer_id} disconnected '
+                  f'(total: {len(ws_clients)})')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -507,21 +766,19 @@ def run_ws() -> None:
 
 if __name__ == '__main__':
     print('╔══════════════════════════════════════════╗')
-    print('║  Kebab POS — Print Server                ║')
+    print('║  Kebab POS — Print Server + LAN Hub      ║')
     print('╚══════════════════════════════════════════╝')
     print(f'  Platform:   {platform.system()} {platform.release()}')
     print(f'  Python:     {sys.version.split()[0]}')
     print(f'  win32print: {HAS_WIN32PRINT}')
     print(f'  flask-sock: {HAS_WS}')
     print(f'  zeroconf:   {HAS_ZEROCONF}')
+    print(f'  UDP port:   {UDP_PORT} (LAN discovery)')
     print()
 
     if not HAS_WS:
-        print('⚠  flask-sock не установлен — LAN-синхронизация отключена')
-        print('   Установи: pip install flask-sock\n')
-    if not HAS_ZEROCONF:
-        print('⚠  zeroconf не установлен — Bonjour-поиск отключён')
-        print('   Установи: pip install zeroconf\n')
+        print('⚠  flask-sock не установлен — LAN отключён')
+        print('   pip install flask-sock\n')
 
     threads = [threading.Thread(target=run_http, daemon=True)]
     if HAS_WS:

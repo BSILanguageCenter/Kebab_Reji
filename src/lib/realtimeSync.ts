@@ -112,6 +112,7 @@ export function startRealtimeSync(): void {
 
   // ─── 2. LAN hub ───────────────────────────────────────────────────────
   onLanMessage((msg) => {
+    // Игнорируем служебные сообщения WebSocket-хаба
     if (msg.type !== 'data-changed') return;
     const event = msg.event as SyncEvent;
 
@@ -126,8 +127,6 @@ export function startRealtimeSync(): void {
 
   console.log('[Sync] LAN-hub слушатель установлен');
 
-  // Синхронизация работает, пока открыт браузер.
-  // Cleanup не нужен — при закрытии вкладки все подписки сами отвалятся.
-  // (channel не удаляем — supabase сам почистит)
+  // Cleanup не нужен — при закрытии вкладки подписки отвалятся сами
   void channel;
 }

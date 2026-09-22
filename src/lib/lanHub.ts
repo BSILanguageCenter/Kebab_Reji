@@ -1,267 +1,227 @@
 // src/lib/lanHub.ts
-import { supabase } from '@/lib/supabase';
+const PY_SERVER = 'http://127.0.0.1:9999';
 
-const SETTINGS_TABLE = 'restaurant_settings';
-const KEY_PREFIX = 'lan_hub_';
-const HEARTBEAT_MS = 10_000;
-const STALE_MS = 30_000;
-const WS_PORT = 9998;
+// ═══════════════════════════════════════════════════════════════════════════
+// ТИПЫ
+// ═══════════════════════════════════════════════════════════════════════════
+export interface LanAnnounce {
+  name: string;
+  ip: string;
+  port: number;
+  has_password: boolean;
+  clients: number;
+}
 
-// ─── Типы сообщений LAN ─────────────────────────────────────────────────────
+export interface MyLanStatus {
+  active: boolean;
+  name: string;
+  ip: string | null;
+  port: number;
+  has_password: boolean;
+  clients: number;
+}
+
+export interface JoinedLan {
+  name: string;
+  ip: string;
+  port: number;
+  has_password: boolean;
+}
+
 export type LanMessage =
-  | { type: 'hello'; peer: string }
+  | { type: 'hello'; peer: string; password?: string }
+  | { type: 'hello-ok'; peer_id: string; hub: string; clients: number }
+  | { type: 'auth-failed' }
   | { type: 'ping' }
+  | { type: 'client-count'; count: number }
   | { type: 'data-changed'; event: string }
-  | { type: 'sync-request' }
   | { type: string; [key: string]: unknown };
 
-export interface LanHub {
-  id: string;
-  name: string;
-  hubIp: string;
-  port: number;
-  createdAt: number;
-  lastHeartbeat: number;
-  isOwn: boolean;
-}
-
-export interface LanStatus {
+export interface LanState {
+  role: 'hub' | 'client' | 'none';
   connected: boolean;
-  hub: LanHub | null;
+  hub: LanAnnounce | null;
+  clients: number;
+  error: string | null;
 }
 
-// ─── Состояние ──────────────────────────────────────────────────────────────
-let myHubId: string | null = null;
-let myHubIp: string | null = null;
-let heartbeatTimer: number | null = null;
-
+// ═══════════════════════════════════════════════════════════════════════════
+// СОСТОЯНИЕ
+// ═══════════════════════════════════════════════════════════════════════════
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
+let pingTimer: number | null = null;
+let pollTimer: number | null = null;
 
 const messageListeners = new Set<(msg: LanMessage) => void>();
-const statusListeners = new Set<(s: LanStatus) => void>();
-let currentStatus: LanStatus = { connected: false, hub: null };
+const stateListeners = new Set<(state: LanState) => void>();
 
-function notifyStatus() {
-  statusListeners.forEach((cb) => cb(currentStatus));
+let currentState: LanState = {
+  role: 'none',
+  connected: false,
+  hub: null,
+  clients: 0,
+  error: null,
+};
+
+const STORAGE_KEY_HUB = 'my_lan_hub';         // { name, password, ip }
+const STORAGE_KEY_JOINED = 'joined_lan';      // { name, ip, port, has_password }
+
+function notifyState() {
+  stateListeners.forEach((cb) => cb(currentState));
 }
 
-// ─── Мой LAN ────────────────────────────────────────────────────────────────
-export function getMyHubId(): string | null {
-  if (myHubId === null) myHubId = localStorage.getItem('my_lan_hub_id');
-  return myHubId;
+function setState(patch: Partial<LanState>) {
+  currentState = { ...currentState, ...patch };
+  notifyState();
 }
 
-export function isHubOwner(): boolean {
-  return !!getMyHubId();
-}
-
-async function fetchMyIpFromPython(): Promise<string | null> {
+// ═══════════════════════════════════════════════════════════════════════════
+// HUB (моё устройство как точка сбора)
+// ═══════════════════════════════════════════════════════════════════════════
+export async function createLan(
+  name: string,
+  password: string
+): Promise<{ ok: boolean; error?: string }> {
   try {
-    const host = window.location.hostname;
-    const base =
-      host === 'localhost' || host === '127.0.0.1'
-        ? 'http://127.0.0.1:9999'
-        : `http://${host}:9999`;
-    const res = await fetch(`${base}/network-info`);
-    if (!res.ok) return null;
-    const data = (await res.json()) as { primary_ip?: string };
-    return data.primary_ip ?? null;
+    const res = await fetch(`${PY_SERVER}/lan/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, password }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      return { ok: false, error: data.error || 'failed' };
+    }
+    localStorage.setItem(
+      STORAGE_KEY_HUB,
+      JSON.stringify({ name, password, ip: data.ip })
+    );
+    // Хаб не подключается к своему WS — просто хранит состояние
+    setState({
+      role: 'hub',
+      connected: true,
+      hub: {
+        name,
+        ip: data.ip,
+        port: 9998,
+        has_password: !!password,
+        clients: 0,
+      },
+      clients: 0,
+      error: null,
+    });
+    startHubPolling();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+export async function stopMyLan(): Promise<void> {
+  stopHubPolling();
+  try {
+    await fetch(`${PY_SERVER}/lan/stop`, { method: 'POST' });
+  } catch {
+    /* ignore */
+  }
+  localStorage.removeItem(STORAGE_KEY_HUB);
+  setState({ role: 'none', connected: false, hub: null, clients: 0 });
+}
+
+async function refreshHubStatus() {
+  try {
+    const res = await fetch(`${PY_SERVER}/lan/status`);
+    if (!res.ok) return;
+    const data = (await res.json()) as MyLanStatus;
+    if (data.active) {
+      setState({
+        role: 'hub',
+        connected: true,
+        hub: {
+          name: data.name,
+          ip: data.ip ?? '',
+          port: data.port,
+          has_password: data.has_password,
+          clients: data.clients,
+        },
+        clients: data.clients,
+      });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function startHubPolling() {
+  stopHubPolling();
+  pollTimer = window.setInterval(refreshHubStatus, 3000);
+}
+function stopHubPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DISCOVERY
+// ═══════════════════════════════════════════════════════════════════════════
+export async function discoverLans(): Promise<LanAnnounce[]> {
+  const res = await fetch(`${PY_SERVER}/lan/discover`, { method: 'POST' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = (await res.json()) as {
+    success: boolean;
+    lans?: LanAnnounce[];
+    error?: string;
+  };
+  if (!data.success) throw new Error(data.error || 'discover failed');
+  return data.lans ?? [];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLIENT (я подключаюсь к чужому хабу)
+// ═══════════════════════════════════════════════════════════════════════════
+export function getJoinedLan(): JoinedLan | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_JOINED);
+    if (!raw) return null;
+    return JSON.parse(raw) as JoinedLan;
   } catch {
     return null;
   }
 }
 
-export async function createLan(
-  name: string
-): Promise<{ ok: boolean; hub?: LanHub; error?: string }> {
-  const ip = await fetchMyIpFromPython();
-  if (!ip) {
-    return {
-      ok: false,
-      error:
-        'Python-сервер не отвечает. LAN создаётся только на устройстве, где запущен Python.',
-    };
-  }
-
-  const id = 'lan_' + Math.random().toString(36).slice(2, 10);
-  const hub: LanHub = {
-    id,
-    name,
-    hubIp: ip,
-    port: WS_PORT,
-    createdAt: Date.now(),
-    lastHeartbeat: Date.now(),
-    isOwn: true,
+export function joinLan(lan: LanAnnounce, password: string): void {
+  const joined: JoinedLan = {
+    name: lan.name,
+    ip: lan.ip,
+    port: lan.port,
+    has_password: lan.has_password,
   };
-
-  const { error } = await supabase.from(SETTINGS_TABLE).upsert(
-    {
-      key: KEY_PREFIX + id,
-      value: JSON.stringify(hub),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'key' }
-  );
-
-  if (error) return { ok: false, error: error.message };
-
-  myHubId = id;
-  myHubIp = ip;
-  localStorage.setItem('my_lan_hub_id', id);
-  localStorage.setItem('my_lan_hub_ip', ip);
-  localStorage.setItem('my_lan_name', name);
-  startHeartbeat();
-
-  return { ok: true, hub };
-}
-
-export async function deleteMyLan(): Promise<void> {
-  const id = getMyHubId();
-  if (!id) return;
-  stopHeartbeat();
-  await supabase.from(SETTINGS_TABLE).delete().eq('key', KEY_PREFIX + id);
-  myHubId = null;
-  myHubIp = null;
-  localStorage.removeItem('my_lan_hub_id');
-  localStorage.removeItem('my_lan_hub_ip');
-  localStorage.removeItem('my_lan_name');
-  localStorage.removeItem('joined_lan_hub');
-}
-
-function startHeartbeat() {
-  stopHeartbeat();
-  heartbeatTimer = window.setInterval(async () => {
-    const id = getMyHubId();
-    const ip = myHubIp || localStorage.getItem('my_lan_hub_ip');
-    if (!id || !ip) return;
-    const hub: LanHub = {
-      id,
-      name: localStorage.getItem('my_lan_name') || 'LAN',
-      hubIp: ip,
-      port: WS_PORT,
-      createdAt: Date.now(),
-      lastHeartbeat: Date.now(),
-      isOwn: true,
-    };
-    await supabase.from(SETTINGS_TABLE).upsert(
-      {
-        key: KEY_PREFIX + id,
-        value: JSON.stringify(hub),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'key' }
-    );
-  }, HEARTBEAT_MS);
-}
-
-function stopHeartbeat() {
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-  }
-}
-
-// ─── Список активных LAN ────────────────────────────────────────────────────
-export async function listActiveLans(): Promise<LanHub[]> {
-  const { data } = await supabase
-    .from(SETTINGS_TABLE)
-    .select('key, value')
-    .like('key', KEY_PREFIX + '%');
-
-  if (!data) return [];
-
-  const now = Date.now();
-  const myId = getMyHubId();
-  const hubs: LanHub[] = [];
-
-  for (const row of data as { key: string; value: string | null }[]) {
-    if (!row.value) continue;
-    try {
-      const hub = JSON.parse(row.value) as LanHub;
-      if (now - hub.lastHeartbeat < STALE_MS) {
-        hubs.push({ ...hub, isOwn: hub.id === myId });
-      }
-    } catch {
-      /* skip */
-    }
-  }
-
-  return hubs.sort((a, b) => b.lastHeartbeat - a.lastHeartbeat);
-}
-
-// ─── Подключение к LAN ──────────────────────────────────────────────────────
-export function joinLan(hub: LanHub): void {
-  localStorage.setItem('joined_lan_hub', JSON.stringify(hub));
+  localStorage.setItem(STORAGE_KEY_JOINED, JSON.stringify(joined));
+  localStorage.setItem('joined_lan_password', password);
   disconnectLan();
   connectToLan();
 }
 
-export function getJoinedLan(): LanHub | null {
-  try {
-    const raw = localStorage.getItem('joined_lan_hub');
-    if (!raw) return null;
-    return JSON.parse(raw) as LanHub;
-  } catch {
-    return null;
-  }
-}
-
 export function leaveLan(): void {
-  localStorage.removeItem('joined_lan_hub');
+  localStorage.removeItem(STORAGE_KEY_JOINED);
+  localStorage.removeItem('joined_lan_password');
   disconnectLan();
-}
-
-// ─── WebSocket ──────────────────────────────────────────────────────────────
-export function getLanStatus(): LanStatus {
-  return currentStatus;
-}
-
-export function onLanStatusChange(cb: (s: LanStatus) => void): () => void {
-  statusListeners.add(cb);
-  cb(currentStatus);
-  return () => {
-    statusListeners.delete(cb);
-  };
-}
-
-// было: export function onLanMessage(cb: (msg: any) => void): () => void {
-export function onLanMessage(cb: (msg: LanMessage) => void): () => void {
-  messageListeners.add(cb);
-  return () => {
-    messageListeners.delete(cb);
-  };
-}
-
-// было: export function sendLanMessage(msg: any): void {
-export function sendLanMessage(msg: LanMessage): void {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    try {
-      ws.send(JSON.stringify(msg));
-    } catch {
-      /* ignore */
-    }
-  }
+  setState({ role: 'none', connected: false, hub: null, clients: 0 });
 }
 
 export function connectToLan(): void {
-  const hub = getJoinedLan();
-  if (!hub) {
-    currentStatus = { connected: false, hub: null };
-    notifyStatus();
-    return;
-  }
-
-  // Если это наш собственный хаб — не открываем WebSocket к себе
-  if (hub.isOwn) {
-    currentStatus = { connected: true, hub };
-    notifyStatus();
+  const joined = getJoinedLan();
+  if (!joined) {
+    setState({ role: 'none', connected: false, hub: null });
     return;
   }
 
   if (ws && ws.readyState === WebSocket.OPEN) return;
 
-  const url = `ws://${hub.hubIp}:${hub.port}/sync`;
+  const url = `ws://${joined.ip}:${joined.port}/sync`;
   try {
     ws = new WebSocket(url);
   } catch {
@@ -270,24 +230,72 @@ export function connectToLan(): void {
   }
 
   ws.onopen = () => {
-    currentStatus = { connected: true, hub };
-    notifyStatus();
-    ws?.send(JSON.stringify({ type: 'hello', peer: getPeerId() }));
+    const password = localStorage.getItem('joined_lan_password') || '';
+    ws?.send(
+      JSON.stringify({
+        type: 'hello',
+        peer: getPeerId(),
+        password,
+      })
+    );
   };
 
   ws.onmessage = (event) => {
+    let msg: LanMessage;
     try {
-      const msg = JSON.parse(event.data);
-      messageListeners.forEach((cb) => cb(msg));
+      msg = JSON.parse(event.data) as LanMessage;
     } catch {
-      /* ignore */
+      return;
     }
+
+    if (msg.type === 'auth-failed') {
+      setState({
+        role: 'client',
+        connected: false,
+        error: 'Неверный пароль',
+      });
+      leaveLan();
+      return;
+    }
+
+    if (msg.type === 'hello-ok') {
+      const hubMsg = msg as Extract<LanMessage, { type: 'hello-ok' }>;
+      setState({
+        role: 'client',
+        connected: true,
+        hub: {
+          name: joined.name,
+          ip: joined.ip,
+          port: joined.port,
+          has_password: joined.has_password,
+          clients: hubMsg.clients,
+        },
+        clients: hubMsg.clients,
+        error: null,
+      });
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = window.setInterval(() => {
+        sendLanMessage({ type: 'ping' });
+      }, 25000);
+    }
+
+    if (msg.type === 'client-count') {
+      const countMsg = msg as Extract<LanMessage, { type: 'client-count' }>;
+      setState({ clients: countMsg.count });
+    }
+
+    messageListeners.forEach((cb) => cb(msg));
   };
 
   ws.onclose = () => {
-    currentStatus = { connected: false, hub };
-    notifyStatus();
-    scheduleReconnect();
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+    if (currentState.role === 'client') {
+      setState({ connected: false });
+      scheduleReconnect();
+    }
   };
 
   ws.onerror = () => {
@@ -300,6 +308,10 @@ export function disconnectLan(): void {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  if (pingTimer) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+  }
   if (ws) {
     try {
       ws.close();
@@ -308,8 +320,6 @@ export function disconnectLan(): void {
     }
     ws = null;
   }
-  currentStatus = { connected: false, hub: getJoinedLan() };
-  notifyStatus();
 }
 
 function scheduleReconnect() {
@@ -320,6 +330,55 @@ function scheduleReconnect() {
   }, 3000);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ПУБЛИЧНЫЙ API
+// ═══════════════════════════════════════════════════════════════════════════
+export function getLanStatus(): LanState {
+  return currentState;
+}
+
+export function onLanStatusChange(cb: (s: LanState) => void): () => void {
+  stateListeners.add(cb);
+  cb(currentState);
+  return () => {
+    stateListeners.delete(cb);
+  };
+}
+
+export function onLanMessage(cb: (msg: LanMessage) => void): () => void {
+  messageListeners.add(cb);
+  return () => {
+    messageListeners.delete(cb);
+  };
+}
+
+export function sendLanMessage(msg: LanMessage): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ИНИЦИАЛИЗАЦИЯ
+// ═══════════════════════════════════════════════════════════════════════════
+export function initLan(): void {
+  // Проверяем: если я был хабом — восстановить polling
+  const hubRaw = localStorage.getItem(STORAGE_KEY_HUB);
+  if (hubRaw) {
+    startHubPolling();
+    refreshHubStatus();
+  }
+  // Если я был клиентом — переподключиться
+  const joined = getJoinedLan();
+  if (joined) {
+    connectToLan();
+  }
+}
+
 function getPeerId(): string {
   let id = localStorage.getItem('peer_id');
   if (!id) {
@@ -327,13 +386,4 @@ function getPeerId(): string {
     localStorage.setItem('peer_id', id);
   }
   return id;
-}
-
-// ─── Инициализация при старте ───────────────────────────────────────────────
-export function initLan(): void {
-  if (getMyHubId()) {
-    myHubIp = localStorage.getItem('my_lan_hub_ip');
-    startHeartbeat();
-  }
-  connectToLan();
 }
