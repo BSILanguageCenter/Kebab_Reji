@@ -19,12 +19,15 @@ import {
 import { useRole, type Role } from '@/lib/role';
 import {
   getMyIp,
+  getMyIpInfo,
+  setMyIpManually,
   getDeviceIps,
   saveDeviceIps,
   copyMyIpToClipboard,
   testHubConnection,
   type DeviceIps,
   type SyncStatus,
+  type MyIpInfo,
 } from '@/lib/deviceInfo';
 import { autoDetectHub, getLanStatus, onLanStatusChange } from '@/lib/lanSync';
 
@@ -35,6 +38,7 @@ interface Props {
 export default function NetworkSettingsModal({ onClose }: Props) {
   const { role } = useRole();
   const [myIp, setMyIp] = useState<string | null>(null);
+  const [myIpInfo, setMyIpInfo] = useState<MyIpInfo>(() => getMyIpInfo());
   const [deviceIps, setDeviceIps] = useState<DeviceIps>({
     cashier_ip: null,
     kitchen_ip: null,
@@ -61,10 +65,9 @@ export default function NetworkSettingsModal({ onClose }: Props) {
         const [ip, ips] = await Promise.all([getMyIp(true), getDeviceIps()]);
         setMyIp(ip);
         setDeviceIps(ips);
+        setMyIpInfo(getMyIpInfo());
         if (!ip) {
-          setError(
-            'Не удалось определить IP. Проверь, что Python-сервер запущен.'
-          );
+          setError('Не удалось определить IP. Задай вручную.');
         }
       } catch (e) {
         setError((e as Error).message);
@@ -92,7 +95,34 @@ export default function NetworkSettingsModal({ onClose }: Props) {
     }
   };
 
-  // ─── Сохранение ─────────────────────────────────────────────────────────
+  // ─── Задать IP вручную ──────────────────────────────────────────────────
+  const handleSetManualIp = () => {
+    const manual = window.prompt(
+      'Введи IP этого устройства вручную.\n\n' +
+        'Пример: 192.168.100.23\n\n' +
+        'Оставь пустым, чтобы вернуться к автоопределению.',
+      myIp || ''
+    );
+    if (manual === null) return;
+
+    const clean = manual.trim();
+    if (clean && !/^\d{1,3}(\.\d{1,3}){3}$/.test(clean)) {
+      alert('Неверный формат IP. Пример: 192.168.100.23');
+      return;
+    }
+
+    setMyIpManually(clean || null);
+    window.location.reload();
+  };
+
+  // ─── Сбросить ручной IP ─────────────────────────────────────────────────
+  const handleResetManualIp = () => {
+    if (!confirm('Сбросить ручной IP и вернуться к автоопределению?')) return;
+    setMyIpManually(null);
+    window.location.reload();
+  };
+
+  // ─── Сохранение IP других устройств ─────────────────────────────────────
   const handleSave = async () => {
     setSaving(true);
     setError(null);
@@ -108,10 +138,7 @@ export default function NetworkSettingsModal({ onClose }: Props) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
 
-      // Перезапускаем авто-подключение
       await autoDetectHub();
-
-      // Автоматически проверяем связь через 2 секунды
       setTimeout(() => handleTest(), 2000);
     } catch (e) {
       setError((e as Error).message);
@@ -122,17 +149,13 @@ export default function NetworkSettingsModal({ onClose }: Props) {
 
   // ─── Тест связи ─────────────────────────────────────────────────────────
   const handleTest = async () => {
-    // Определяем IP для проверки
     let targetIp: string | null = null;
 
     if (role === 'cashier') {
-      // Проверяем свой хаб (он должен работать)
       targetIp = myIp;
     } else if (role === 'kitchen') {
-      // Проверяем IP кассы
       targetIp = deviceIps.cashier_ip;
     } else if (role === 'manager') {
-      // Проверяем кассу
       targetIp = deviceIps.cashier_ip;
     }
 
@@ -187,7 +210,7 @@ export default function NetworkSettingsModal({ onClose }: Props) {
           </button>
         </div>
 
-        {/* ═══ Индикатор текущего подключения ══════════════════════════ */}
+        {/* ═══ Индикатор LAN ═══════════════════════════════════════════ */}
         <div
           className={`flex items-center gap-3 border-b px-6 py-3 ${
             lanConnected
@@ -249,11 +272,24 @@ export default function NetworkSettingsModal({ onClose }: Props) {
                 </div>
               )}
 
-              {/* Мой IP */}
+              {/* ═══ Мой IP ══════════════════════════════════════════ */}
               <div className="mb-5 rounded-2xl border-2 border-dashed border-orange-200 bg-orange-50 p-4">
-                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-orange-700">
-                  IP этого устройства
-                </p>
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-orange-700">
+                    IP этого устройства
+                  </p>
+                  {myIpInfo.source === 'auto' && (
+                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+                      АВТО
+                    </span>
+                  )}
+                  {myIpInfo.source === 'manual' && (
+                    <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold text-green-700">
+                      ВРУЧНУЮ
+                    </span>
+                  )}
+                </div>
+
                 <div className="flex items-center justify-between gap-3">
                   <p className="select-all text-2xl font-bold text-orange-900">
                     {myIp || '—'}
@@ -276,6 +312,7 @@ export default function NetworkSettingsModal({ onClose }: Props) {
                     )}
                   </button>
                 </div>
+
                 <p className="mt-2 text-xs text-orange-600">
                   {role === 'cashier' &&
                     'Это главное устройство (хаб). Кухня подключится к нему.'}
@@ -284,9 +321,37 @@ export default function NetworkSettingsModal({ onClose }: Props) {
                   {role === 'manager' &&
                     'Просмотр IP этого устройства (только чтение).'}
                 </p>
+
+                {/* Кнопка «Задать вручную» */}
+                {canEdit && myIpInfo.source !== 'manual' && (
+                  <button
+                    onClick={handleSetManualIp}
+                    className="mt-3 text-xs font-semibold text-orange-700 underline hover:text-orange-900"
+                  >
+                    Задать IP вручную
+                  </button>
+                )}
+
+                {/* Кнопка «Сбросить» */}
+                {canEdit && myIpInfo.source === 'manual' && (
+                  <button
+                    onClick={handleResetManualIp}
+                    className="mt-3 text-xs font-semibold text-orange-700 underline hover:text-orange-900"
+                  >
+                    Сбросить и определить автоматически
+                  </button>
+                )}
+
+                {/* Показ авто IP, если был override */}
+                {myIpInfo.source === 'manual' && myIpInfo.autoIp && (
+                  <p className="mt-2 text-xs text-orange-600">
+                    Автоопределение показало: <b>{myIpInfo.autoIp}</b> (не
+                    используется)
+                  </p>
+                )}
               </div>
 
-              {/* IP других устройств */}
+              {/* ═══ IP кассы/кухни ══════════════════════════════════ */}
               {role === 'cashier' && (
                 <div className="mb-4">
                   <label className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700">
@@ -359,6 +424,16 @@ export default function NetworkSettingsModal({ onClose }: Props) {
                       {deviceIps.kitchen_ip || '—'}
                     </p>
                   </div>
+                  <div className="flex items-start gap-2 rounded-xl bg-blue-50 p-3">
+                    <Settings2
+                      size={16}
+                      className="mt-0.5 shrink-0 text-blue-600"
+                    />
+                    <p className="text-xs text-blue-700">
+                      Менеджер видит только текущие настройки. Изменять IP
+                      могут касса (для кухни) и кухня (для кассы).
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -425,7 +500,7 @@ export default function NetworkSettingsModal({ onClose }: Props) {
                 )}
               </div>
 
-              {/* Кнопка обновления */}
+              {/* ═══ Кнопка обновления ════════════════════════════════ */}
               <button
                 onClick={async () => {
                   setLoading(true);
@@ -438,6 +513,7 @@ export default function NetworkSettingsModal({ onClose }: Props) {
                     ]);
                     setMyIp(ip);
                     setDeviceIps(ips);
+                    setMyIpInfo(getMyIpInfo());
                   } finally {
                     setLoading(false);
                   }
