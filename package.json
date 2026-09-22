@@ -5,13 +5,12 @@
   "type": "module",
   "css.lint.unknownAtRules": "ignore",
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail -n VITE,PY -c cyan,magenta \"npm:dev:vite\" \"npm:dev:printer\"",
+    "dev": "concurrently -n vite,py -c cyan,magenta \"vite\" \"node scripts/start-printer.cjs\"",
     "dev:vite": "vite",
-    "dev:printer": "node scripts/start-printer.cjs",
-    "dev:only-vite": "vite",
+    "dev:py": "node scripts/start-printer.cjs",
     "build": "vite build",
-    "lint": "eslint .",
     "preview": "vite preview",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {

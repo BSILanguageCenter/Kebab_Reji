@@ -15,31 +15,24 @@ import {
   Receipt as ReceiptIcon,
   Trash2,
   Database,
-  Laptop,
-  Copy,
+  Wifi,
   type LucideIcon,
 } from 'lucide-react';
 import {
   getAvailablePrinters,
+  getPrinterInfo,
   setActivePrinter,
+  setActiveWifiPrinter,
+  discoverWifiPrinters,
   type PrinterRole,
   type PrinterInfo,
+  type WifiPrinter,
 } from '@/lib/LocalPrinterService';
 import { getCacheInfo, refreshMenu } from '@/lib/menuCache';
 import {
   getOrdersCacheInfo,
   invalidateOrdersCache,
 } from '@/lib/ordersCache';
-import {
-  getMyIp,
-  getDeviceIps,
-  saveDeviceIps,
-  detectMyRole,
-  copyMyIpToClipboard,
-  type DeviceIps,
-  type DeviceRole,
-} from '@/lib/deviceInfo';
-import { autoDetectHub } from '@/lib/lanSync';
 
 export default function SettingsPage() {
   const { t, lang, setLang } = useI18n();
@@ -47,7 +40,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [savedMsg, setSavedMsg] = useState(false);
 
-  // ─── Принтеры ───────────────────────────────────────────────────────────
+  // ─── Принтеры (системные) ───────────────────────────────────────────────
   const [printers, setPrinters] = useState<string[]>([]);
   const [kitchenPrinter, setKitchenPrinter] = useState<string | null>(null);
   const [receiptPrinter, setReceiptPrinter] = useState<string | null>(null);
@@ -57,23 +50,17 @@ export default function SettingsPage() {
   const [savingRole, setSavingRole] = useState<PrinterRole | null>(null);
   const [savedRole, setSavedRole] = useState<PrinterRole | null>(null);
 
+  // ─── Wi-Fi принтеры ─────────────────────────────────────────────────────
+  const [wifiPrinters, setWifiPrinters] = useState<WifiPrinter[]>([]);
+  const [searchingWifi, setSearchingWifi] = useState(false);
+  const [wifiSearched, setWifiSearched] = useState(false);
+
   // ─── Кэш ────────────────────────────────────────────────────────────────
   const [menuCacheInfo, setMenuCacheInfo] = useState(() => getCacheInfo());
   const [ordersCacheInfo, setOrdersCacheInfo] = useState(() =>
     getOrdersCacheInfo()
   );
   const [refreshingMenu, setRefreshingMenu] = useState(false);
-
-  // ─── Связь устройств ────────────────────────────────────────────────────
-  const [myIp, setMyIp] = useState<string | null>(null);
-  const [myRole, setMyRole] = useState<DeviceRole>('unknown');
-  const [deviceIps, setDeviceIps] = useState<DeviceIps>({
-    cashier_ip: null,
-    kitchen_ip: null,
-  });
-  const [savingDeviceIps, setSavingDeviceIps] = useState(false);
-  const [deviceIpsSaved, setDeviceIpsSaved] = useState(false);
-  const [copiedIp, setCopiedIp] = useState(false);
 
   useEffect(() => {
     supabase
@@ -91,20 +78,11 @@ export default function SettingsPage() {
 
     loadPrinters();
 
-    // Загрузка данных о сети
-    (async () => {
-      const [ip, ips, role] = await Promise.all([
-        getMyIp(),
-        getDeviceIps(),
-        detectMyRole(),
-      ]);
-      setMyIp(ip);
-      setDeviceIps(ips);
-      setMyRole(role.role);
-    })();
+    // Восстанавливаем типы принтеров из БД
+    restorePrinterInfo();
   }, []);
 
-  // ─── Принтеры ───────────────────────────────────────────────────────────
+  // ─── Принтеры: системные ────────────────────────────────────────────────
   const loadPrinters = async () => {
     setLoadingPrinters(true);
     try {
@@ -120,28 +98,115 @@ export default function SettingsPage() {
     }
   };
 
+  const restorePrinterInfo = async () => {
+    const roles: PrinterRole[] = ['kitchen', 'receipt'];
+    for (const role of roles) {
+      const { data } = await supabase
+        .from('restaurant_settings')
+        .select('key, value')
+        .in('key', [
+          `printer_${role}`,
+          `printer_${role}_type`,
+          `printer_${role}_kind`,
+          `printer_${role}_columns`,
+          `printer_${role}_ip`,
+          `printer_${role}_port`,
+          `printer_${role}_paper_size`,
+        ]);
+      if (!data) continue;
+      const map: Record<string, string> = {};
+      (data as { key: string; value: string | null }[]).forEach((r) => {
+        if (r.value) map[r.key] = r.value;
+      });
+      const name = map[`printer_${role}`];
+      if (!name) continue;
+      const info: PrinterInfo = {
+        name,
+        type: (map[`printer_${role}_type`] as 'system' | 'wifi') || 'system',
+        kind: (map[`printer_${role}_kind`] as 'thermal' | 'a4') || 'thermal',
+        columns: parseInt(map[`printer_${role}_columns`] || '42', 10),
+        paper_size: map[`printer_${role}_paper_size`] || '',
+        ip: map[`printer_${role}_ip`],
+        port: map[`printer_${role}_port`]
+          ? parseInt(map[`printer_${role}_port`], 10)
+          : undefined,
+      };
+      if (role === 'kitchen') {
+        setKitchenPrinter(name);
+        setKitchenInfo(info);
+      } else {
+        setReceiptPrinter(name);
+        setReceiptInfo(info);
+      }
+    }
+  };
+
   const handlePrinterChange = async (role: PrinterRole, name: string) => {
     if (!name) return;
     setSavingRole(role);
     try {
       const result = await setActivePrinter(role, name);
       if (result.ok) {
+        const info = result.info ?? (await getPrinterInfo(name));
         if (role === 'kitchen') {
           setKitchenPrinter(name);
-          if (result.info) setKitchenInfo(result.info);
+          if (info) setKitchenInfo(info);
         } else {
           setReceiptPrinter(name);
-          if (result.info) setReceiptInfo(result.info);
+          if (info) setReceiptInfo(info);
         }
         setSavedRole(role);
         setTimeout(() => setSavedRole(null), 2000);
       } else {
-        alert(
-          'Не удалось сохранить принтер. Проверь, что Python-сервер запущен.'
-        );
+        alert('Не удалось сохранить. Проверь Python-сервер.');
       }
     } finally {
       setSavingRole(null);
+    }
+  };
+
+  const handleWifiPrinterSelect = async (
+    role: PrinterRole,
+    printer: WifiPrinter
+  ) => {
+    setSavingRole(role);
+    try {
+      const result = await setActiveWifiPrinter(role, printer);
+      if (result.ok && result.info) {
+        if (role === 'kitchen') {
+          setKitchenPrinter(result.info.name);
+          setKitchenInfo(result.info);
+        } else {
+          setReceiptPrinter(result.info.name);
+          setReceiptInfo(result.info);
+        }
+        setSavedRole(role);
+        setTimeout(() => setSavedRole(null), 2000);
+      } else {
+        alert('Не удалось сохранить Wi-Fi принтер');
+      }
+    } finally {
+      setSavingRole(null);
+    }
+  };
+
+  // ─── Wi-Fi поиск ────────────────────────────────────────────────────────
+  const handleDiscoverWifi = async () => {
+    setSearchingWifi(true);
+    setWifiSearched(true);
+    try {
+      const list = await discoverWifiPrinters();
+      setWifiPrinters(list);
+      if (list.length === 0) {
+        alert(
+          'Wi-Fi принтеры не найдены.\n' +
+            'Проверь, что принтер в одной сети и включён.'
+        );
+      }
+    } catch (e) {
+      alert('Ошибка поиска: ' + (e as Error).message);
+    } finally {
+      setSearchingWifi(false);
     }
   };
 
@@ -187,35 +252,6 @@ export default function SettingsPage() {
     if (!confirm('Очистить кэш заказов?')) return;
     invalidateOrdersCache();
     setOrdersCacheInfo(getOrdersCacheInfo());
-  };
-
-  // ─── Связь устройств ────────────────────────────────────────────────────
-  const handleSaveDeviceIps = async () => {
-    setSavingDeviceIps(true);
-    try {
-      const ok = await saveDeviceIps(deviceIps);
-      if (ok) {
-        setDeviceIpsSaved(true);
-        setTimeout(() => setDeviceIpsSaved(false), 3000);
-        // Перезапускаем авто-подключение
-        await autoDetectHub();
-      } else {
-        alert('Не удалось сохранить IP устройств');
-      }
-    } finally {
-      setSavingDeviceIps(false);
-    }
-  };
-
-  const handleCopyIp = async () => {
-    const ip = await copyMyIpToClipboard();
-    if (ip) {
-      setMyIp(ip);
-      setCopiedIp(true);
-      setTimeout(() => setCopiedIp(false), 2000);
-    } else {
-      alert('Не удалось определить IP. Проверь, что Python-сервер запущен.');
-    }
   };
 
   return (
@@ -329,32 +365,47 @@ export default function SettingsPage() {
 
       {/* ═══ Принтеры ═══════════════════════════════════════════════ */}
       <div className="mb-6 rounded-2xl border border-gray-200 bg-white p-5">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-base font-bold text-gray-900">Принтеры</h3>
             <p className="mt-1 text-sm text-gray-500">
-              Выбери принтер для кухни и для чеков клиенту
+              Системные (USB) или Wi-Fi принтеры в сети
             </p>
           </div>
-          <button
-            onClick={loadPrinters}
-            disabled={loadingPrinters}
-            title="Обновить список"
-            className="flex items-center gap-1.5 rounded-xl bg-gray-100 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-50"
-          >
-            {loadingPrinters ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <RefreshCw size={16} />
-            )}
-            Обновить
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={loadPrinters}
+              disabled={loadingPrinters}
+              title="Обновить системные"
+              className="flex items-center gap-1.5 rounded-xl bg-gray-100 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+            >
+              {loadingPrinters ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <RefreshCw size={16} />
+              )}
+              Системные
+            </button>
+            <button
+              onClick={handleDiscoverWifi}
+              disabled={searchingWifi}
+              className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {searchingWifi ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Wifi size={16} />
+              )}
+              {searchingWifi ? 'Поиск…' : 'Найти Wi-Fi'}
+            </button>
+          </div>
         </div>
 
+        {/* Системные принтеры */}
         {printers.length === 0 && !loadingPrinters ? (
-          <div className="rounded-xl bg-red-50 p-4 text-sm text-red-700">
-            Принтеры не найдены. Проверь, что Python-сервер запущен и принтеры
-            установлены в системе.
+          <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">
+            Системные принтеры не найдены. Проверь Python-сервер или ищи
+            Wi-Fi принтеры кнопкой выше.
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -369,7 +420,6 @@ export default function SettingsPage() {
               saved={savedRole === 'kitchen'}
               onChange={(name) => handlePrinterChange('kitchen', name)}
             />
-
             <PrinterSelector
               icon={ReceiptIcon}
               label="Принтер для чеков"
@@ -383,139 +433,79 @@ export default function SettingsPage() {
             />
           </div>
         )}
-      </div>
 
-      {/* ═══ Связь устройств ════════════════════════════════════════ */}
-      <div className="mb-6 rounded-2xl border border-gray-200 bg-white p-5">
-        <div className="mb-4 flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-100 text-purple-600">
-            <Laptop size={20} />
-          </div>
-          <div className="flex-1">
-            <h3 className="text-base font-bold text-gray-900">
-              Связь устройств
-            </h3>
-            <p className="mt-1 text-sm text-gray-500">
-              Укажи IP кассы (главное устройство с Python-сервером) и IP
-              кухни. Все устройства в одной Wi-Fi сети подключатся
-              автоматически.
-            </p>
-          </div>
-        </div>
-
-        {/* Мой IP */}
-        <div className="mb-4 rounded-xl bg-purple-50 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold uppercase tracking-wide text-purple-600">
-                IP этого устройства
-              </p>
-              <p className="truncate text-lg font-bold text-purple-900">
-                {myIp || 'Не определён'}
-              </p>
-              <p className="text-xs text-purple-600">
-                Роль:{' '}
-                {myRole === 'cashier'
-                  ? 'Касса (хаб)'
-                  : myRole === 'kitchen'
-                  ? 'Кухня (клиент)'
-                  : 'Не определена'}
+        {/* Wi-Fi принтеры */}
+        {wifiSearched && (
+          <div className="mt-4 rounded-2xl border-2 border-blue-100 bg-blue-50 p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <Wifi size={18} className="text-blue-600" />
+              <p className="text-sm font-bold text-blue-900">
+                Найдено в Wi-Fi: {wifiPrinters.length}
               </p>
             </div>
-            <button
-              onClick={handleCopyIp}
-              className="flex h-11 shrink-0 items-center gap-2 rounded-xl bg-purple-600 px-4 text-sm font-semibold text-white hover:bg-purple-700"
-            >
-              {copiedIp ? <Check size={16} /> : <Copy size={16} />}
-              {copiedIp ? 'Скопировано' : 'Копировать'}
-            </button>
-          </div>
-        </div>
 
-        {/* Поля IP */}
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-xs font-semibold text-gray-500">
-              IP кассы (главное устройство)
-            </label>
-            <input
-              type="text"
-              value={deviceIps.cashier_ip || ''}
-              onChange={(e) =>
-                setDeviceIps({ ...deviceIps, cashier_ip: e.target.value })
-              }
-              placeholder="192.168.1.100"
-              className="w-full rounded-xl border-2 border-gray-200 px-3 py-2.5 text-sm focus:border-purple-400 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-semibold text-gray-500">
-              IP кухни
-            </label>
-            <input
-              type="text"
-              value={deviceIps.kitchen_ip || ''}
-              onChange={(e) =>
-                setDeviceIps({ ...deviceIps, kitchen_ip: e.target.value })
-              }
-              placeholder="192.168.1.101"
-              className="w-full rounded-xl border-2 border-gray-200 px-3 py-2.5 text-sm focus:border-purple-400 focus:outline-none"
-            />
-          </div>
-        </div>
-
-        {/* Быстрые кнопки */}
-        <div className="mt-3 flex flex-wrap gap-2">
-          {myIp && (
-            <>
-              <button
-                onClick={() =>
-                  setDeviceIps({ ...deviceIps, cashier_ip: myIp })
-                }
-                className="rounded-xl bg-purple-100 px-3 py-2 text-xs font-semibold text-purple-700 hover:bg-purple-200"
-              >
-                Я касса → этот IP
-              </button>
-              <button
-                onClick={() =>
-                  setDeviceIps({ ...deviceIps, kitchen_ip: myIp })
-                }
-                className="rounded-xl bg-purple-100 px-3 py-2 text-xs font-semibold text-purple-700 hover:bg-purple-200"
-              >
-                Я кухня → этот IP
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* Сохранить */}
-        <div className="mt-4 flex items-center gap-3">
-          <button
-            onClick={handleSaveDeviceIps}
-            disabled={savingDeviceIps}
-            className="flex h-11 items-center gap-2 rounded-xl bg-purple-600 px-5 text-sm font-bold text-white hover:bg-purple-700 disabled:opacity-50"
-          >
-            {savingDeviceIps ? (
-              <Loader2 size={16} className="animate-spin" />
+            {wifiPrinters.length === 0 ? (
+              <p className="text-sm text-blue-700">
+                Ничего не найдено. Убедись, что принтер включён и в той же
+                сети.
+              </p>
             ) : (
-              <Check size={16} />
+              <div className="flex flex-col gap-2">
+                {wifiPrinters.map((p) => (
+                  <div
+                    key={`${p.ip}:${p.port}`}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white p-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-bold text-gray-900">
+                        {p.name}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {p.ip}:{p.port} ·{' '}
+                        {p.source === 'mdns' ? 'Bonjour' : 'сканирование'}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        onClick={() => handleWifiPrinterSelect('kitchen', p)}
+                        disabled={savingRole === 'kitchen'}
+                        className="rounded-lg bg-orange-100 px-3 py-1.5 text-xs font-bold text-orange-700 hover:bg-orange-200 disabled:opacity-50"
+                      >
+                        → Кухня
+                      </button>
+                      <button
+                        onClick={() => handleWifiPrinterSelect('receipt', p)}
+                        disabled={savingRole === 'receipt'}
+                        className="rounded-lg bg-green-100 px-3 py-1.5 text-xs font-bold text-green-700 hover:bg-green-200 disabled:opacity-50"
+                      >
+                        → Чеки
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
-            {savingDeviceIps ? 'Сохранение…' : 'Сохранить в Supabase'}
-          </button>
+          </div>
+        )}
 
-          {deviceIpsSaved && (
-            <span className="text-sm font-semibold text-green-600">
-              ✓ Сохранено
-            </span>
-          )}
-        </div>
-
-        <p className="mt-3 text-xs text-gray-400">
-          Чтобы узнать IP устройства: открой PowerShell →{' '}
-          <code className="rounded bg-gray-100 px-1">ipconfig</code> → найди
-          IPv4-адрес в разделе адаптера Wi-Fi. Или открой приложение на этом
-          устройстве и нажми «Копировать».
-        </p>
+        {/* Текущий Wi-Fi принтер, если выбран */}
+        {(kitchenInfo?.type === 'wifi' || receiptInfo?.type === 'wifi') && (
+          <div className="mt-4 rounded-xl bg-purple-50 p-3 text-sm text-purple-800">
+            <p className="font-bold">Сейчас активны Wi-Fi принтеры:</p>
+            {kitchenInfo?.type === 'wifi' && (
+              <p className="mt-1">
+                🍳 Кухня: <b>{kitchenInfo.name}</b> ({kitchenInfo.ip}:
+                {kitchenInfo.port})
+              </p>
+            )}
+            {receiptInfo?.type === 'wifi' && (
+              <p className="mt-0.5">
+                🧾 Чеки: <b>{receiptInfo.name}</b> ({receiptInfo.ip}:
+                {receiptInfo.port})
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ═══ Хранилище ══════════════════════════════════════════════ */}
@@ -529,8 +519,8 @@ export default function SettingsPage() {
               Хранилище данных
             </h3>
             <p className="mt-1 text-sm text-gray-500">
-              Меню и последние заказы кэшируются локально для быстрой работы
-              и оффлайн-режима
+              Меню и последние заказы кэшируются локально для быстрой
+              работы и оффлайн-режима
             </p>
           </div>
         </div>
@@ -583,7 +573,7 @@ export default function SettingsPage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ПОДКОМПОНЕНТ — выбор принтера
+// ПОДКОМПОНЕНТ — выбор системного принтера
 // ═══════════════════════════════════════════════════════════════════════════
 function PrinterSelector({
   icon: Icon,
@@ -606,8 +596,15 @@ function PrinterSelector({
   saved: boolean;
   onChange: (name: string) => void;
 }) {
+  const isWifi = info?.type === 'wifi';
+
   const kindBadge = info
-    ? info.kind === 'a4'
+    ? isWifi
+      ? {
+          text: `Wi-Fi · ${info.ip}:${info.port}`,
+          cls: 'bg-blue-100 text-blue-700',
+        }
+      : info.kind === 'a4'
       ? { text: 'A4 · офисный', cls: 'bg-blue-100 text-blue-700' }
       : {
           text: `${info.paper_size || 'Термо'} · ${info.columns} кол.`,
@@ -635,12 +632,14 @@ function PrinterSelector({
 
       <div className="relative">
         <select
-          value={value || ''}
+          value={isWifi ? '' : value || ''}
           disabled={saving || options.length === 0}
           onChange={(e) => onChange(e.target.value)}
           className="w-full appearance-none rounded-xl border-2 border-gray-200 bg-white px-3 py-3 pr-10 text-sm font-medium text-gray-900 transition-all hover:border-orange-300 focus:border-orange-500 focus:outline-none disabled:opacity-60"
         >
-          <option value="">— не выбран —</option>
+          <option value="">
+            {isWifi ? '— выбран Wi-Fi принтер ниже —' : '— не выбран —'}
+          </option>
           {options.map((p) => (
             <option key={p} value={p}>
               {p}
@@ -651,6 +650,8 @@ function PrinterSelector({
         <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
           {saving ? (
             <Loader2 size={16} className="animate-spin text-orange-500" />
+          ) : isWifi ? (
+            <Wifi size={16} className="text-blue-600" />
           ) : value ? (
             <Check size={16} className="text-green-600" />
           ) : (
@@ -666,11 +667,6 @@ function PrinterSelector({
           >
             {kindBadge.text}
           </span>
-          {info?.paper_size && info.kind === 'a4' && (
-            <span className="text-[11px] text-gray-500">
-              {info.paper_size}
-            </span>
-          )}
         </div>
       )}
     </div>
@@ -678,7 +674,7 @@ function PrinterSelector({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ПОДКОМПОНЕНТ — карточка информации о кэше
+// ПОДКОМПОНЕНТ — карточка кэша
 // ═══════════════════════════════════════════════════════════════════════════
 function CacheInfoCard({
   title,

@@ -1,540 +1,537 @@
-# pyright: reportAttributeAccessIssue=false, reportPossiblyUnboundVariable=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-# print_server.py
+#!/usr/bin/env python3
+"""
+Kebab POS — Print Server
+- HTTP API на порту 9999
+- WebSocket hub на порту 9998
+- Печать на системные (USB) и сетевые (Wi-Fi) принтеры
+"""
+
 import os
-import platform
-import subprocess
-import json
+import sys
+import time
 import socket
+import platform
 import threading
+import subprocess
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Optional
 
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask import Flask, jsonify, request
 
-# ─── WebSocket (опционально) ────────────────────────────────────────────────
-Sock = None  # type: ignore
-sock = None
+# ═══════════════════════════════════════════════════════════════════════════
+# ОПЦИОНАЛЬНЫЕ ЗАВИСИМОСТИ
+# ═══════════════════════════════════════════════════════════════════════════
+CORS: Any = None
+Sock: Any = None
+ServiceBrowser: Any = None
+Zeroconf: Any = None
+ServiceListener: Any = None
+win32print: Any = None
+
+HAS_CORS = False
+HAS_WS = False
+HAS_ZEROCONF = False
+HAS_WIN32PRINT = False
 
 try:
-    from flask_sock import Sock  # type: ignore[no-redef]
-    HAS_SOCK = True
+    from flask_cors import CORS as _CORS  # type: ignore
+    CORS = _CORS
+    HAS_CORS = True
 except ImportError:
-    HAS_SOCK = False
-    print('[SYNC] flask-sock не установлен. LAN-синхронизация отключена.')
-    print('[SYNC] Установи: pip install flask-sock')
+    pass
 
-app = Flask(__name__)
-CORS(app)
+try:
+    from flask_sock import Sock as _Sock  # type: ignore
+    Sock = _Sock
+    HAS_WS = True
+except ImportError:
+    pass
 
-if HAS_SOCK and Sock is not None:
-    sock = Sock(app)
+try:
+    from zeroconf import (  # type: ignore
+        ServiceBrowser as _ServiceBrowser,
+        Zeroconf as _Zeroconf,
+        ServiceListener as _ServiceListener,
+    )
+    ServiceBrowser = _ServiceBrowser
+    Zeroconf = _Zeroconf
+    ServiceListener = _ServiceListener
+    HAS_ZEROCONF = True
+except ImportError:
+    pass
 
-PORT = int(os.environ.get('PRINT_SERVER_PORT', '9999'))
-SYNC_PORT = int(os.environ.get('SYNC_SERVER_PORT', '9998'))
+IS_WINDOWS = platform.system() == 'Windows'
+IS_MAC = platform.system() == 'Darwin'
+IS_LINUX = platform.system() == 'Linux'
 
-# ─── Слоты принтеров ────────────────────────────────────────────────────────
-ACTIVE_PRINTERS: dict[str, str | None] = {'kitchen': None, 'receipt': None}
+if IS_WINDOWS:
+    try:
+        import win32print as _win32print  # type: ignore
+        win32print = _win32print
+        HAS_WIN32PRINT = True
+    except ImportError:
+        pass
 
-MANUAL_KITCHEN = os.environ.get('PRINTER_KITCHEN', '').strip()
-MANUAL_RECEIPT = os.environ.get('PRINTER_RECEIPT', '').strip()
-
-PRINTER_KEYWORDS = [
-    'pos', 'thermal', 'receipt', 'xprinter', 'epson', 'star', 'bixolon',
-    'rongta', 'gprinter', 'hprt', 'zebra', '58', '80',
-]
-
-PRINTER_INFO_CACHE: dict[str, dict] = {}
 
 # ═══════════════════════════════════════════════════════════════════════════
-# LAN SYNC HUB — WebSocket для синхронизации устройств
+# СОСТОЯНИЕ
 # ═══════════════════════════════════════════════════════════════════════════
-connected_clients: list = []
-clients_lock = threading.Lock()
+active_printers: dict[str, Optional[dict[str, Any]]] = {
+    'kitchen': None,
+    'receipt': None,
+}
+
+ws_clients: set[Any] = set()
+ws_lock = threading.Lock()
 
 
-def broadcast_to_lan(message: dict, exclude_ws=None):
-    """Рассылает сообщение всем подключённым ws-клиентам."""
-    if not HAS_SOCK:
-        return
-    with clients_lock:
-        dead = []
-        for ws in connected_clients:
-            if ws is exclude_ws:
-                continue
+# ═══════════════════════════════════════════════════════════════════════════
+# HTTP APP
+# ═══════════════════════════════════════════════════════════════════════════
+http_app = Flask('kebab_http')
+if HAS_CORS and CORS is not None:
+    CORS(http_app)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# СИСТЕМНЫЕ ПРИНТЕРЫ
+# ═══════════════════════════════════════════════════════════════════════════
+def list_system_printers() -> list[str]:
+    printers: list[str] = []
+    try:
+        if IS_WINDOWS and HAS_WIN32PRINT and win32print is not None:
+            flags = (
+                win32print.PRINTER_ENUM_LOCAL
+                | win32print.PRINTER_ENUM_CONNECTIONS
+            )
+            for p in win32print.EnumPrinters(flags, None, 2):
+                printers.append(p['pPrinterName'])
+        elif IS_MAC or IS_LINUX:
+            out = subprocess.check_output(
+                ['lpstat', '-a'], text=True, timeout=5
+            )
+            for line in out.splitlines():
+                if line.strip():
+                    printers.append(line.split()[0])
+    except Exception as e:
+        print(f'[print_server] list_system_printers failed: {e}')
+    return printers
+
+
+def detect_printer_info(name: str) -> dict[str, Any]:
+    name_lower = name.lower()
+    if 'a4' in name_lower or 'office' in name_lower or 'laser' in name_lower:
+        return {'kind': 'a4', 'columns': 80, 'paper_size': 'A4'}
+    return {'kind': 'thermal', 'columns': 42, 'paper_size': '80mm'}
+
+
+@http_app.route('/health', methods=['GET'])
+def health():
+    kitchen = active_printers['kitchen']
+    receipt = active_printers['receipt']
+    return jsonify({
+        'kitchen': kitchen['name'] if kitchen else None,
+        'receipt': receipt['name'] if receipt else None,
+    })
+
+
+@http_app.route('/printers', methods=['GET'])
+def printers():
+    kitchen = active_printers['kitchen']
+    receipt = active_printers['receipt']
+    return jsonify({
+        'kitchen': kitchen['name'] if kitchen else None,
+        'receipt': receipt['name'] if receipt else None,
+        'all': list_system_printers(),
+    })
+
+
+@http_app.route('/printer-info', methods=['GET'])
+def printer_info():
+    name = request.args.get('name')
+    if not name:
+        return jsonify({'success': False, 'error': 'name required'}), 400
+    info = detect_printer_info(name)
+    return jsonify({'success': True, **info})
+
+
+@http_app.route('/set-printer', methods=['POST'])
+def set_printer():
+    data: dict[str, Any] = request.get_json() or {}
+    role = data.get('role')
+    name = data.get('name')
+    printer_type = data.get('type', 'system')
+    ip = data.get('ip')
+    port = data.get('port', 9100)
+
+    if role not in ('kitchen', 'receipt') or not name:
+        return jsonify({
+            'success': False, 'error': 'role and name required'
+        }), 400
+
+    if printer_type == 'wifi':
+        if not ip:
+            return jsonify({
+                'success': False, 'error': 'ip required for wifi'
+            }), 400
+        info: dict[str, Any] = {
+            'name': name,
+            'type': 'wifi',
+            'ip': ip,
+            'port': port,
+            'kind': 'thermal',
+            'columns': 42,
+            'paper_size': '80mm',
+        }
+    else:
+        base = detect_printer_info(name)
+        info = {'name': name, 'type': 'system', **base}
+
+    active_printers[role] = info
+    return jsonify({'success': True, **info})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ПЕЧАТЬ
+# ═══════════════════════════════════════════════════════════════════════════
+def print_system(name: str, raw_bytes: bytes) -> None:
+    if IS_WINDOWS and HAS_WIN32PRINT and win32print is not None:
+        hprinter = win32print.OpenPrinter(name)
+        try:
+            win32print.StartDocPrinter(
+                hprinter, 1, ('POS job', None, 'RAW')
+            )
             try:
-                ws.send(json.dumps(message, ensure_ascii=False))
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
+                win32print.StartPagePrinter(hprinter)
+                win32print.WritePrinter(hprinter, raw_bytes)
+                win32print.EndPagePrinter(hprinter)
+            finally:
+                win32print.EndDocPrinter(hprinter)
+        finally:
+            win32print.ClosePrinter(hprinter)
+    else:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
+            f.write(raw_bytes)
+            tmp = f.name
+        try:
+            subprocess.run(
+                ['lp', '-d', name, '-o', 'raw', tmp],
+                check=True, timeout=10,
+            )
+        finally:
             try:
-                connected_clients.remove(ws)
-            except ValueError:
+                os.unlink(tmp)
+            except OSError:
                 pass
 
 
-if HAS_SOCK and sock is not None:
-    @sock.route('/sync')
-    def sync_ws(ws):
-        """WebSocket endpoint для LAN-синхронизации."""
-        with clients_lock:
-            connected_clients.append(ws)
-            count = len(connected_clients)
-        print(f'[SYNC] Клиент подключён ({count} всего)')
+def print_wifi(ip: str, port: int, raw_bytes: bytes) -> None:
+    with socket.create_connection((ip, port), timeout=5) as s:
+        s.sendall(raw_bytes)
 
-        # Оповещаем всех остальных, что состав клиентов изменился
-        broadcast_to_lan({
-            'type': 'clients-changed',
-            'count': count,
-        })
 
-        try:
-            while True:
-                raw = ws.receive()
-                if raw is None:
-                    break
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
+@http_app.route('/print', methods=['POST'])
+def print_endpoint():
+    data: dict[str, Any] = request.get_json() or {}
+    role = data.get('role')
+    hex_str = data.get('hex', '')
 
-                if msg.get('type') == 'hello':
-                    broadcast_to_lan(
-                        {
-                            'type': 'peer-joined',
-                            'peer': msg.get('peer', 'unknown'),
-                        },
-                        exclude_ws=ws,
-                    )
-                    continue
+    if role not in ('kitchen', 'receipt'):
+        return jsonify({'success': False, 'error': 'invalid role'}), 400
 
-                broadcast_to_lan(msg, exclude_ws=ws)
+    printer = active_printers.get(role)
+    if not printer:
+        return jsonify({
+            'success': False, 'error': f'{role} printer not set'
+        }), 400
 
-        except Exception as e:
-            print(f'[SYNC] Ошибка в WS: {e}')
-        finally:
-            with clients_lock:
-                if ws in connected_clients:
-                    connected_clients.remove(ws)
-                count = len(connected_clients)
-            print(f'[SYNC] Клиент отключён ({count} осталось)')
+    try:
+        raw_bytes = bytes.fromhex(hex_str) if hex_str else b''
+    except ValueError as e:
+        return jsonify({'success': False, 'error': f'bad hex: {e}'}), 400
 
-            # Оповещаем всех, что состав клиентов изменился
-            broadcast_to_lan({
-                'type': 'clients-changed',
-                'count': count,
-            })
+    if not raw_bytes:
+        return jsonify({'success': False, 'error': 'empty payload'}), 400
+
+    try:
+        if printer['type'] == 'wifi':
+            print_wifi(printer['ip'], printer['port'], raw_bytes)
+        else:
+            print_system(printer['name'], raw_bytes)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@http_app.route('/print-raw', methods=['POST'])
+def print_raw():
+    data: dict[str, Any] = request.get_json() or {}
+    ip = data.get('ip')
+    port = data.get('port', 9100)
+    hex_str = data.get('hex', '')
+
+    if not ip or not hex_str:
+        return jsonify({
+            'success': False, 'error': 'ip and hex required'
+        }), 400
+
+    try:
+        raw_bytes = bytes.fromhex(hex_str)
+        print_wifi(ip, port, raw_bytes)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ПОИСК WI-FI ПРИНТЕРОВ
+# ═══════════════════════════════════════════════════════════════════════════
+def get_my_subnet() -> Optional[str]:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return '.'.join(ip.split('.')[:3])
+    except OSError:
+        return None
+
+
+def probe_tcp(ip: str, port: int = 9100, timeout: float = 0.4) -> bool:
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def discover_scan(port: int = 9100) -> list[dict[str, Any]]:
+    subnet = get_my_subnet()
+    if not subnet:
+        return []
+    result: list[dict[str, Any]] = []
+    ips = [f'{subnet}.{i}' for i in range(1, 255)]
+    with ThreadPoolExecutor(max_workers=64) as ex:
+        futures = {ex.submit(probe_tcp, ip, port): ip for ip in ips}
+        for fut, ip in futures.items():
+            try:
+                if fut.result():
+                    result.append({
+                        'name': ip,
+                        'ip': ip,
+                        'port': port,
+                        'source': 'scan',
+                    })
+            except Exception:
+                pass
+    return result
+
+
+def _build_mdns_listener_class() -> Any:
+    """Создаёт класс listener'а с нужным базовым классом."""
+    if not HAS_ZEROCONF or ServiceListener is None:
+        return None
+
+    class _MdnsListener(ServiceListener):  # type: ignore
+        def __init__(self) -> None:
+            self.found: list[dict[str, Any]] = []
+
+        def add_service(self, zc: Any, type_: str, name: str) -> None:
+            info = zc.get_service_info(type_, name)
+            if not info:
+                return
+            addrs = info.parsed_addresses()
+            if addrs:
+                first = addrs[0]
+                # parsed_addresses может вернуть str или IPv4Address — приводим к str
+                ip_str = str(first)
+                self.found.append({
+                    'name': name.replace(f'.{type_}', ''),
+                    'ip': ip_str,
+                    'port': info.port or 9100,
+                    'source': 'mdns',
+                })
+
+        def remove_service(self, zc: Any, type_: str, name: str) -> None:
+            pass
+
+        def update_service(self, zc: Any, type_: str, name: str) -> None:
+            pass
+
+    return _MdnsListener
+
+
+def discover_mdns(timeout: float = 2.5) -> list[dict[str, Any]]:
+    if not HAS_ZEROCONF or Zeroconf is None or ServiceBrowser is None:
+        return []
+
+    listener_cls = _build_mdns_listener_class()
+    if listener_cls is None:
+        return []
+
+    zc = Zeroconf()
+    listener = listener_cls()
+    try:
+        ServiceBrowser(zc, '_ipp._tcp.local.', listener)
+        ServiceBrowser(zc, '_printer._tcp.local.', listener)
+        ServiceBrowser(zc, '_pdl-datastream._tcp.local.', listener)
+        time.sleep(timeout)
+    finally:
+        zc.close()
+
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for p in listener.found:
+        key = str(p['ip'])
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def discover_all() -> list[dict[str, Any]]:
+    mdns = discover_mdns(timeout=2.5)
+    seen = {str(p['ip']) for p in mdns}
+    scan = discover_scan(port=9100)
+    for p in scan:
+        if str(p['ip']) not in seen:
+            seen.add(str(p['ip']))
+            mdns.append(p)
+    return mdns
+
+
+@http_app.route('/wifi-printers', methods=['GET'])
+def wifi_printers():
+    try:
+        return jsonify({'success': True, 'printers': discover_all()})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # СЕТЕВАЯ ИНФОРМАЦИЯ
 # ═══════════════════════════════════════════════════════════════════════════
-def get_local_ips() -> list[str]:
-    """Возвращает список локальных IPv4-адресов этого компьютера."""
-    # 1. Если задан MY_IP в env — используем его
-    manual = os.environ.get('MY_IP', '').strip()
-    if manual:
-        return [manual]
+@http_app.route('/network-info', methods=['GET'])
+def network_info():
+    hostname = socket.gethostname()
+    local_ips: list[str] = []
 
-    ips: list[str] = []
-
-    # 2. getaddrinfo по hostname
     try:
-        hostname = socket.gethostname()
-        for info in socket.getaddrinfo(hostname, None):
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
             ip = str(info[4][0])
-            if ':' not in ip and ip != '127.0.0.1' and ip not in ips:
-                ips.append(ip)
-    except Exception:
+            if ip not in local_ips and not ip.startswith('127.'):
+                local_ips.append(ip)
+    except socket.gaierror:
         pass
 
-    # 3. UDP-сокет — правильный IP выходит вперёд
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(1)
         s.connect(('8.8.8.8', 80))
-        primary = s.getsockname()[0]
+        primary = str(s.getsockname()[0])
         s.close()
-        if primary != '127.0.0.1':
-            if primary in ips:
-                ips.remove(primary)
-            ips.insert(0, primary)
-    except Exception:
+        if primary not in local_ips:
+            local_ips.insert(0, primary)
+    except OSError:
         pass
 
-    # 4. Fallback — PowerShell перебор всех интерфейсов
-    if not ips:
-        try:
-            result = subprocess.run(
-                ['powershell', '-NoProfile', '-Command',
-                 "Get-NetIPAddress -AddressFamily IPv4 | "
-                 "Where-Object { $_.IPAddress -notlike '127.*' -and "
-                 "$_.IPAddress -notlike '169.254.*' } | "
-                 "Select-Object -ExpandProperty IPAddress"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    ip = line.strip()
-                    if ip and ip not in ips:
-                        ips.append(ip)
-        except Exception:
-            pass
-
-    return ips
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Определение типа бумаги
-# ═══════════════════════════════════════════════════════════════════════════
-def get_paper_size_from_windows(printer_name: str) -> str:
-    try:
-        result = subprocess.run(
-            ['powershell', '-NoProfile', '-Command',
-             f'Get-PrintConfiguration -PrinterName "{printer_name}" | '
-             f'Select-Object -ExpandProperty PaperSize'],
-            capture_output=True, text=True, timeout=8,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception as e:
-        print(f'[PRINTER] paper size detect failed: {e}')
-    return ''
-
-
-def detect_printer_kind(printer_name: str) -> dict:
-    if printer_name in PRINTER_INFO_CACHE:
-        return PRINTER_INFO_CACHE[printer_name]
-
-    paper = get_paper_size_from_windows(printer_name)
-    paper_lower = paper.lower()
-    name_lower = printer_name.lower()
-
-    kind = None
-    columns = 42
-    description = paper or 'Unknown'
-
-    office_sizes = {'a3': 120, 'a4': 80, 'a5': 56, 'a6': 40, 'letter': 80, 'legal': 80}
-    for key, cols in office_sizes.items():
-        if key in paper_lower:
-            kind = 'a4'
-            columns = cols
-            description = paper.upper()
-            break
-
-    if not kind:
-        if '58' in paper_lower or '58' in name_lower:
-            kind = 'thermal'; columns = 32; description = 'Термо 58 мм'
-        elif '80' in paper_lower or '80' in name_lower:
-            kind = 'thermal'; columns = 42; description = 'Термо 80 мм'
-        elif any(kw in name_lower for kw in ['pos', 'xprinter', 'thermal', 'receipt', 'rongta', 'gprinter']):
-            kind = 'thermal'; columns = 42; description = 'Термо 80 мм'
-
-    if not kind:
-        kind = 'a4'; columns = 80; description = paper.upper() if paper else 'A4'
-
-    info = {'kind': kind, 'columns': columns, 'paper_size': description}
-    PRINTER_INFO_CACHE[printer_name] = info
-    print(f'[PRINTER] {printer_name} → {kind} ({columns} колонок, {description})')
-    return info
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Список принтеров
-# ═══════════════════════════════════════════════════════════════════════════
-def list_printers_windows() -> list[str]:
-    names: list[str] = []
-    try:
-        import win32print  # type: ignore[import]
-        printers = win32print.EnumPrinters(2)
-        for p in printers:
-            printer_name = p[2]  # type: ignore[index]
-            names.append(str(printer_name))
-        if names:
-            return names
-    except Exception as e:
-        print(f'[PRINTER] pywin32 не сработал: {e}')
-        print('[PRINTER] Переключаюсь на PowerShell...')
-
-    try:
-        result = subprocess.run(
-            ['powershell', '-NoProfile', '-Command',
-             'Get-Printer | Select-Object -ExpandProperty Name'],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if line:
-                    names.append(line)
-    except Exception as e:
-        print(f'[PRINTER] PowerShell не сработал: {e}')
-    return names
-
-
-def list_printers_unix() -> list[str]:
-    try:
-        result = subprocess.run(['lpstat', '-p'], capture_output=True, text=True, timeout=5)
-        names: list[str] = []
-        for line in result.stdout.splitlines():
-            if line.startswith('printer '):
-                parts = line.split()
-                if len(parts) >= 2:
-                    names.append(parts[1])
-        return names
-    except Exception as e:
-        print(f'[PRINTER] lpstat failed: {e}')
-        return []
-
-
-def list_printers() -> list[str]:
-    if platform.system() == 'Windows':
-        return list_printers_windows()
-    return list_printers_unix()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Отправка на принтер
-# ═══════════════════════════════════════════════════════════════════════════
-def send_thermal_windows(printer_name: str, data: bytes) -> None:
-    import win32print  # type: ignore[import]
-    printer = win32print.OpenPrinter(printer_name)
-    try:
-        win32print.StartDocPrinter(printer, 1, ('POS Thermal', None, 'RAW'))
-        try:
-            win32print.StartPagePrinter(printer)
-            win32print.WritePrinter(printer, data)
-            win32print.EndPagePrinter(printer)
-        finally:
-            win32print.EndDocPrinter(printer)
-    finally:
-        win32print.ClosePrinter(printer)
-
-
-def send_thermal_unix(printer_name: str, data: bytes) -> None:
-    subprocess.run(['lp', '-d', printer_name, '-o', 'raw'], input=data, check=True)
-
-
-def send_a4_windows(printer_name: str, text: str, font_size: int = 10) -> None:
-    # type: ignore
-    import win32ui
-    import win32con
-    hDC = win32ui.CreateDC()
-    try:
-        hDC.CreatePrinterDC(printer_name)
-        hDC.StartDoc('POS Cheque')
-        logpixels_y = hDC.GetDeviceCaps(win32con.LOGPIXELSY)
-        font_height = -int(font_size * logpixels_y / 72)
-        font = win32ui.CreateFont({
-            'name': 'Courier New', 'height': font_height, 'weight': 400,
-            'charset': win32con.RUSSIAN_CHARSET,
-        })
-        hDC.SelectObject(font)
-        printable_x = hDC.GetDeviceCaps(win32con.HORZRES)
-        printable_y = hDC.GetDeviceCaps(win32con.VERTRES)
-        offset_x = int(printable_x * 0.05)
-        offset_y = int(printable_y * 0.05)
-        line_height = int(abs(font_height) * 1.25)
-        hDC.StartPage()
-        y = offset_y
-        for line in text.split('\n'):
-            hDC.TextOut(offset_x, y, line)
-            y += line_height
-            if y > printable_y - line_height:
-                hDC.EndPage()
-                hDC.StartPage()
-                y = offset_y
-        hDC.EndPage()
-        hDC.EndDoc()
-    finally:
-        try:
-            hDC.DeleteDC()
-        except Exception:
-            pass
-
-
-def send_a4_unix(printer_name: str, text: str) -> None:
-    subprocess.run(['lp', '-d', printer_name, '-o', 'media=A4'],
-                   input=text.encode('utf-8'), check=True)
-
-
-def send_job(role: str, payload: dict) -> dict:
-    name = ACTIVE_PRINTERS.get(role)
-    if not name:
-        raise RuntimeError(f'Принтер для "{role}" не выбран')
-
-    info = detect_printer_kind(name)
-    kind = info['kind']
-
-    if kind == 'thermal':
-        hex_data = payload.get('hex', '')
-        if not hex_data:
-            raise RuntimeError('Нет hex-данных для термопринтера')
-        clean = hex_data.replace(' ', '')
-        data = bytes.fromhex(clean)
-        if platform.system() == 'Windows':
-            send_thermal_windows(name, data)
-        else:
-            send_thermal_unix(name, data)
-        return {'kind': 'thermal', 'bytes': len(data)}
-
-    text = payload.get('text', '')
-    if not text:
-        raise RuntimeError('Нет текстовых данных для A4-принтера')
-    if platform.system() == 'Windows':
-        send_a4_windows(name, text)
-    else:
-        send_a4_unix(name, text)
-    return {'kind': 'a4', 'chars': len(text)}
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# HTTP API
-# ═══════════════════════════════════════════════════════════════════════════
-@app.route('/health', methods=['GET'])
-def health():
     return jsonify({
-        'status': 'ok',
-        'os': platform.system(),
-        'kitchen': ACTIVE_PRINTERS['kitchen'],
-        'receipt': ACTIVE_PRINTERS['receipt'],
-        'lan_sync': HAS_SOCK,
-        'lan_clients': len(connected_clients),
+        'hostname': hostname,
+        'local_ips': local_ips,
+        'primary_ip': local_ips[0] if local_ips else None,
+        'ports': {'http': 9999, 'ws': 9998},
     })
 
 
-@app.route('/network-info', methods=['GET'])
-def network_info():
-    """Возвращает hostname и все локальные IPv4 адреса этого компьютера."""
-    ips = get_local_ips()
-    return jsonify({
-        'hostname': socket.gethostname(),
-        'local_ips': ips,
-        'primary_ip': ips[0] if ips else None,
-        'ports': {
-            'http': PORT,
-            'ws': SYNC_PORT,
-        },
-    })
-
-
-@app.route('/sync-status', methods=['GET'])
+@http_app.route('/sync-status', methods=['GET'])
 def sync_status():
-    """Возвращает статус LAN-синхронизации."""
-    with clients_lock:
-        count = len(connected_clients)
+    with ws_lock:
+        count = len(ws_clients)
     return jsonify({
-        'lan_sync_enabled': HAS_SOCK,
+        'lan_sync_enabled': HAS_WS,
         'connected_clients': count,
-        'is_hub_active': count > 0,
-        'ws_port': SYNC_PORT,
-        'http_port': PORT,
+        'is_hub_active': HAS_WS and count > 0,
     })
-
-
-@app.route('/printers', methods=['GET'])
-def printers_list():
-    return jsonify({
-        'kitchen': ACTIVE_PRINTERS['kitchen'],
-        'receipt': ACTIVE_PRINTERS['receipt'],
-        'all': list_printers(),
-    })
-
-
-@app.route('/printer-info', methods=['GET'])
-def printer_info():
-    name = request.args.get('name', '').strip()
-    if not name:
-        return jsonify({'success': False, 'error': 'name required'}), 400
-    info = detect_printer_kind(name)
-    return jsonify({
-        'success': True, 'name': name,
-        'kind': info['kind'], 'columns': info['columns'],
-        'paper_size': info['paper_size'],
-    })
-
-
-@app.route('/set-printer', methods=['POST'])
-def set_printer():
-    payload = request.get_json() or {}
-    role = (payload.get('role') or '').strip()
-    name = (payload.get('name') or '').strip()
-
-    if role not in ('kitchen', 'receipt'):
-        return jsonify({'success': False, 'error': 'role must be kitchen or receipt'}), 400
-    if not name:
-        return jsonify({'success': False, 'error': 'name required'}), 400
-
-    available = list_printers()
-    if name not in available:
-        return jsonify({
-            'success': False,
-            'error': f'Принтер "{name}" не найден',
-            'available': available,
-        }), 404
-
-    ACTIVE_PRINTERS[role] = name
-    info = detect_printer_kind(name)
-    print(f'[PRINTER] {role} → {name} ({info["kind"]}, {info["columns"]} колонок)')
-
-    return jsonify({
-        'success': True, 'role': role, 'printer': name,
-        'kind': info['kind'], 'columns': info['columns'],
-        'paper_size': info['paper_size'],
-    })
-
-
-@app.route('/print', methods=['POST'])
-def print_raw():
-    try:
-        payload = request.get_json() or {}
-        role = payload.get('role', 'kitchen')
-        result = send_job(role, payload)
-        return jsonify({'success': True, 'printer': ACTIVE_PRINTERS.get(role), **result})
-    except Exception as e:
-        print(f'[ERROR] Print failed: {e}')
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# СТАРТ
+# WEBSOCKET HUB (порт 9998)
 # ═══════════════════════════════════════════════════════════════════════════
-def main() -> None:
-    print('=' * 62)
-    print('  POS Print & Sync Server')
-    print('=' * 62)
-    print(f'  OS:        {platform.system()}')
-    print(f'  Print:     http://127.0.0.1:{PORT}')
-    if HAS_SOCK:
-        print(f'  LAN Sync:  ws://0.0.0.0:{SYNC_PORT}/sync')
-    else:
-        print(f'  LAN Sync:  ВЫКЛЮЧЕН (pip install flask-sock)')
+ws_app = Flask('kebab_ws')
+sock: Any = None
 
-    local_ips = get_local_ips()
-    if local_ips:
-        print(f'  Мой IP:    {local_ips[0]}')
-        for ip in local_ips[1:]:
-            print(f'             {ip} (доп.)')
+if HAS_WS and Sock is not None:
+    sock = Sock(ws_app)
 
-    available = list_printers()
-    if not available:
-        print('  [WARN] Принтеры не найдены')
-    else:
-        print(f'  Найдено принтеров: {len(available)}')
-        for p in available:
-            info = detect_printer_kind(p)
-            print(f'    - {p} → {info["kind"]} ({info["columns"]} колонок)')
+    @sock.route('/sync')
+    def sync_endpoint(ws: Any) -> None:
+        with ws_lock:
+            ws_clients.add(ws)
+        print(f'[ws] client connected (total: {len(ws_clients)})')
+        try:
+            while True:
+                msg = ws.receive()
+                if msg is None:
+                    break
+                with ws_lock:
+                    peers = [c for c in ws_clients if c is not ws]
+                for peer in peers:
+                    try:
+                        peer.send(msg)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f'[ws] error: {e}')
+        finally:
+            with ws_lock:
+                ws_clients.discard(ws)
+            print(f'[ws] client disconnected (total: {len(ws_clients)})')
 
-    if MANUAL_KITCHEN and MANUAL_KITCHEN in available:
-        ACTIVE_PRINTERS['kitchen'] = MANUAL_KITCHEN
-    if MANUAL_RECEIPT and MANUAL_RECEIPT in available:
-        ACTIVE_PRINTERS['receipt'] = MANUAL_RECEIPT
 
-    print('=' * 62)
-    print('  Ctrl+C для остановки')
-    print('=' * 62)
-    print()
+# ═══════════════════════════════════════════════════════════════════════════
+# ЗАПУСК
+# ═══════════════════════════════════════════════════════════════════════════
+def run_http() -> None:
+    from werkzeug.serving import make_server
+    server = make_server('0.0.0.0', 9999, http_app, threaded=True)
+    print('[http] listening on 0.0.0.0:9999')
+    server.serve_forever()
 
-    app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
+
+def run_ws() -> None:
+    from werkzeug.serving import make_server
+    server = make_server('0.0.0.0', 9998, ws_app, threaded=True)
+    print('[ws]   listening on 0.0.0.0:9998')
+    server.serve_forever()
 
 
 if __name__ == '__main__':
-    main()
+    print('╔══════════════════════════════════════════╗')
+    print('║  Kebab POS — Print Server                ║')
+    print('╚══════════════════════════════════════════╝')
+    print(f'  Platform:   {platform.system()} {platform.release()}')
+    print(f'  Python:     {sys.version.split()[0]}')
+    print(f'  win32print: {HAS_WIN32PRINT}')
+    print(f'  flask-sock: {HAS_WS}')
+    print(f'  zeroconf:   {HAS_ZEROCONF}')
+    print()
+
+    if not HAS_WS:
+        print('⚠  flask-sock не установлен — LAN-синхронизация отключена')
+        print('   Установи: pip install flask-sock\n')
+    if not HAS_ZEROCONF:
+        print('⚠  zeroconf не установлен — Bonjour-поиск отключён')
+        print('   Установи: pip install zeroconf\n')
+
+    threads = [threading.Thread(target=run_http, daemon=True)]
+    if HAS_WS:
+        threads.append(threading.Thread(target=run_ws, daemon=True))
+
+    for t in threads:
+        t.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print('\n[server] shutting down…')
