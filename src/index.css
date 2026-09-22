@@ -1,53 +1,52 @@
-@import "tailwindcss/base";
-@import "tailwindcss/components";
-@import "tailwindcss/utilities";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-/* ─── Touch-friendly базовые правила ──────────────────────────────────── */
-
-/* Отключаем «залипающий» hover на тач-устройствах */
-@media (hover: none) {
-  .hover\:bg-gray-100:hover { background-color: transparent; }
-  .hover\:bg-gray-200:hover { background-color: transparent; }
-  .hover\:border-orange-300:hover { border-color: inherit; }
+@layer components {
+  .form-input {
+    @apply w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-colors;
+  }
 }
 
-/* Быстрые тапы без задержки 300мс */
-* {
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* Плавный momentum-скролл на iOS */
-html, body {
-  -webkit-overflow-scrolling: touch;
+html,
+body,
+#root {
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
   overscroll-behavior: none;
 }
 
-/* Убираем выделение текста при долгом тапе на кнопках */
-button, [role="button"], a {
-  -webkit-user-select: none;
-  user-select: none;
+#root {
+  display: flex;
+  flex-direction: column;
 }
 
-/* Скроллбары тоньше и аккуратнее */
+body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+
+/* Скроллбар */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 4px;
+  background: #cbd5e1;
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25);
+  background: #94a3b8;
 }
 
-/* Активная фаза нажатия — визуальный отклик */
-button:active:not(:disabled),
-[role="button"]:active {
-  transform: scale(0.97);
-  transition: transform 0.06s ease-out;
+/* Отключаем «резинку» на iOS при скролле внутренних панелей */
+* {
+  -webkit-overflow-scrolling: touch;
 }
