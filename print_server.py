@@ -19,7 +19,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ОПЦИОНАЛЬНЫЕ ЗАВИСИМОСТИ
@@ -114,11 +114,33 @@ _udp_running = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HTTP APP
+# HTTP APP + CORS
 # ═══════════════════════════════════════════════════════════════════════════
 http_app = Flask('kebab_http')
+
+
+@http_app.after_request
+def _add_cors_headers(response: Response) -> Response:
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = (
+        'GET, POST, PUT, DELETE, OPTIONS'
+    )
+    response.headers['Access-Control-Allow-Headers'] = (
+        'Content-Type, Authorization, X-Requested-With'
+    )
+    response.headers['Access-Control-Max-Age'] = '86400'
+    return response
+
+
+@http_app.before_request
+def _handle_preflight() -> Optional[Response]:
+    if request.method == 'OPTIONS':
+        return Response('', 200)
+    return None
+
+
 if HAS_CORS and CORS is not None:
-    CORS(http_app)
+    CORS(http_app, resources={r'/*': {'origins': '*'}})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -208,7 +230,6 @@ def udp_discover(timeout: float = 2.0) -> list[dict[str, Any]]:
     s.settimeout(0.4)
     try:
         payload = json.dumps({'type': 'lan-discover'}).encode('utf-8')
-        # Broadcast во всю подсеть
         try:
             s.sendto(payload, ('255.255.255.255', UDP_PORT))
         except OSError:
@@ -243,9 +264,9 @@ def udp_discover(timeout: float = 2.0) -> list[dict[str, Any]]:
 # ═══════════════════════════════════════════════════════════════════════════
 # LAN ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════
-@http_app.route('/lan/create', methods=['POST'])
+@http_app.route('/lan/create', methods=['POST', 'OPTIONS'])
 def lan_create():
-    data: dict[str, Any] = request.get_json() or {}
+    data: dict[str, Any] = request.get_json(silent=True) or {}
     name = (data.get('name') or '').strip()
     password = (data.get('password') or '').strip()
 
@@ -277,7 +298,7 @@ def lan_create():
     })
 
 
-@http_app.route('/lan/stop', methods=['POST'])
+@http_app.route('/lan/stop', methods=['POST', 'OPTIONS'])
 def lan_stop():
     lan_hub['active'] = False
     lan_hub['name'] = ''
@@ -287,7 +308,7 @@ def lan_stop():
     return jsonify({'success': True})
 
 
-@http_app.route('/lan/status', methods=['GET'])
+@http_app.route('/lan/status', methods=['GET', 'OPTIONS'])
 def lan_status():
     with ws_lock:
         count = len(ws_clients)
@@ -301,7 +322,7 @@ def lan_status():
     })
 
 
-@http_app.route('/lan/discover', methods=['POST'])
+@http_app.route('/lan/discover', methods=['POST', 'OPTIONS'])
 def lan_discover():
     try:
         lans = udp_discover(timeout=2.0)
@@ -310,15 +331,14 @@ def lan_discover():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@http_app.route('/lan/client-state', methods=['GET'])
+@http_app.route('/lan/client-state', methods=['GET', 'OPTIONS'])
 def lan_client_state():
     return jsonify(lan_client)
 
 
-@http_app.route('/lan/client-set', methods=['POST'])
+@http_app.route('/lan/client-set', methods=['POST', 'OPTIONS'])
 def lan_client_set():
-    """Сохраняет состояние клиента в Python (для info-целей)."""
-    data: dict[str, Any] = request.get_json() or {}
+    data: dict[str, Any] = request.get_json(silent=True) or {}
     lan_client['joined'] = bool(data.get('joined'))
     lan_client['name'] = data.get('name') or ''
     lan_client['hub_ip'] = data.get('hub_ip')
@@ -360,7 +380,7 @@ def detect_printer_info(name: str) -> dict[str, Any]:
     return {'kind': 'thermal', 'columns': 42, 'paper_size': '80mm'}
 
 
-@http_app.route('/health', methods=['GET'])
+@http_app.route('/health', methods=['GET', 'OPTIONS'])
 def health():
     kitchen = active_printers['kitchen']
     receipt = active_printers['receipt']
@@ -370,7 +390,7 @@ def health():
     })
 
 
-@http_app.route('/printers', methods=['GET'])
+@http_app.route('/printers', methods=['GET', 'OPTIONS'])
 def printers():
     kitchen = active_printers['kitchen']
     receipt = active_printers['receipt']
@@ -381,7 +401,7 @@ def printers():
     })
 
 
-@http_app.route('/printer-info', methods=['GET'])
+@http_app.route('/printer-info', methods=['GET', 'OPTIONS'])
 def printer_info():
     name = request.args.get('name')
     if not name:
@@ -390,9 +410,9 @@ def printer_info():
     return jsonify({'success': True, **info})
 
 
-@http_app.route('/set-printer', methods=['POST'])
+@http_app.route('/set-printer', methods=['POST', 'OPTIONS'])
 def set_printer():
-    data: dict[str, Any] = request.get_json() or {}
+    data: dict[str, Any] = request.get_json(silent=True) or {}
     role = data.get('role')
     name = data.get('name')
     printer_type = data.get('type', 'system')
@@ -460,9 +480,9 @@ def print_wifi(ip: str, port: int, raw_bytes: bytes) -> None:
         s.sendall(raw_bytes)
 
 
-@http_app.route('/print', methods=['POST'])
+@http_app.route('/print', methods=['POST', 'OPTIONS'])
 def print_endpoint():
-    data: dict[str, Any] = request.get_json() or {}
+    data: dict[str, Any] = request.get_json(silent=True) or {}
     role = data.get('role')
     hex_str = data.get('hex', '')
 
@@ -493,9 +513,9 @@ def print_endpoint():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@http_app.route('/print-raw', methods=['POST'])
+@http_app.route('/print-raw', methods=['POST', 'OPTIONS'])
 def print_raw():
-    data: dict[str, Any] = request.get_json() or {}
+    data: dict[str, Any] = request.get_json(silent=True) or {}
     ip = data.get('ip')
     port = data.get('port', 9100)
     hex_str = data.get('hex', '')
@@ -610,7 +630,7 @@ def discover_all_wifi() -> list[dict[str, Any]]:
     return mdns
 
 
-@http_app.route('/wifi-printers', methods=['GET'])
+@http_app.route('/wifi-printers', methods=['GET', 'OPTIONS'])
 def wifi_printers():
     try:
         return jsonify({'success': True, 'printers': discover_all_wifi()})
@@ -621,7 +641,7 @@ def wifi_printers():
 # ═══════════════════════════════════════════════════════════════════════════
 # СЕТЕВАЯ ИНФОРМАЦИЯ
 # ═══════════════════════════════════════════════════════════════════════════
-@http_app.route('/network-info', methods=['GET'])
+@http_app.route('/network-info', methods=['GET', 'OPTIONS'])
 def network_info():
     hostname = socket.gethostname()
     local_ips: list[str] = []
@@ -647,6 +667,25 @@ def network_info():
 # WEBSOCKET HUB (порт 9998)
 # ═══════════════════════════════════════════════════════════════════════════
 ws_app = Flask('kebab_ws')
+
+
+@ws_app.after_request
+def _ws_add_cors_headers(response: Response) -> Response:
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = (
+        'Content-Type, Authorization'
+    )
+    return response
+
+
+@ws_app.before_request
+def _ws_handle_preflight() -> Optional[Response]:
+    if request.method == 'OPTIONS':
+        return Response('', 200)
+    return None
+
+
 sock: Any = None
 
 
@@ -773,12 +812,16 @@ if __name__ == '__main__':
     print(f'  win32print: {HAS_WIN32PRINT}')
     print(f'  flask-sock: {HAS_WS}')
     print(f'  zeroconf:   {HAS_ZEROCONF}')
+    print(f'  flask-cors: {HAS_CORS}')
     print(f'  UDP port:   {UDP_PORT} (LAN discovery)')
     print()
 
     if not HAS_WS:
         print('⚠  flask-sock не установлен — LAN отключён')
         print('   pip install flask-sock\n')
+    if not HAS_CORS:
+        print('ℹ  flask-cors не установлен — используется встроенный CORS')
+        print('   pip install flask-cors (опционально)\n')
 
     threads = [threading.Thread(target=run_http, daemon=True)]
     if HAS_WS:
