@@ -2,7 +2,7 @@
 import { supabase } from '@/lib/supabase';
 import { invalidateMenuCache } from '@/lib/menuCache';
 import { invalidateOrdersCache } from '@/lib/ordersCache';
-import { onLanMessage, sendLanMessage } from '@/lib/lanSync';
+import { onLanMessage, sendLanMessage } from '@/lib/lanHub';
 
 // ─── События синхронизации ──────────────────────────────────────────────────
 export type SyncEvent =

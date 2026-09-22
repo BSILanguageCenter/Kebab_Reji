@@ -1,4 +1,4 @@
-import type { Order, OrderItem } from '@/lib/types';
+import type { Order } from '@/lib/types';
 import type { Language } from '@/lib/types';
 
 export interface PrinterService {

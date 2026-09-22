@@ -6,7 +6,7 @@ import { tableStatusColors } from '@/lib/format';
 import { Plus, Trash2, X } from 'lucide-react';
 
 export default function TablesPage() {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
   const [tables, setTables] = useState<RestaurantTable[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [newName, setNewName] = useState('');

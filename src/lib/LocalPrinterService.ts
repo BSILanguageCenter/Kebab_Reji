@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabase';
 
 // ─── Типы ───────────────────────────────────────────────────────────────────
 export type PrinterRole = 'kitchen' | 'receipt';
+export type PrinterType = 'system' | 'wifi';
 
 export interface PrinterStatus {
   connected: boolean;
@@ -24,9 +25,19 @@ export interface PrinterList {
 
 export interface PrinterInfo {
   name: string;
+  type: PrinterType;
   kind: 'thermal' | 'a4';
   columns: number;
   paper_size: string;
+  ip?: string;
+  port?: number;
+}
+
+export interface WifiPrinter {
+  name: string;
+  ip: string;
+  port: number;
+  source: 'mdns' | 'scan';
 }
 
 export interface PrinterService {
@@ -68,7 +79,9 @@ export async function getAvailablePrinters(): Promise<PrinterList> {
   };
 }
 
-export async function getPrinterInfo(name: string): Promise<PrinterInfo | null> {
+export async function getPrinterInfo(
+  name: string
+): Promise<PrinterInfo | null> {
   try {
     const res = await fetch(
       `${SERVER_URL}/printer-info?name=${encodeURIComponent(name)}`
@@ -83,6 +96,7 @@ export async function getPrinterInfo(name: string): Promise<PrinterInfo | null> 
     if (!data.success || !data.kind) return null;
     return {
       name,
+      type: 'system',
       kind: data.kind,
       columns: data.columns ?? 42,
       paper_size: data.paper_size ?? '',
@@ -93,17 +107,56 @@ export async function getPrinterInfo(name: string): Promise<PrinterInfo | null> 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// УСТАНОВКА ПРИНТЕРА + СОХРАНЕНИЕ ИНФО В SUPABASE
+// ПОИСК WI-FI ПРИНТЕРОВ
+// ═══════════════════════════════════════════════════════════════════════════
+export async function discoverWifiPrinters(): Promise<WifiPrinter[]> {
+  const res = await fetch(`${SERVER_URL}/wifi-printers`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = (await res.json()) as {
+    success: boolean;
+    printers?: WifiPrinter[];
+    error?: string;
+  };
+  if (!data.success) throw new Error(data.error || 'Unknown error');
+  return data.printers ?? [];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// УСТАНОВКА ПРИНТЕРА
 // ═══════════════════════════════════════════════════════════════════════════
 export async function setActivePrinter(
   role: PrinterRole,
   name: string
 ): Promise<{ ok: boolean; info?: PrinterInfo }> {
+  return setPrinterInternal(role, { name, type: 'system' });
+}
+
+export async function setActiveWifiPrinter(
+  role: PrinterRole,
+  printer: WifiPrinter
+): Promise<{ ok: boolean; info?: PrinterInfo }> {
+  return setPrinterInternal(role, {
+    name: printer.name,
+    type: 'wifi',
+    ip: printer.ip,
+    port: printer.port,
+  });
+}
+
+async function setPrinterInternal(
+  role: PrinterRole,
+  payload: {
+    name: string;
+    type: PrinterType;
+    ip?: string;
+    port?: number;
+  }
+): Promise<{ ok: boolean; info?: PrinterInfo }> {
   try {
     const res = await fetch(`${SERVER_URL}/set-printer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role, name }),
+      body: JSON.stringify({ role, ...payload }),
     });
     if (!res.ok) return { ok: false };
     const data = (await res.json()) as {
@@ -111,41 +164,87 @@ export async function setActivePrinter(
       kind?: 'thermal' | 'a4';
       columns?: number;
       paper_size?: string;
+      type?: PrinterType;
+      ip?: string;
+      port?: number;
     };
     if (!data.success) return { ok: false };
 
     const info: PrinterInfo = {
-      name,
+      name: payload.name,
+      type: data.type ?? payload.type,
       kind: data.kind ?? 'thermal',
       columns: data.columns ?? 42,
       paper_size: data.paper_size ?? '',
+      ip: data.ip ?? payload.ip,
+      port: data.port ?? payload.port,
     };
 
-    // Сохраняем в restaurant_settings: имя + тип + колонки
+    const rows: {
+      key: string;
+      value: string;
+      updated_at: string;
+    }[] = [
+      {
+        key: `printer_${role}`,
+        value: info.name,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        key: `printer_${role}_type`,
+        value: info.type,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        key: `printer_${role}_kind`,
+        value: info.kind,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        key: `printer_${role}_columns`,
+        value: String(info.columns),
+        updated_at: new Date().toISOString(),
+      },
+    ];
+    if (info.type === 'wifi') {
+      rows.push({
+        key: `printer_${role}_ip`,
+        value: info.ip ?? '',
+        updated_at: new Date().toISOString(),
+      });
+      rows.push({
+        key: `printer_${role}_port`,
+        value: String(info.port ?? 9100),
+        updated_at: new Date().toISOString(),
+      });
+    }
+
     await supabase
       .from('restaurant_settings')
-      .upsert(
-        [
-          { key: `printer_${role}`, value: name, updated_at: new Date().toISOString() },
-          { key: `printer_${role}_kind`, value: info.kind, updated_at: new Date().toISOString() },
-          { key: `printer_${role}_columns`, value: String(info.columns), updated_at: new Date().toISOString() },
-        ],
-        { onConflict: 'key' }
-      );
+      .upsert(rows, { onConflict: 'key' });
 
     return { ok: true, info };
   } catch (e) {
-    console.error(`[PRINTER] setActivePrinter(${role}) failed:`, e);
+    console.error(`[PRINTER] setPrinterInternal(${role}) failed:`, e);
     return { ok: false };
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// СИНХРОНИЗАЦИЯ ИЗ SUPABASE
+// ═══════════════════════════════════════════════════════════════════════════
 export async function syncPrintersFromDb(): Promise<void> {
   try {
+    const keys = [
+      'printer_kitchen', 'printer_kitchen_type', 'printer_kitchen_ip',
+      'printer_kitchen_port',
+      'printer_receipt', 'printer_receipt_type', 'printer_receipt_ip',
+      'printer_receipt_port',
+    ];
     const { data } = await supabase
       .from('restaurant_settings')
       .select('key, value')
-      .in('key', ['printer_kitchen', 'printer_receipt']);
+      .in('key', keys);
 
     if (!data) return;
 
@@ -159,18 +258,32 @@ export async function syncPrintersFromDb(): Promise<void> {
       const list = await getAvailablePrinters();
       available = list.all;
     } catch {
-      /* сервер может быть не запущен */
+      /* python может быть не запущен */
     }
 
     for (const role of ['kitchen', 'receipt'] as PrinterRole[]) {
       const name = map[`printer_${role}`];
+      const type = (map[`printer_${role}_type`] || 'system') as PrinterType;
       if (!name) continue;
-      if (available.length === 0 || available.includes(name)) {
-        await fetch(`${SERVER_URL}/set-printer`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ role, name }),
-        }).catch(() => {});
+
+      if (type === 'wifi') {
+        const ip = map[`printer_${role}_ip`];
+        const port = parseInt(map[`printer_${role}_port`] || '9100', 10);
+        if (ip) {
+          await fetch(`${SERVER_URL}/set-printer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role, name, type: 'wifi', ip, port }),
+          }).catch(() => {});
+        }
+      } else {
+        if (available.length === 0 || available.includes(name)) {
+          await fetch(`${SERVER_URL}/set-printer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role, name, type: 'system' }),
+          }).catch(() => {});
+        }
       }
     }
   } catch (e) {
@@ -179,7 +292,7 @@ export async function syncPrintersFromDb(): Promise<void> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ОТПРАВКА В PYTHON (hex + text)
+// ОТПРАВКА В PYTHON
 // ═══════════════════════════════════════════════════════════════════════════
 async function sendToPrinter(
   role: PrinterRole,
@@ -199,7 +312,7 @@ async function sendToPrinter(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// КОДИРОВКА CP866 (для ESC/POS на термо)
+// КОДИРОВКА CP866
 // ═══════════════════════════════════════════════════════════════════════════
 const CP866_MAP: Record<string, number> = {
   'А': 0x80, 'Б': 0x81, 'В': 0x82, 'Г': 0x83, 'Д': 0x84, 'Е': 0x85, 'Ж': 0x86, 'З': 0x87,
@@ -248,9 +361,6 @@ function alignCmd(a: TicketBlock['align']): number[] {
   return CMD.ALIGN_LEFT;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ХЕЛПЕРЫ ВЫРАВНИВАНИЯ
-// ═══════════════════════════════════════════════════════════════════════════
 function alignText(
   text: string,
   align: TicketBlock['align'],
@@ -267,9 +377,6 @@ function alignText(
   return t;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// КОНТЕКСТ ДЛЯ РЕНДЕРА
-// ═══════════════════════════════════════════════════════════════════════════
 interface RenderContext {
   orderLabel: string;
   orderNumber: number;
@@ -286,9 +393,6 @@ interface RenderContext {
   width: number;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ГЕНЕРАЦИЯ ESC/POS (для термопринтера)
-// ═══════════════════════════════════════════════════════════════════════════
 function renderLayoutHex(layout: TicketLayout, ctx: RenderContext): string {
   const bytes: number[] = [];
   bytes.push(...CMD.INIT, ...CMD.CP866);
@@ -360,9 +464,6 @@ function renderLayoutHex(layout: TicketLayout, ctx: RenderContext): string {
     .join('');
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ГЕНЕРАЦИЯ ПРОСТОГО ТЕКСТА (для A4)
-// ═══════════════════════════════════════════════════════════════════════════
 function renderLayoutText(layout: TicketLayout, ctx: RenderContext): string {
   const lines: string[] = [];
 
@@ -395,8 +496,9 @@ function renderLayoutText(layout: TicketLayout, ctx: RenderContext): string {
         for (const it of ctx.items) {
           emit(`${it.quantity} x ${it.name}`);
           if (it.price !== undefined) {
-            const priceStr = `¥${it.price.toLocaleString()}`;
-            lines.push(alignText(priceStr, 'right', ctx.width));
+            lines.push(
+              alignText(`¥${it.price.toLocaleString()}`, 'right', ctx.width)
+            );
           }
         }
         break;
@@ -431,11 +533,13 @@ export function invalidateLayoutCache() {
 }
 
 async function getKitchenLayout(): Promise<TicketLayout> {
-  if (!kitchenLayoutCache) kitchenLayoutCache = await loadTicketLayout('kitchen');
+  if (!kitchenLayoutCache)
+    kitchenLayoutCache = await loadTicketLayout('kitchen');
   return kitchenLayoutCache;
 }
 async function getReceiptLayout(): Promise<TicketLayout> {
-  if (!receiptLayoutCache) receiptLayoutCache = await loadTicketLayout('receipt');
+  if (!receiptLayoutCache)
+    receiptLayoutCache = await loadTicketLayout('receipt');
   return receiptLayoutCache;
 }
 
