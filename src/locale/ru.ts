@@ -9,6 +9,45 @@ export const ru: Record<TranslationKey, string> = {
   online: 'Онлайн',
   offline: 'ОФЛАЙН',
   language: 'Язык',
+  exit: 'Выход',
+  selectRole: 'Выберите роль',
+
+  // ---------- Mode selection ----------
+  selectMode: 'Выберите режим работы',
+  modeHost: 'Хост',
+  modeHostDesc: 'Этот ПК — сервер. Хранит данные и обслуживает клиентов.',
+  modeClient: 'Клиент',
+  modeClientDesc: 'Подключиться к другому ПК (хосту) по сети.',
+  enterHostIp: 'Введите IP-адрес хоста',
+  hostIpPlaceholder: '192.168.100.22',
+  hostIpHint: 'IP показан на ПК-хосте после запуска в режиме «Хост»',
+  hostIpRequired: 'Введите IP-адрес',
+  hostIpInvalid: 'Неверный формат IP-адреса',
+  connect: 'Подключиться',
+  back: 'Назад',
+  changeMode: 'Сменить режим',
+  serverStartFailed: 'Не удалось запустить сервер',
+  serverStartTimeout: 'Сервер не отвечает. Попробуйте ещё раз.',
+  startingServer: 'Запуск сервера...',
+  starting: 'Запуск...',
+  copyIp: 'Копировать',
+  ipCopied: 'Скопировано',
+  hostIpForClients: 'IP для клиентов',
+  hostReadyTitle: 'Хост запущен',
+  hostReadyDesc:
+    'Передайте этот IP другим устройствам, чтобы они подключились как клиенты',
+  continueBtn: 'Продолжить',
+  loading: 'Загрузка...',
+  hostIpNote:
+    'Этот IP используется для подключения клиентов. Убедитесь, что все устройства в одной сети WiFi.',
+
+  // ---------- Server panel ----------
+  selectServer: 'Сервер',
+  activeMode: 'активен',
+  hostIpLabel: 'IP-адрес хоста',
+  connectToServer: 'Подключиться',
+  serverSwitchHint:
+    'Смените режим, если этот ПК должен быть хостом или вы хотите подключиться к другому серверу',
 
   // ---------- Cashier ----------
   activeOrders: 'Активные заказы',
@@ -32,6 +71,25 @@ export const ru: Record<TranslationKey, string> = {
   each: 'за шт',
   free: 'БЕСПЛАТНО',
   quickAccess: 'Быстрый доступ',
+  editOrder: 'Изменить',
+  cartWillBeCleared: 'Текущая корзина будет очищена. Продолжить?',
+  cancelled: 'Отменён',
+  newOrder: 'Новый заказ',
+  saveChanges: 'Сохранить',
+  editingOrder: 'Редактирование',
+  cancelEdit: 'Отменить',
+  removed: 'Удалён',
+  newItem: 'Новый',
+  newItemForm: 'Новое блюдо',
+  modified: 'Изменён',
+
+  // ---------- Set picker ----------
+  chooseSet: 'Соберите сет',
+  chooseSauce: 'Выберите соус',
+  chooseDrink: 'Выберите напиток',
+  friesIncluded: 'Картофель фри включён',
+  addToCartBtn: 'Добавить',
+  requiredChoice: 'Выберите соус и напиток',
 
   // ---------- Kitchen ----------
   kitchenDisplay: 'Экран кухни',
@@ -84,7 +142,6 @@ export const ru: Record<TranslationKey, string> = {
   editCategory: 'Изменить категорию',
   newCategory: 'Новая категория',
   editItem: 'Изменить блюдо',
-  newItem: 'Новое блюдо',
   name: 'Название',
   shortName: 'Короткое имя',
   sortOrder: 'Порядок',
@@ -120,12 +177,7 @@ export const ru: Record<TranslationKey, string> = {
   deleteCategoryConfirm: 'Удалить категорию и все её блюда?',
   deleteItemConfirm: 'Удалить это блюдо?',
 
-  // ---------- Time ago ----------
-  timeAgoJustNow: 'только что',
-  timeAgoMinutes: '{n} мин назад',
-  timeAgoHours: '{n} ч назад',
-  
-  // ---------- Undo + Confirm ----------
+  // ---------- Undo ----------
   undoLast: 'Отменить',
   confirmTitle: 'Подтверждение',
   yes: 'Да',
@@ -138,42 +190,9 @@ export const ru: Record<TranslationKey, string> = {
   statusPreparing: 'Готовится',
   statusReadyDone: 'Готово',
   statusCompleted: 'Выдан',
-  
-  editOrder: 'Изменить',
-  cartWillBeCleared: 'Текущая корзина будет очищена. Продолжить?',
-  cancelled: 'Отменён',
-  newOrder: 'Новый заказ',
-  
-  saveChanges: 'Сохранить',
-  editingOrder: 'Редактирование',
-  cancelEdit: 'Отменить',
-  removed: 'Удалён',
-  modified: 'Изменён',
-  exit: 'Выход',
-  selectRole: 'Выберите роль',
-  chooseSet: 'Соберите сет',
-  chooseSauce: 'Выберите соус',
-  chooseDrink: 'Выберите напиток',
-  friesIncluded: 'Картофель фри включён',
-  addToCartBtn: 'Добавить',
-  requiredChoice: 'Выберите соус и напиток',
-  
-  selectMode: 'Выберите режим работы',
-  modeHost: 'Хост',
-  modeHostDesc: 'Этот ПК — сервер. Хранит данные и обслуживает клиентов.',
-  modeClient: 'Клиент',
-  modeClientDesc: 'Подключиться к другому ПК (хосту) по сети.',
-  enterHostIp: 'Введите IP-адрес хоста',
-  hostIpPlaceholder: '192.168.100.22',
-  hostIpHint: 'IP показан в терминале на ПК-хосте (строка Network в логе Vite)',
-  hostIpRequired: 'Введите IP-адрес',
-  hostIpInvalid: 'Неверный формат IP-адреса',
-  connect: 'Подключиться',
-  back: 'Назад',
-  changeMode: 'Сменить режим',
-  selectServer: 'Сервер',
-  activeMode: 'активен',
-  hostIpLabel: 'IP-адрес хоста',
-  connectToServer: 'Подключиться',
-  serverSwitchHint: 'Смените режим, если этот ПК должен быть хостом или вы хотите подключиться к другому серверу',
+
+  // ---------- Time ago ----------
+  timeAgoJustNow: 'только что',
+  timeAgoMinutes: '{n} мин назад',
+  timeAgoHours: '{n} ч назад',
 };

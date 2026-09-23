@@ -9,6 +9,45 @@ export const en: Record<TranslationKey, string> = {
   online: 'Online',
   offline: 'OFFLINE',
   language: 'Language',
+  exit: 'Exit',
+  selectRole: 'Select role',
+
+  // ---------- Mode selection ----------
+  selectMode: 'Select mode',
+  modeHost: 'Host',
+  modeHostDesc: 'This PC is the server. Stores data and serves clients.',
+  modeClient: 'Client',
+  modeClientDesc: 'Connect to another PC (host) over the network.',
+  enterHostIp: 'Enter host IP address',
+  hostIpPlaceholder: '192.168.100.22',
+  hostIpHint: 'IP shown on the host PC after starting in Host mode',
+  hostIpRequired: 'Enter IP address',
+  hostIpInvalid: 'Invalid IP address format',
+  connect: 'Connect',
+  back: 'Back',
+  changeMode: 'Change mode',
+  serverStartFailed: 'Failed to start server',
+  serverStartTimeout: 'Server not responding. Try again.',
+  startingServer: 'Starting server...',
+  starting: 'Starting...',
+  copyIp: 'Copy',
+  ipCopied: 'Copied',
+  hostIpForClients: 'IP for clients',
+  hostReadyTitle: 'Host started',
+  hostReadyDesc:
+    'Share this IP with other devices so they can connect as clients',
+  continueBtn: 'Continue',
+  loading: 'Loading...',
+  hostIpNote:
+    'This IP is used for client connections. Make sure all devices are on the same WiFi network.',
+
+  // ---------- Server panel ----------
+  selectServer: 'Server',
+  activeMode: 'active',
+  hostIpLabel: 'Host IP address',
+  connectToServer: 'Connect',
+  serverSwitchHint:
+    'Switch mode if this PC should be host or if you want to connect to another server',
 
   // ---------- Cashier ----------
   activeOrders: 'Active Orders',
@@ -32,6 +71,25 @@ export const en: Record<TranslationKey, string> = {
   each: 'each',
   free: 'FREE',
   quickAccess: 'Quick Access',
+  editOrder: 'Edit',
+  cartWillBeCleared: 'Current cart will be cleared. Continue?',
+  cancelled: 'Cancelled',
+  newOrder: 'New order',
+  saveChanges: 'Save changes',
+  editingOrder: 'Editing',
+  cancelEdit: 'Cancel',
+  removed: 'Removed',
+  newItem: 'New',
+  newItemForm: 'New item',
+  modified: 'Modified',
+
+  // ---------- Set picker ----------
+  chooseSet: 'Build your set',
+  chooseSauce: 'Choose sauce',
+  chooseDrink: 'Choose drink',
+  friesIncluded: 'French Fries included',
+  addToCartBtn: 'Add',
+  requiredChoice: 'Choose sauce and drink',
 
   // ---------- Kitchen ----------
   kitchenDisplay: 'Kitchen Display',
@@ -84,7 +142,6 @@ export const en: Record<TranslationKey, string> = {
   editCategory: 'Edit Category',
   newCategory: 'New Category',
   editItem: 'Edit Item',
-  newItem: 'New Item',
   name: 'Name',
   shortName: 'Short Name',
   sortOrder: 'Sort Order',
@@ -120,12 +177,7 @@ export const en: Record<TranslationKey, string> = {
   deleteCategoryConfirm: 'Delete this category and all its items?',
   deleteItemConfirm: 'Delete this item?',
 
-  // ---------- Time ago ----------
-  timeAgoJustNow: 'just now',
-  timeAgoMinutes: '{n}m ago',
-  timeAgoHours: '{n}h ago',
-
-  // ---------- Undo + Confirm ----------
+  // ---------- Undo ----------
   undoLast: 'Undo',
   confirmTitle: 'Confirm',
   yes: 'Yes',
@@ -139,41 +191,8 @@ export const en: Record<TranslationKey, string> = {
   statusReadyDone: 'Ready',
   statusCompleted: 'Completed',
 
-  editOrder: 'Edit',
-  cartWillBeCleared: 'Current cart will be cleared. Continue?',
-  cancelled: 'Cancelled',
-  newOrder: 'New order',
-
-  saveChanges: 'Save changes',
-  editingOrder: 'Editing',
-  cancelEdit: 'Cancel',
-  removed: 'Removed',
-  modified: 'Modified',
-  exit: 'Exit',
-  selectRole: 'Select role',
-  chooseSet: 'Build your set',
-  chooseSauce: 'Choose sauce',
-  chooseDrink: 'Choose drink',
-  friesIncluded: 'French Fries included',
-  addToCartBtn: 'Add',
-  requiredChoice: 'Choose sauce and drink',
-
-  selectMode: 'Select mode',
-  modeHost: 'Host',
-  modeHostDesc: 'This PC is the server. Stores data and serves clients.',
-  modeClient: 'Client',
-  modeClientDesc: 'Connect to another PC (host) over the network.',
-  enterHostIp: 'Enter host IP address',
-  hostIpPlaceholder: '192.168.100.22',
-  hostIpHint: 'IP shown in the terminal on the host PC (Network line in Vite log)',
-  hostIpRequired: 'Enter IP address',
-  hostIpInvalid: 'Invalid IP address format',
-  connect: 'Connect',
-  back: 'Back',
-  changeMode: 'Change mode',
-  selectServer: 'Server',
-  activeMode: 'active',
-  hostIpLabel: 'Host IP address',
-  connectToServer: 'Connect',
-  serverSwitchHint: 'Switch mode if this PC should be host or if you want to connect to another server',
+  // ---------- Time ago ----------
+  timeAgoJustNow: 'just now',
+  timeAgoMinutes: '{n}m ago',
+  timeAgoHours: '{n}h ago',
 };

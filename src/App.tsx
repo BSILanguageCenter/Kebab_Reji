@@ -17,6 +17,9 @@ import {
   Wifi,
   RefreshCw,
   X,
+  Copy,
+  Check,
+  CheckCircle2,
 } from 'lucide-react';
 
 type Role = 'cashier' | 'queue' | 'kitchen' | 'manager';
@@ -24,6 +27,31 @@ type Mode = 'host' | 'client';
 
 const MODE_KEY = 'kebab-pos-mode';
 const HOST_IP_KEY = 'kebab-pos-host-ip';
+const LOCAL_IP_KEY = 'kebab-pos-local-ip';
+
+// ============================================================
+// Копирование в буфер обмена с fallback
+// ============================================================
+function copyToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      resolve();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
 
 export default function App() {
   const [mode] = useState<Mode | null>(() => {
@@ -60,6 +88,20 @@ export default function App() {
     };
   }, []);
 
+  // Автозапрос локального IP при старте в режиме host
+  useEffect(() => {
+    if (mode === 'host') {
+      fetch('/api/server/ip')
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.ip) {
+            window.localStorage.setItem(LOCAL_IP_KEY, d.ip);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [mode]);
+
   const handleModeSelect = (m: Mode, hostIp?: string) => {
     window.localStorage.setItem(MODE_KEY, m);
     if (m === 'client' && hostIp) {
@@ -71,7 +113,7 @@ export default function App() {
   };
 
   // ============================================================
-  // ЭКРАН 1: ВЫБОР РЕЖИМА (Хост / Клиент)
+  // ЭКРАН 1: ВЫБОР РЕЖИМА
   // ============================================================
   if (!mode) {
     return (
@@ -85,6 +127,7 @@ export default function App() {
   }
 
   const hostIp = window.localStorage.getItem(HOST_IP_KEY) ?? '';
+  const localIp = window.localStorage.getItem(LOCAL_IP_KEY) ?? '';
 
   // ============================================================
   // ЭКРАН 2: ВЫБОР РОЛИ
@@ -94,6 +137,7 @@ export default function App() {
       <RoleSelectionScreen
         mode={mode}
         hostIp={hostIp}
+        localIp={localIp}
         isOnline={isOnline}
         lang={lang}
         setLang={setLang}
@@ -212,11 +256,63 @@ function ModeSelectionScreen({
   onSelect: (mode: Mode, hostIp?: string) => void;
 }) {
   const { t } = useI18n();
-  const [step, setStep] = useState<'choose' | 'enter-ip'>('choose');
+  const [step, setStep] = useState<'choose' | 'enter-ip' | 'host-ready'>(
+    'choose'
+  );
   const [ip, setIp] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [localIp, setLocalIp] = useState<string | null>(null);
+  const [ipCopied, setIpCopied] = useState(false);
 
-  const handleClientNext = () => {
+  // ============================================================
+  // ХОСТ — запуск сервера и переход к экрану с IP
+  // ============================================================
+  const handleSelectHost = async () => {
+    setStarting(true);
+    setError(null);
+
+    try {
+      const res = await fetch('/api/server/start', { method: 'POST' });
+      const data = await res.json();
+
+      if (!data.ok) {
+        setError(t('serverStartFailed') + ': ' + (data.error || 'unknown'));
+        setStarting(false);
+        return;
+      }
+
+      const ready = await waitForServer('localhost', 3001, 10000);
+      if (!ready) {
+        setError(t('serverStartTimeout'));
+        setStarting(false);
+        return;
+      }
+
+      // Получаем локальный IP
+      try {
+        const ipRes = await fetch('/api/server/ip');
+        const ipData = await ipRes.json();
+        if (ipData.ip) {
+          setLocalIp(ipData.ip);
+          window.localStorage.setItem(LOCAL_IP_KEY, ipData.ip);
+        }
+      } catch {
+        // IP не критичен
+      }
+
+      setStarting(false);
+      setStep('host-ready');
+    } catch (e) {
+      setError(t('serverStartFailed') + ': ' + String(e));
+      setStarting(false);
+    }
+  };
+
+  // ============================================================
+  // КЛИЕНТ
+  // ============================================================
+  const handleClientNext = async () => {
     if (!ip.trim()) {
       setError(t('hostIpRequired'));
       return;
@@ -227,7 +323,25 @@ function ModeSelectionScreen({
       setError(t('hostIpInvalid'));
       return;
     }
+
+    setStarting(true);
+    try {
+      await fetch('/api/server/stop', { method: 'POST' }).catch(() => {});
+    } catch {
+      // ignore
+    }
     onSelect('client', ip.trim());
+  };
+
+  const handleCopyIp = async () => {
+    if (!localIp) return;
+    try {
+      await copyToClipboard(localIp);
+      setIpCopied(true);
+      setTimeout(() => setIpCopied(false), 2000);
+    } catch {
+      // ignore
+    }
   };
 
   return (
@@ -242,16 +356,37 @@ function ModeSelectionScreen({
               {t('appName')}
             </h1>
             <p className="text-sm text-gray-500 font-medium mt-0.5">
-              {step === 'choose' ? t('selectMode') : t('enterHostIp')}
+              {step === 'choose' && t('selectMode')}
+              {step === 'enter-ip' && t('enterHostIp')}
+              {step === 'host-ready' && t('hostReadyTitle')}
             </p>
           </div>
         </div>
 
+        {starting && (
+          <div className="mb-6 flex items-center gap-3 px-4 py-3 bg-blue-50 border-2 border-blue-300 rounded-xl">
+            <div className="w-5 h-5 border-2 border-blue-600/30 border-t-blue-600 rounded-full animate-spin" />
+            <span className="text-sm font-bold text-blue-800">
+              {t('startingServer')}
+            </span>
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-6 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm max-w-md text-center">
+            {error}
+          </div>
+        )}
+
+        {/* ============================================================
+            ШАГ 1 — выбор Хост / Клиент
+            ============================================================ */}
         {step === 'choose' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl w-full">
             <button
-              onClick={() => onSelect('host')}
-              className="group flex flex-col items-start gap-4 p-6 md:p-8 rounded-3xl bg-white border-2 border-gray-200 hover:border-green-400 hover:shadow-2xl ring-4 ring-transparent hover:ring-green-300 transition-all active:scale-[0.98] text-left"
+              onClick={handleSelectHost}
+              disabled={starting}
+              className="group flex flex-col items-start gap-4 p-6 md:p-8 rounded-3xl bg-white border-2 border-gray-200 hover:border-green-400 hover:shadow-2xl ring-4 ring-transparent hover:ring-green-300 transition-all active:scale-[0.98] text-left disabled:opacity-60 disabled:cursor-wait"
             >
               <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center text-white shadow-lg shadow-green-500/40 transition-transform group-hover:scale-110">
                 <Server className="w-10 h-10" />
@@ -268,7 +403,8 @@ function ModeSelectionScreen({
 
             <button
               onClick={() => setStep('enter-ip')}
-              className="group flex flex-col items-start gap-4 p-6 md:p-8 rounded-3xl bg-white border-2 border-gray-200 hover:border-blue-400 hover:shadow-2xl ring-4 ring-transparent hover:ring-blue-300 transition-all active:scale-[0.98] text-left"
+              disabled={starting}
+              className="group flex flex-col items-start gap-4 p-6 md:p-8 rounded-3xl bg-white border-2 border-gray-200 hover:border-blue-400 hover:shadow-2xl ring-4 ring-transparent hover:ring-blue-300 transition-all active:scale-[0.98] text-left disabled:opacity-60"
             >
               <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-blue-500/40 transition-transform group-hover:scale-110">
                 <Smartphone className="w-10 h-10" />
@@ -285,6 +421,9 @@ function ModeSelectionScreen({
           </div>
         )}
 
+        {/* ============================================================
+            ШАГ 2 — ввод IP хоста (режим клиента)
+            ============================================================ */}
         {step === 'enter-ip' && (
           <div className="w-full max-w-md">
             <div className="bg-white rounded-3xl border-2 border-gray-200 p-6 shadow-xl">
@@ -334,12 +473,88 @@ function ModeSelectionScreen({
                 </button>
                 <button
                   onClick={handleClientNext}
-                  disabled={!ip.trim()}
+                  disabled={!ip.trim() || starting}
                   className="flex-1 py-3 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 text-white text-sm font-bold transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-blue-500/30"
                 >
-                  {t('connect')}
+                  {starting ? t('starting') : t('connect')}
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================
+            ШАГ 3 — хост запущен, показываем IP + кнопка копирования
+            ============================================================ */}
+        {step === 'host-ready' && (
+          <div className="w-full max-w-lg">
+            <div className="bg-white rounded-3xl border-2 border-green-300 p-6 md:p-8 shadow-xl">
+              {/* Иконка успеха */}
+              <div className="flex flex-col items-center text-center mb-6">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center shadow-lg shadow-green-500/30 mb-4">
+                  <CheckCircle2 className="w-9 h-9 text-white" />
+                </div>
+                <div className="text-2xl font-black text-gray-900 mb-1">
+                  {t('hostReadyTitle')}
+                </div>
+                <div className="text-sm text-gray-500 leading-snug max-w-sm">
+                  {t('hostReadyDesc')}
+                </div>
+              </div>
+
+              {/* IP-адрес + кнопка копирования */}
+              <div className="bg-slate-50 border-2 border-dashed border-gray-300 rounded-2xl p-4 mb-5">
+                <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-2 text-center">
+                  {t('hostIpForClients')}
+                </div>
+
+                {localIp ? (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-white border-2 border-green-400 rounded-xl px-4 py-3 text-center">
+                      <span className="text-2xl font-black text-green-700 font-mono tracking-wider">
+                        {localIp}
+                      </span>
+                    </div>
+                    <button
+                      onClick={handleCopyIp}
+                      className={`flex items-center gap-2 px-4 py-3 rounded-xl font-bold text-sm transition-all active:scale-[0.97] shadow-md ${
+                        ipCopied
+                          ? 'bg-green-500 text-white shadow-green-500/30'
+                          : 'bg-gradient-to-r from-orange-500 to-red-600 text-white shadow-orange-500/30'
+                      }`}
+                    >
+                      {ipCopied ? (
+                        <>
+                          <Check className="w-5 h-5" />
+                          {t('ipCopied')}
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-5 h-5" />
+                          {t('copyIp')}
+                        </>
+                      )}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center gap-2 py-3 text-gray-400">
+                    <div className="w-5 h-5 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />
+                    <span className="text-sm">{t('loading')}</span>
+                  </div>
+                )}
+
+                <div className="mt-3 text-[11px] text-gray-500 text-center leading-snug">
+                  💡 {t('hostIpNote')}
+                </div>
+              </div>
+
+              {/* Кнопка продолжить */}
+              <button
+                onClick={() => onSelect('host')}
+                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 text-white text-base font-bold transition-all active:scale-[0.98] shadow-md shadow-green-500/30"
+              >
+                {t('continueBtn')}
+              </button>
             </div>
           </div>
         )}
@@ -361,11 +576,38 @@ function ModeSelectionScreen({
 }
 
 // ============================================================
-// ЭКРАН ВЫБОРА РОЛИ (с кнопкой сервера в правом верхнем углу)
+// ОЖИДАНИЕ ГОТОВНОСТИ СЕРВЕРА
+// ============================================================
+async function waitForServer(
+  host: string,
+  port: number,
+  timeoutMs: number
+): Promise<boolean> {
+  const start = Date.now();
+  const url = `http://${host}:${port}/health`;
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 500);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (res.ok) return true;
+    } catch {
+      // сервер ещё не готов
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return false;
+}
+
+// ============================================================
+// ЭКРАН ВЫБОРА РОЛИ
 // ============================================================
 function RoleSelectionScreen({
   mode,
   hostIp,
+  localIp,
   isOnline,
   lang,
   setLang,
@@ -373,6 +615,7 @@ function RoleSelectionScreen({
 }: {
   mode: Mode;
   hostIp: string;
+  localIp: string;
   isOnline: boolean;
   lang: Lang;
   setLang: (l: Lang) => void;
@@ -382,6 +625,18 @@ function RoleSelectionScreen({
   const [panelOpen, setPanelOpen] = useState(false);
   const [editIp, setEditIp] = useState(hostIp);
   const [error, setError] = useState<string | null>(null);
+  const [ipCopied, setIpCopied] = useState(false);
+
+  const handleCopyIp = async () => {
+    if (!localIp) return;
+    try {
+      await copyToClipboard(localIp);
+      setIpCopied(true);
+      setTimeout(() => setIpCopied(false), 2000);
+    } catch {
+      // ignore
+    }
+  };
 
   const handleSaveClientIp = () => {
     if (!editIp.trim()) {
@@ -407,7 +662,6 @@ function RoleSelectionScreen({
 
   return (
     <div className="h-dvh bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200 flex flex-col">
-      {/* Шапка с выбором сервера в правом углу */}
       <header className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-white/60 backdrop-blur-sm shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-md shadow-orange-500/20">
@@ -418,7 +672,6 @@ function RoleSelectionScreen({
           </span>
         </div>
 
-        {/* Кнопка выбора сервера */}
         <div className="relative">
           <button
             onClick={() => setPanelOpen((v) => !v)}
@@ -441,6 +694,11 @@ function RoleSelectionScreen({
                 {hostIp}
               </span>
             )}
+            {mode === 'host' && localIp && (
+              <span className="text-[10px] font-mono opacity-70 hidden sm:inline">
+                {localIp}
+              </span>
+            )}
             <RefreshCw
               className={`w-3 h-3 opacity-60 transition-transform ${
                 panelOpen ? 'rotate-180' : ''
@@ -448,17 +706,14 @@ function RoleSelectionScreen({
             />
           </button>
 
-          {/* Выпадающая панель */}
           {panelOpen && (
             <>
-              {/* Клик вне панели — закрывает */}
               <div
                 className="fixed inset-0 z-40"
                 onClick={() => setPanelOpen(false)}
               />
 
               <div className="absolute right-0 top-full mt-2 z-50 w-80 bg-white rounded-2xl border-2 border-gray-200 shadow-2xl overflow-hidden">
-                {/* Заголовок */}
                 <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-slate-50">
                   <div className="text-sm font-black text-gray-900">
                     {t('selectServer')}
@@ -471,9 +726,8 @@ function RoleSelectionScreen({
                   </button>
                 </div>
 
-                {/* Текущий режим */}
                 <div className="p-3 space-y-2">
-                  {/* Хост */}
+                  {/* ХОСТ */}
                   <button
                     onClick={() => {
                       if (mode === 'host') {
@@ -512,7 +766,35 @@ function RoleSelectionScreen({
                     )}
                   </button>
 
-                  {/* Клиент */}
+                  {/* IP хоста — показываем если хост */}
+                  {mode === 'host' && localIp && (
+                    <div className="rounded-xl border-2 border-green-300 bg-green-50 p-3">
+                      <div className="text-[10px] font-bold text-green-700 uppercase tracking-wider mb-2">
+                        {t('hostIpForClients')}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 bg-white border border-green-300 rounded-lg px-3 py-2 text-center font-mono font-black text-green-700 text-sm">
+                          {localIp}
+                        </div>
+                        <button
+                          onClick={handleCopyIp}
+                          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold transition-all active:scale-[0.97] shadow-sm ${
+                            ipCopied
+                              ? 'bg-green-500 text-white'
+                              : 'bg-white border border-green-400 text-green-700 hover:bg-green-100'
+                          }`}
+                        >
+                          {ipCopied ? (
+                            <Check className="w-3.5 h-3.5" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* КЛИЕНТ */}
                   <div
                     className={`rounded-xl border-2 transition-all ${
                       mode === 'client'
@@ -523,8 +805,6 @@ function RoleSelectionScreen({
                     <button
                       onClick={() => {
                         if (mode === 'client') return;
-                        // Переключаемся в режим клиент — сохранение в localStorage
-                        // произойдёт при клике на "Подключиться" (там есть IP)
                       }}
                       className="w-full flex items-start gap-3 p-3 text-left"
                     >
@@ -552,7 +832,6 @@ function RoleSelectionScreen({
                       )}
                     </button>
 
-                    {/* Поле IP */}
                     <div className="px-3 pb-3 space-y-2">
                       <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">
                         {t('hostIpLabel')}
@@ -586,7 +865,6 @@ function RoleSelectionScreen({
                   </div>
                 </div>
 
-                {/* Подвал с подсказкой */}
                 <div className="px-4 py-2.5 border-t border-gray-200 bg-slate-50 text-[10px] text-gray-500 leading-snug">
                   💡 {t('serverSwitchHint')}
                 </div>
@@ -596,7 +874,6 @@ function RoleSelectionScreen({
         </div>
       </header>
 
-      {/* Основной контент — выбор роли */}
       <div className="flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
         <div className="flex flex-col items-center gap-3 mb-10">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-lg shadow-orange-500/30">

@@ -2,7 +2,7 @@
 // СПИСОК КЛЮЧЕЙ ПЕРЕВОДА
 //
 // Единственное место, где определены ключи.
-// Каждый языковой файл (ru.ts, en.ts, uz.ts) импортирует
+// Каждый языковой файл (ru.ts, en.ts) импортирует
 // отсюда тип TranslationKey и обязан перевести ВСЕ ключи.
 //
 // При добавлении нового ключа:
@@ -20,6 +20,42 @@ export const translationKeys = [
   'online',
   'offline',
   'language',
+  'exit',
+  'selectRole',
+
+  // ---------- Mode selection ----------
+  'selectMode',
+  'modeHost',
+  'modeHostDesc',
+  'modeClient',
+  'modeClientDesc',
+  'enterHostIp',
+  'hostIpPlaceholder',
+  'hostIpHint',
+  'hostIpRequired',
+  'hostIpInvalid',
+  'connect',
+  'back',
+  'changeMode',
+  'serverStartFailed',
+  'serverStartTimeout',
+  'startingServer',
+  'starting',
+  'copyIp',
+  'ipCopied',
+  'hostIpForClients',
+  'hostReadyTitle',
+  'hostReadyDesc',
+  'continueBtn',
+  'loading',
+  'hostIpNote',
+
+  // ---------- Server panel ----------
+  'selectServer',
+  'activeMode',
+  'hostIpLabel',
+  'connectToServer',
+  'serverSwitchHint',
 
   // ---------- Cashier ----------
   'activeOrders',
@@ -43,6 +79,25 @@ export const translationKeys = [
   'each',
   'free',
   'quickAccess',
+  'editOrder',
+  'cartWillBeCleared',
+  'cancelled',
+  'newOrder',
+  'saveChanges',
+  'editingOrder',
+  'cancelEdit',
+  'removed',
+  'newItem',
+  'newItemForm',
+  'modified',
+
+  // ---------- Set picker ----------
+  'chooseSet',
+  'chooseSauce',
+  'chooseDrink',
+  'friesIncluded',
+  'addToCartBtn',
+  'requiredChoice',
 
   // ---------- Kitchen ----------
   'kitchenDisplay',
@@ -60,7 +115,7 @@ export const translationKeys = [
   'note',
   'reprint',
 
-  // ---------- Queue (new) ----------
+  // ---------- Queue ----------
   'queue',
   'columnNew',
   'columnPreparing',
@@ -95,7 +150,6 @@ export const translationKeys = [
   'editCategory',
   'newCategory',
   'editItem',
-  'newItem',
   'name',
   'shortName',
   'sortOrder',
@@ -130,12 +184,7 @@ export const translationKeys = [
   'deleteCategoryConfirm',
   'deleteItemConfirm',
 
-  // ---------- Time ago ----------
-  'timeAgoJustNow',
-  'timeAgoMinutes',
-  'timeAgoHours',
-
-  // ---------- Undo + Confirm ----------
+  // ---------- Undo ----------
   'undoLast',
   'confirmTitle',
   'yes',
@@ -148,46 +197,11 @@ export const translationKeys = [
   'statusPreparing',
   'statusReadyDone',
   'statusCompleted',
-  
-  // ---------- Cashier edit ----------
-  'editOrder',
-  'cartWillBeCleared',
-  'cancelled',
-  'newOrder',
 
-  'saveChanges',
-  'editingOrder',
-  'cancelEdit',
-  'removed',
-  'modified',
-  'exit',
-  'selectRole',
-  'chooseSet',
-  'chooseSauce',
-  'chooseDrink',
-  'friesIncluded',
-  'addToCartBtn',
-  'requiredChoice',
-
-  // Режим работы
-  'selectMode',
-  'modeHost',
-  'modeHostDesc',
-  'modeClient',
-  'modeClientDesc',
-  'enterHostIp',
-  'hostIpPlaceholder',
-  'hostIpHint',
-  'hostIpRequired',
-  'hostIpInvalid',
-  'connect',
-  'back',
-  'changeMode',
-  'selectServer',
-  'activeMode',
-  'hostIpLabel',
-  'connectToServer',
-  'serverSwitchHint',
+  // ---------- Time ago ----------
+  'timeAgoJustNow',
+  'timeAgoMinutes',
+  'timeAgoHours',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];
