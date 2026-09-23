@@ -907,7 +907,7 @@ function ItemForm({
   };
 
   return (
-    <Modal title={item ? t('editItem') : t('newItem')} onClose={onClose}>
+    <Modal title={item ? t('editItem') : t('newItemForm')} onClose={onClose}>
       {error && (
         <div className="mb-3 p-2 bg-red-50 border border-red-300 rounded-lg text-red-700 text-sm">
           {error}
