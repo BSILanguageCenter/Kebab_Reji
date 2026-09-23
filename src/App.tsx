@@ -26,7 +26,7 @@ const MODE_KEY = 'kebab-pos-mode';
 const HOST_IP_KEY = 'kebab-pos-host-ip';
 
 export default function App() {
-  const [mode, setMode] = useState<Mode | null>(() => {
+  const [mode] = useState<Mode | null>(() => {
     if (typeof window === 'undefined') return null;
     const stored = window.localStorage.getItem(MODE_KEY);
     return stored === 'host' || stored === 'client' ? stored : null;
@@ -70,12 +70,6 @@ export default function App() {
     window.location.reload();
   };
 
-  const handleChangeMode = () => {
-    window.localStorage.removeItem(MODE_KEY);
-    window.localStorage.removeItem(HOST_IP_KEY);
-    window.location.reload();
-  };
-
   // ============================================================
   // ЭКРАН 1: ВЫБОР РЕЖИМА (Хост / Клиент)
   // ============================================================
@@ -103,7 +97,6 @@ export default function App() {
         isOnline={isOnline}
         lang={lang}
         setLang={setLang}
-        onChangeMode={handleChangeMode}
         onSelectRole={setRole}
       />
     );
@@ -376,7 +369,6 @@ function RoleSelectionScreen({
   isOnline,
   lang,
   setLang,
-  onChangeMode,
   onSelectRole,
 }: {
   mode: Mode;
@@ -384,7 +376,6 @@ function RoleSelectionScreen({
   isOnline: boolean;
   lang: Lang;
   setLang: (l: Lang) => void;
-  onChangeMode: () => void;
   onSelectRole: (role: Role) => void;
 }) {
   const { t } = useI18n();
@@ -416,9 +407,7 @@ function RoleSelectionScreen({
 
   return (
     <div className="h-dvh bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200 flex flex-col">
-      {/* ============================================================
-          ШАПКА С ВЫБОРОМ СЕРВЕРА В ПРАВОМ УГЛУ
-          ============================================================ */}
+      {/* Шапка с выбором сервера в правом углу */}
       <header className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-white/60 backdrop-blur-sm shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-md shadow-orange-500/20">
@@ -534,8 +523,8 @@ function RoleSelectionScreen({
                     <button
                       onClick={() => {
                         if (mode === 'client') return;
-                        // Переключаемся в режим клиент
-                        window.localStorage.setItem(MODE_KEY, 'client');
+                        // Переключаемся в режим клиент — сохранение в localStorage
+                        // произойдёт при клике на "Подключиться" (там есть IP)
                       }}
                       className="w-full flex items-start gap-3 p-3 text-left"
                     >
@@ -563,7 +552,7 @@ function RoleSelectionScreen({
                       )}
                     </button>
 
-                    {/* Поле IP — показываем если клиент или открыт */}
+                    {/* Поле IP */}
                     <div className="px-3 pb-3 space-y-2">
                       <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">
                         {t('hostIpLabel')}
@@ -607,9 +596,7 @@ function RoleSelectionScreen({
         </div>
       </header>
 
-      {/* ============================================================
-          ОСНОВНОЙ КОНТЕНТ — ВЫБОР РОЛИ
-          ============================================================ */}
+      {/* Основной контент — выбор роли */}
       <div className="flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
         <div className="flex flex-col items-center gap-3 mb-10">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-lg shadow-orange-500/30">
