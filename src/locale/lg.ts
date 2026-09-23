@@ -60,6 +60,14 @@ export const translationKeys = [
   'note',
   'reprint',
 
+  // ---------- Queue (new) ----------
+  'queue',
+  'columnNew',
+  'columnPreparing',
+  'columnReady',
+  'takeInWork',
+  'issueOrder',
+
   // ---------- Manager ----------
   'statistics',
   'menuManagement',
@@ -126,6 +134,60 @@ export const translationKeys = [
   'timeAgoJustNow',
   'timeAgoMinutes',
   'timeAgoHours',
+
+  // ---------- Undo + Confirm ----------
+  'undoLast',
+  'confirmTitle',
+  'yes',
+  'no',
+  'confirmMarkReady',
+  'confirmIssue',
+  'confirmUndo',
+  'nothingToUndo',
+  'statusNew',
+  'statusPreparing',
+  'statusReadyDone',
+  'statusCompleted',
+  
+  // ---------- Cashier edit ----------
+  'editOrder',
+  'cartWillBeCleared',
+  'cancelled',
+  'newOrder',
+
+  'saveChanges',
+  'editingOrder',
+  'cancelEdit',
+  'removed',
+  'modified',
+  'exit',
+  'selectRole',
+  'chooseSet',
+  'chooseSauce',
+  'chooseDrink',
+  'friesIncluded',
+  'addToCartBtn',
+  'requiredChoice',
+
+  // Режим работы
+  'selectMode',
+  'modeHost',
+  'modeHostDesc',
+  'modeClient',
+  'modeClientDesc',
+  'enterHostIp',
+  'hostIpPlaceholder',
+  'hostIpHint',
+  'hostIpRequired',
+  'hostIpInvalid',
+  'connect',
+  'back',
+  'changeMode',
+  'selectServer',
+  'activeMode',
+  'hostIpLabel',
+  'connectToServer',
+  'serverSwitchHint',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];
