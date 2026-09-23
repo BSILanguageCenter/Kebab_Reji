@@ -4,10 +4,21 @@ import App from './App.tsx';
 import { I18nProvider } from '@/locale';
 import './index.css';
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
+const root = createRoot(document.getElementById('root')!);
+
+// В продакшене без StrictMode, чтобы избежать двойных запросов
+if (import.meta.env.PROD) {
+  root.render(
     <I18nProvider>
       <App />
     </I18nProvider>
-  </StrictMode>
-);
+  );
+} else {
+  root.render(
+    <StrictMode>
+      <I18nProvider>
+        <App />
+      </I18nProvider>
+    </StrictMode>
+  );
+}

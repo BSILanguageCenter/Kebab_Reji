@@ -49,6 +49,14 @@ export const en: Record<TranslationKey, string> = {
   note: 'Note',
   reprint: 'Reprint',
 
+  // ---------- Queue ----------
+  queue: 'Queue',
+  columnNew: 'Order',
+  columnPreparing: 'Preparing',
+  columnReady: 'Ready',
+  takeInWork: 'Take in work',
+  issueOrder: 'Issue',
+
   // ---------- Manager ----------
   statistics: 'Statistics',
   menuManagement: 'Menu Management',
@@ -116,4 +124,37 @@ export const en: Record<TranslationKey, string> = {
   timeAgoJustNow: 'just now',
   timeAgoMinutes: '{n}m ago',
   timeAgoHours: '{n}h ago',
+
+  // ---------- Undo + Confirm ----------
+  undoLast: 'Undo',
+  confirmTitle: 'Confirm',
+  yes: 'Yes',
+  no: 'No',
+  confirmMarkReady: 'Mark order #{n} as ready?',
+  confirmIssue: 'Issue order #{n}?',
+  confirmUndo: 'Revert order #{n} to "{status}"?',
+  nothingToUndo: 'Nothing to undo',
+  statusNew: 'New',
+  statusPreparing: 'Preparing',
+  statusReadyDone: 'Ready',
+  statusCompleted: 'Completed',
+
+  editOrder: 'Edit',
+  cartWillBeCleared: 'Current cart will be cleared. Continue?',
+  cancelled: 'Cancelled',
+  newOrder: 'New order',
+
+  saveChanges: 'Save changes',
+  editingOrder: 'Editing',
+  cancelEdit: 'Cancel',
+  removed: 'Removed',
+  modified: 'Modified',
+  exit: 'Exit',
+  selectRole: 'Select role',
+  chooseSet: 'Build your set',
+  chooseSauce: 'Choose sauce',
+  chooseDrink: 'Choose drink',
+  friesIncluded: 'French Fries included',
+  addToCartBtn: 'Add',
+  requiredChoice: 'Choose sauce and drink',
 };

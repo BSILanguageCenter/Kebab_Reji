@@ -49,6 +49,14 @@ export const ru: Record<TranslationKey, string> = {
   note: 'Примечание',
   reprint: 'Печать',
 
+  // ---------- Queue ----------
+  queue: 'Очередь',
+  columnNew: 'Заказ',
+  columnPreparing: 'Готовится',
+  columnReady: 'Готово',
+  takeInWork: 'Взять в работу',
+  issueOrder: 'Выдать',
+
   // ---------- Manager ----------
   statistics: 'Статистика',
   menuManagement: 'Управление меню',
@@ -116,4 +124,37 @@ export const ru: Record<TranslationKey, string> = {
   timeAgoJustNow: 'только что',
   timeAgoMinutes: '{n} мин назад',
   timeAgoHours: '{n} ч назад',
+  
+  // ---------- Undo + Confirm ----------
+  undoLast: 'Отменить',
+  confirmTitle: 'Подтверждение',
+  yes: 'Да',
+  no: 'Нет',
+  confirmMarkReady: 'Отметить заказ #{n} как готовый?',
+  confirmIssue: 'Выдать заказ #{n}?',
+  confirmUndo: 'Вернуть заказ #{n} к статусу «{status}»?',
+  nothingToUndo: 'Нечего отменять',
+  statusNew: 'Новый',
+  statusPreparing: 'Готовится',
+  statusReadyDone: 'Готово',
+  statusCompleted: 'Выдан',
+  
+  editOrder: 'Изменить',
+  cartWillBeCleared: 'Текущая корзина будет очищена. Продолжить?',
+  cancelled: 'Отменён',
+  newOrder: 'Новый заказ',
+  
+  saveChanges: 'Сохранить',
+  editingOrder: 'Редактирование',
+  cancelEdit: 'Отменить',
+  removed: 'Удалён',
+  modified: 'Изменён',
+  exit: 'Выход',
+  selectRole: 'Выберите роль',
+  chooseSet: 'Соберите сет',
+  chooseSauce: 'Выберите соус',
+  chooseDrink: 'Выберите напиток',
+  friesIncluded: 'Картофель фри включён',
+  addToCartBtn: 'Добавить',
+  requiredChoice: 'Выберите соус и напиток',
 };

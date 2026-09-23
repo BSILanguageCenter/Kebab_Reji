@@ -24,6 +24,7 @@ import {
 } from '@/services/menu';
 import { formatYen } from '@/locale/format';
 import { useI18n, type TranslationKey } from '@/locale';
+import { PageActions } from '@/components/PageActions';
 import type { MenuCategory, MenuItem } from '@/types/database';
 import {
   BarChart3,
@@ -48,34 +49,32 @@ export default function ManagerPage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
-      <div className="flex items-center gap-2 p-4 bg-white border-b border-gray-200 shrink-0 shadow-sm">
-        <BarChart3 className="w-6 h-6 text-orange-500" />
-        <h1 className="text-xl font-bold mr-6 text-gray-900">{t('manager')}</h1>
+      <PageActions>
         <div className="flex gap-1">
           <button
             onClick={() => setTab('stats')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
               tab === 'stats'
                 ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
             }`}
           >
-            <BarChart3 className="w-4 h-4" />
+            <BarChart3 className="w-3.5 h-3.5" />
             {t('statistics')}
           </button>
           <button
             onClick={() => setTab('menu')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
               tab === 'menu'
                 ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
             }`}
           >
-            <Tag className="w-4 h-4" />
+            <Tag className="w-3.5 h-3.5" />
             {t('menuManagement')}
           </button>
         </div>
-      </div>
+      </PageActions>
 
       <div className="flex-1 min-h-0 overflow-hidden">
         {tab === 'stats' && <StatisticsTab />}
@@ -160,14 +159,14 @@ function StatisticsTab() {
               type="date"
               value={customStart}
               onChange={(e) => setCustomStart(e.target.value)}
-              className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
+              className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-orange-500"
             />
             <span className="text-gray-500">{t('to')}</span>
             <input
               type="date"
               value={customEnd}
               onChange={(e) => setCustomEnd(e.target.value)}
-              className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
+              className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:border-orange-500"
             />
           </div>
         )}
@@ -235,7 +234,7 @@ function StatisticsTab() {
                     {h.count || ''}
                   </div>
                   <div
-                    className="w-full rounded-t-md bg-gradient-to-t from-orange-500 to-orange-400 transition-all hover:from-orange-600 hover:to-orange-500"
+                    className="w-full rounded-t-md bg-gradient-to-t from-orange-500 to-orange-400 transition-all"
                     style={{
                       height: `${(h.count / maxHourlyCount) * 100}%`,
                       minHeight: h.count > 0 ? '4px' : '0',
@@ -495,6 +494,7 @@ function MenuManagementTab() {
                         src={coverImage}
                         alt={cat.name}
                         className="w-full h-full object-cover"
+                        loading="lazy"
                       />
                     ) : (
                       <span className="text-sm font-black text-orange-500">
@@ -555,6 +555,7 @@ function MenuManagementTab() {
                                   src={displayImage}
                                   alt={item.variant || item.name}
                                   className="w-full h-full object-cover"
+                                  loading="lazy"
                                 />
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center text-xs text-gray-500 font-bold">
@@ -629,7 +630,7 @@ function MenuManagementTab() {
 }
 
 // ============================================================
-// CATEGORY FORM — с обложкой
+// CATEGORY FORM
 // ============================================================
 function CategoryForm({
   category,
