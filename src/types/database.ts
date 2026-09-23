@@ -1,6 +1,6 @@
 export type OrderType = 'INSIDE' | 'OUTSIDE';
 export type OrderStatus = 'NEW' | 'PREPARING' | 'READY' | 'COMPLETED' | 'CANCELLED';
-export type OptionType = 'sauce' | 'topping';
+export type OptionType = 'sauce' | 'topping' | 'drink';
 
 export interface MenuCategory {
   id: string;
@@ -46,6 +46,8 @@ export interface OrderItem {
   quantity: number;
   subtotal: number;
   created_at: string;
+  is_removed: boolean;
+  is_added_later: boolean;
   options?: OrderItemOption[];
 }
 
@@ -60,6 +62,7 @@ export interface Order {
   updated_at: string;
   completed_at: string | null;
   order_items?: OrderItem[];
+  is_modified?: boolean; 
 }
 
 export interface CartItemOption {
@@ -78,6 +81,9 @@ export interface CartItem {
   price: number;
   quantity: number;
   options: CartItemOption[];
+  is_removed?: boolean;
+  is_added_later?: boolean;
+  db_id?: string;
 }
 
 export interface MenuItemWithCategory extends MenuItem {
