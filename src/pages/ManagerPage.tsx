@@ -49,7 +49,7 @@ export default function ManagerPage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
-      <PageActions>
+      <PageActions forRole="manager">
         <div className="flex gap-1">
           <button
             onClick={() => setTab('stats')}

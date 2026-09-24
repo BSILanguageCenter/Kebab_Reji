@@ -35,11 +35,8 @@ export default function KitchenPage() {
   const [error, setError] = useState<string | null>(null);
   const [pendingUndo, setPendingUndo] = useState<UndoRecord | null>(null);
 
-  const undoStack = useUndoStack();
+  const undoStack = useUndoStack('kitchen');
 
-  // ============================================================
-  // Подписки на сервер
-  // ============================================================
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
       setOrders(snap.orders);
@@ -62,7 +59,8 @@ export default function KitchenPage() {
   const { kitchen } = splitOrders(orders);
 
   const handleReady = async (order: Order) => {
-    pushUndo({
+    pushUndo('kitchen', {
+      kind: 'status',
       orderId: order.id,
       orderNumber: order.order_number,
       fromStatus: order.status,
@@ -87,9 +85,10 @@ export default function KitchenPage() {
   };
 
   const confirmUndo = async () => {
-    const rec = popUndo();
+    const rec = popUndo('kitchen');
     setPendingUndo(null);
     if (!rec) return;
+    if (rec.kind !== 'status' || !rec.fromStatus) return;
     try {
       await emitUpdateStatus(rec.orderId, rec.fromStatus);
     } catch (e) {
@@ -125,7 +124,7 @@ export default function KitchenPage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
-      <PageActions>
+      <PageActions forRole="kitchen">
         <StatPill
           label={t('preparing')}
           count={kitchen.length}
@@ -138,7 +137,7 @@ export default function KitchenPage() {
             lastUndo
               ? t('confirmUndo')
                   .replace('{n}', String(lastUndo.orderNumber))
-                  .replace('{status}', statusLabel(lastUndo.fromStatus))
+                  .replace('{status}', statusLabel(lastUndo.fromStatus ?? 'NEW'))
               : t('nothingToUndo')
           }
           className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -193,7 +192,10 @@ export default function KitchenPage() {
           pendingUndo
             ? t('confirmUndo')
                 .replace('{n}', String(pendingUndo.orderNumber))
-                .replace('{status}', statusLabel(pendingUndo.fromStatus))
+                .replace(
+                  '{status}',
+                  statusLabel(pendingUndo.fromStatus ?? 'NEW')
+                )
             : ''
         }
         confirmLabel={t('yes')}

@@ -10,3 +10,9 @@ npm install -D concurrently
 
 cd D:\MyPC\Desktop\Project\Kebab_Reji\server
 npm install
+
+VITE_SUPABASE_URL=https://ecoudnfpgibkvyjtazvu.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_CgpCgeHbrKWpwos-eS_mEw_De_JHs9s
+PORT=3001
+SUPABASE_URL=https://ecoudnfpgibkvyjtazvu.supabase.co
+SUPABASE_KEY=sb_publishable_CgpCgeHbrKWpwos-eS_mEw_De_JHs9s

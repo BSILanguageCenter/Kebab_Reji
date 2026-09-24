@@ -195,4 +195,7 @@ export const en: Record<TranslationKey, string> = {
   timeAgoJustNow: 'just now',
   timeAgoMinutes: '{n}m ago',
   timeAgoHours: '{n}h ago',
+  undoCreateOrder: 'Cancel just-created order #{n}?',
+  undoEditOrder: 'Revert order #{n} to previous version?',
+  devicesOnline: 'online',
 };

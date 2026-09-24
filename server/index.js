@@ -1,4 +1,4 @@
-// ⚠️ ЭТОТ ИМПОРТ ДОЛЖЕН БЫТЬ ПЕРВЫМ — он загружает .env
+// ⚠️ ЭТОТ ИМПОРТ ДОЛЖЕН БЫТЬ ПЕРВЫМ — он загружает .env и делает fallback
 import './env.js';
 
 import express from 'express';
@@ -28,6 +28,7 @@ app.get('/health', (_req, res) => {
     online: isSupabaseOnline(),
     orders: stats.totalOrders,
     unsynced: stats.unsyncedCount,
+    clients: io.engine.clientsCount,
     uptime: Math.floor(process.uptime()),
   });
 });
@@ -42,25 +43,40 @@ const io = new SocketIOServer(httpServer, {
   pingTimeout: 5000,
 });
 
+// ============================================================
+// ЕДИНЫЙ BROADCAST — один listener на весь io
+// ============================================================
+store.on('orders-changed', () => {
+  io.emit('orders', store.getAllOrders());
+});
+
+store.on('menu-changed', () => {
+  io.emit('menu', store.getMenu());
+});
+
+// ============================================================
+// СЧЁТЧИК ПОДКЛЮЧЁННЫХ КЛИЕНТОВ
+// ============================================================
+function broadcastClientsCount() {
+  const count = io.engine.clientsCount;
+  io.emit('clients-count', count);
+  console.log(`[ws] clients-count: ${count}`);
+}
+
+// ============================================================
+// ПОДКЛЮЧЕНИЕ КЛИЕНТОВ
+// ============================================================
 io.on('connection', (socket) => {
   console.log(`[ws] + ${socket.id} (всего: ${io.engine.clientsCount})`);
 
-  // Отправляем полный снимок новому клиенту
+  // Отправляем снимок при подключении
   socket.emit('init', {
     orders: store.getAllOrders(),
     menu: store.getMenu(),
   });
 
-  // Broadcast изменений
-  const onOrdersChanged = () => {
-    io.emit('orders', store.getAllOrders());
-  };
-  const onMenuChanged = () => {
-    io.emit('menu', store.getMenu());
-  };
-
-  store.on('orders-changed', onOrdersChanged);
-  store.on('menu-changed', onMenuChanged);
+  // Отправляем всем актуальный счётчик клиентов
+  broadcastClientsCount();
 
   // ---------- СОЗДАНИЕ ЗАКАЗА ----------
   socket.on('create-order', (order, ack) => {
@@ -104,8 +120,8 @@ io.on('connection', (socket) => {
   // ---------- ОТКЛЮЧЕНИЕ ----------
   socket.on('disconnect', () => {
     console.log(`[ws] - ${socket.id} (всего: ${io.engine.clientsCount})`);
-    store.off('orders-changed', onOrdersChanged);
-    store.off('menu-changed', onMenuChanged);
+    // Обновляем счётчик у остальных после того, как Socket.IO обновит свой счётчик
+    setTimeout(() => broadcastClientsCount(), 100);
   });
 });
 

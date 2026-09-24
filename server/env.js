@@ -8,7 +8,9 @@ const envPath = join(__dirname, '..', '.env');
 // Загружаем .env из КОРНЯ проекта
 dotenv.config({ path: envPath });
 
-// Fallback: если есть VITE_-переменные, используем их и для сервера
+// ============================================================
+// Fallback: если есть VITE_-переменные, используем их для сервера
+// ============================================================
 if (!process.env.SUPABASE_URL && process.env.VITE_SUPABASE_URL) {
   process.env.SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 }

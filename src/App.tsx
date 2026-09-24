@@ -4,7 +4,8 @@ import KitchenPage from '@/pages/KitchenPage';
 import ManagerPage from '@/pages/ManagerPage';
 import QueuePage from '@/pages/QueuePage';
 import { useI18n, languages, type Lang, type TranslationKey } from '@/locale';
-import { PageActionsContext } from '@/components/PageActions';
+import { PageActionsContext, ActiveRoleContext, type PageRole } from '@/components/PageActions';
+import { getSocket, subscribeClientsCount } from '@/lib/socket';
 import {
   UtensilsCrossed,
   ChefHat,
@@ -53,6 +54,32 @@ function copyToClipboard(text: string): Promise<void> {
   });
 }
 
+// ============================================================
+// Ожидание готовности сервера
+// ============================================================
+async function waitForServer(
+  host: string,
+  port: number,
+  timeoutMs: number
+): Promise<boolean> {
+  const start = Date.now();
+  const url = `http://${host}:${port}/health`;
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 500);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (res.ok) return true;
+    } catch {
+      // сервер ещё не готов
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return false;
+}
+
 export default function App() {
   const [mode] = useState<Mode | null>(() => {
     if (typeof window === 'undefined') return null;
@@ -61,10 +88,77 @@ export default function App() {
   });
   const [role, setRole] = useState<Role | null>(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [clientsCount, setClientsCount] = useState(1);
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const { t, lang, setLang } = useI18n();
 
   const [visited, setVisited] = useState<Set<Role>>(() => new Set());
+
+  // ============================================================
+  // Подписка на количество подключённых устройств
+  // ============================================================
+  useEffect(() => {
+    const unsubscribe = subscribeClientsCount(setClientsCount);
+    getSocket();
+    return unsubscribe;
+  }, []);
+
+  // ============================================================
+  // Автозапуск сервера и запрос IP при старте в режиме host
+  // ============================================================
+  useEffect(() => {
+    if (mode !== 'host') return;
+
+    let cancelled = false;
+
+    (async () => {
+      console.log('[app] Режим host — проверяю сервер...');
+
+      try {
+        const statusRes = await fetch('/api/server/status');
+        const status = await statusRes.json();
+        console.log('[app] Текущий статус:', status);
+
+        if (!status.running && !status.starting && !cancelled) {
+          console.log('[app] Сервер не запущен — запускаю...');
+          const startRes = await fetch('/api/server/start', {
+            method: 'POST',
+          });
+          const startData = await startRes.json();
+          console.log('[app] Результат запуска:', startData);
+
+          if (!startData.ok) {
+            console.error('[app] Ошибка запуска:', startData.error);
+          } else {
+            const ready = await waitForServer('localhost', 3001, 15000);
+            console.log('[app] Сервер готов:', ready);
+          }
+        } else if (status.running) {
+          console.log('[app] Сервер уже запущен');
+        } else if (status.starting) {
+          console.log('[app] Сервер уже запускается — жду...');
+          await waitForServer('localhost', 3001, 15000);
+        }
+      } catch (e) {
+        console.error('[app] Не удалось запустить сервер:', e);
+      }
+
+      try {
+        const ipRes = await fetch('/api/server/ip');
+        const ipData = await ipRes.json();
+        if (ipData.ip && !cancelled) {
+          window.localStorage.setItem(LOCAL_IP_KEY, ipData.ip);
+          console.log('[app] Локальный IP:', ipData.ip);
+        }
+      } catch (e) {
+        console.warn('[app] Не удалось получить IP:', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
 
   useEffect(() => {
     if (role) {
@@ -88,20 +182,6 @@ export default function App() {
     };
   }, []);
 
-  // Автозапрос локального IP при старте в режиме host
-  useEffect(() => {
-    if (mode === 'host') {
-      fetch('/api/server/ip')
-        .then((r) => r.json())
-        .then((d) => {
-          if (d.ip) {
-            window.localStorage.setItem(LOCAL_IP_KEY, d.ip);
-          }
-        })
-        .catch(() => {});
-    }
-  }, [mode]);
-
   const handleModeSelect = (m: Mode, hostIp?: string) => {
     window.localStorage.setItem(MODE_KEY, m);
     if (m === 'client' && hostIp) {
@@ -119,6 +199,7 @@ export default function App() {
     return (
       <ModeSelectionScreen
         isOnline={isOnline}
+        clientsCount={clientsCount}
         lang={lang}
         setLang={setLang}
         onSelect={handleModeSelect}
@@ -139,6 +220,7 @@ export default function App() {
         hostIp={hostIp}
         localIp={localIp}
         isOnline={isOnline}
+        clientsCount={clientsCount}
         lang={lang}
         setLang={setLang}
         onSelectRole={setRole}
@@ -183,7 +265,7 @@ export default function App() {
           />
 
           <div className="flex items-center gap-3 shrink-0">
-            <OnlineBadge isOnline={isOnline} />
+            <ClientsBadge count={clientsCount} isOnline={isOnline} />
             <DateLabel lang={lang} />
             {languages.length > 1 && (
               <LanguageSwitcher lang={lang} setLang={setLang} />
@@ -198,44 +280,52 @@ export default function App() {
           </div>
         </header>
 
-        <main className="flex-1 min-h-0 overflow-hidden relative">
-          {visited.has('cashier') && (
-            <div
-              className={
-                role === 'cashier' ? 'absolute inset-0 flex flex-col' : 'hidden'
-              }
-            >
-              <CashierPage />
-            </div>
-          )}
-          {visited.has('queue') && (
-            <div
-              className={
-                role === 'queue' ? 'absolute inset-0 flex flex-col' : 'hidden'
-              }
-            >
-              <QueuePage />
-            </div>
-          )}
-          {visited.has('kitchen') && (
-            <div
-              className={
-                role === 'kitchen' ? 'absolute inset-0 flex flex-col' : 'hidden'
-              }
-            >
-              <KitchenPage />
-            </div>
-          )}
-          {visited.has('manager') && (
-            <div
-              className={
-                role === 'manager' ? 'absolute inset-0 flex flex-col' : 'hidden'
-              }
-            >
-              <ManagerPage />
-            </div>
-          )}
-        </main>
+        <ActiveRoleContext.Provider value={role as PageRole}>
+          <main className="flex-1 min-h-0 overflow-hidden relative">
+            {visited.has('cashier') && (
+              <div
+                className={
+                  role === 'cashier'
+                    ? 'absolute inset-0 flex flex-col'
+                    : 'hidden'
+                }
+              >
+                <CashierPage />
+              </div>
+            )}
+            {visited.has('queue') && (
+              <div
+                className={
+                  role === 'queue' ? 'absolute inset-0 flex flex-col' : 'hidden'
+                }
+              >
+                <QueuePage />
+              </div>
+            )}
+            {visited.has('kitchen') && (
+              <div
+                className={
+                  role === 'kitchen'
+                    ? 'absolute inset-0 flex flex-col'
+                    : 'hidden'
+                }
+              >
+                <KitchenPage />
+              </div>
+            )}
+            {visited.has('manager') && (
+              <div
+                className={
+                  role === 'manager'
+                    ? 'absolute inset-0 flex flex-col'
+                    : 'hidden'
+                }
+              >
+                <ManagerPage />
+              </div>
+            )}
+          </main>
+        </ActiveRoleContext.Provider>
       </div>
     </PageActionsContext.Provider>
   );
@@ -246,11 +336,13 @@ export default function App() {
 // ============================================================
 function ModeSelectionScreen({
   isOnline,
+  clientsCount,
   lang,
   setLang,
   onSelect,
 }: {
   isOnline: boolean;
+  clientsCount: number;
   lang: Lang;
   setLang: (l: Lang) => void;
   onSelect: (mode: Mode, hostIp?: string) => void;
@@ -265,9 +357,6 @@ function ModeSelectionScreen({
   const [localIp, setLocalIp] = useState<string | null>(null);
   const [ipCopied, setIpCopied] = useState(false);
 
-  // ============================================================
-  // ХОСТ — запуск сервера и переход к экрану с IP
-  // ============================================================
   const handleSelectHost = async () => {
     setStarting(true);
     setError(null);
@@ -289,7 +378,6 @@ function ModeSelectionScreen({
         return;
       }
 
-      // Получаем локальный IP
       try {
         const ipRes = await fetch('/api/server/ip');
         const ipData = await ipRes.json();
@@ -309,9 +397,6 @@ function ModeSelectionScreen({
     }
   };
 
-  // ============================================================
-  // КЛИЕНТ
-  // ============================================================
   const handleClientNext = async () => {
     if (!ip.trim()) {
       setError(t('hostIpRequired'));
@@ -378,9 +463,6 @@ function ModeSelectionScreen({
           </div>
         )}
 
-        {/* ============================================================
-            ШАГ 1 — выбор Хост / Клиент
-            ============================================================ */}
         {step === 'choose' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl w-full">
             <button
@@ -421,9 +503,6 @@ function ModeSelectionScreen({
           </div>
         )}
 
-        {/* ============================================================
-            ШАГ 2 — ввод IP хоста (режим клиента)
-            ============================================================ */}
         {step === 'enter-ip' && (
           <div className="w-full max-w-md">
             <div className="bg-white rounded-3xl border-2 border-gray-200 p-6 shadow-xl">
@@ -483,13 +562,9 @@ function ModeSelectionScreen({
           </div>
         )}
 
-        {/* ============================================================
-            ШАГ 3 — хост запущен, показываем IP + кнопка копирования
-            ============================================================ */}
         {step === 'host-ready' && (
           <div className="w-full max-w-lg">
             <div className="bg-white rounded-3xl border-2 border-green-300 p-6 md:p-8 shadow-xl">
-              {/* Иконка успеха */}
               <div className="flex flex-col items-center text-center mb-6">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center shadow-lg shadow-green-500/30 mb-4">
                   <CheckCircle2 className="w-9 h-9 text-white" />
@@ -502,7 +577,6 @@ function ModeSelectionScreen({
                 </div>
               </div>
 
-              {/* IP-адрес + кнопка копирования */}
               <div className="bg-slate-50 border-2 border-dashed border-gray-300 rounded-2xl p-4 mb-5">
                 <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-2 text-center">
                   {t('hostIpForClients')}
@@ -548,7 +622,6 @@ function ModeSelectionScreen({
                 </div>
               </div>
 
-              {/* Кнопка продолжить */}
               <button
                 onClick={() => onSelect('host')}
                 className="w-full py-3.5 rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 text-white text-base font-bold transition-all active:scale-[0.98] shadow-md shadow-green-500/30"
@@ -562,7 +635,7 @@ function ModeSelectionScreen({
 
       <footer className="flex items-center justify-between gap-3 px-4 py-2.5 bg-white border-t border-gray-200 shrink-0 shadow-sm">
         <div className="flex items-center gap-3">
-          <OnlineBadge isOnline={isOnline} />
+          <ClientsBadge count={clientsCount} isOnline={isOnline} />
           <DateLabel lang={lang} />
         </div>
         <div className="flex items-center gap-2">
@@ -576,32 +649,6 @@ function ModeSelectionScreen({
 }
 
 // ============================================================
-// ОЖИДАНИЕ ГОТОВНОСТИ СЕРВЕРА
-// ============================================================
-async function waitForServer(
-  host: string,
-  port: number,
-  timeoutMs: number
-): Promise<boolean> {
-  const start = Date.now();
-  const url = `http://${host}:${port}/health`;
-
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 500);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      if (res.ok) return true;
-    } catch {
-      // сервер ещё не готов
-    }
-    await new Promise((r) => setTimeout(r, 400));
-  }
-  return false;
-}
-
-// ============================================================
 // ЭКРАН ВЫБОРА РОЛИ
 // ============================================================
 function RoleSelectionScreen({
@@ -609,6 +656,7 @@ function RoleSelectionScreen({
   hostIp,
   localIp,
   isOnline,
+  clientsCount,
   lang,
   setLang,
   onSelectRole,
@@ -617,6 +665,7 @@ function RoleSelectionScreen({
   hostIp: string;
   localIp: string;
   isOnline: boolean;
+  clientsCount: number;
   lang: Lang;
   setLang: (l: Lang) => void;
   onSelectRole: (role: Role) => void;
@@ -727,7 +776,6 @@ function RoleSelectionScreen({
                 </div>
 
                 <div className="p-3 space-y-2">
-                  {/* ХОСТ */}
                   <button
                     onClick={() => {
                       if (mode === 'host') {
@@ -766,7 +814,6 @@ function RoleSelectionScreen({
                     )}
                   </button>
 
-                  {/* IP хоста — показываем если хост */}
                   {mode === 'host' && localIp && (
                     <div className="rounded-xl border-2 border-green-300 bg-green-50 p-3">
                       <div className="text-[10px] font-bold text-green-700 uppercase tracking-wider mb-2">
@@ -794,7 +841,6 @@ function RoleSelectionScreen({
                     </div>
                   )}
 
-                  {/* КЛИЕНТ */}
                   <div
                     className={`rounded-xl border-2 transition-all ${
                       mode === 'client'
@@ -919,7 +965,7 @@ function RoleSelectionScreen({
 
       <footer className="flex items-center justify-between gap-3 px-4 py-2.5 bg-white border-t border-gray-200 shrink-0 shadow-sm">
         <div className="flex items-center gap-3">
-          <OnlineBadge isOnline={isOnline} />
+          <ClientsBadge count={clientsCount} isOnline={isOnline} />
           <DateLabel lang={lang} />
         </div>
         <div className="flex items-center gap-2">
@@ -979,8 +1025,15 @@ function RoleCard({
 // ============================================================
 // ВСПОМОГАТЕЛЬНЫЕ
 // ============================================================
-function OnlineBadge({ isOnline }: { isOnline: boolean }) {
+function ClientsBadge({
+  count,
+  isOnline,
+}: {
+  count: number;
+  isOnline: boolean;
+}) {
   const { t } = useI18n();
+
   if (!isOnline) {
     return (
       <span className="flex items-center gap-1.5 text-red-600 text-xs font-medium bg-red-50 px-2.5 py-1 rounded-lg border border-red-200">
@@ -989,10 +1042,12 @@ function OnlineBadge({ isOnline }: { isOnline: boolean }) {
       </span>
     );
   }
+
   return (
-    <span className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
-      <span className="w-2 h-2 rounded-full bg-green-500" />
-      {t('online')}
+    <span className="flex items-center gap-1.5 text-green-600 text-xs font-medium bg-green-50 px-2.5 py-1 rounded-lg border border-green-200">
+      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+      <span className="font-bold">{count}</span>
+      <span className="opacity-80">{t('devicesOnline')}</span>
     </span>
   );
 }

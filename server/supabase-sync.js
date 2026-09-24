@@ -4,7 +4,6 @@ import db from './db.js';
 
 // ============================================================
 // Проверка переменных окружения
-// (env.js уже загружен через index.js до этого импорта)
 // ============================================================
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -12,22 +11,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('');
   console.error('❌ [sync] Не найдены SUPABASE_URL или SUPABASE_KEY');
-  console.error('');
-  console.error('   Проверьте, что в корневом .env есть ХОТЯ БЫ ОДНА пара:');
-  console.error('   ─────────────────────────────────────────────────');
-  console.error('   Вариант A (рекомендуется):');
-  console.error('     VITE_SUPABASE_URL=https://xxx.supabase.co');
-  console.error('     VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...');
-  console.error('   ─────────────────────────────────────────────────');
-  console.error('   Вариант B (только для сервера):');
-  console.error('     SUPABASE_URL=https://xxx.supabase.co');
-  console.error('     SUPABASE_KEY=sb_publishable_...');
-  console.error('   ─────────────────────────────────────────────────');
-  console.error('');
-  console.error('   Путь к .env должен быть:');
-  console.error('     D:\\MyPC\\Desktop\\Project\\Kebab_Reji\\.env');
-  console.error('');
-  console.error('   Затем перезапустите: npm start');
+  console.error('   Проверьте файл .env в КОРНЕ проекта.');
   console.error('');
   process.exit(1);
 }
@@ -41,97 +25,218 @@ export function isSupabaseOnline() {
 }
 
 // ============================================================
-// BOOTSTRAP — загрузка меню и активных заказов при старте
+// BOOTSTRAP + RECONCILE
 // ============================================================
 export async function bootstrapFromSupabase() {
   console.log('[sync] Загрузка данных из Supabase...');
 
-  const [catsRes, itemsRes] = await Promise.all([
-    supabase.from('menu_categories').select('*').order('sort_order'),
-    supabase.from('menu_items').select('*').order('sort_order'),
-  ]);
+  // Ограничиваем выборку заказов последними 90 днями
+  const since = new Date();
+  since.setDate(since.getDate() - 90);
+  const sinceIso = since.toISOString();
 
-  if (catsRes.error) {
-    console.error('[sync] Ошибка categories:', catsRes.error.message);
+  const [catsRes, itemsRes, ordersRes, orderItemsRes, optionsRes] =
+    await Promise.all([
+      supabase.from('menu_categories').select('*').order('sort_order'),
+      supabase.from('menu_items').select('*').order('sort_order'),
+      supabase
+        .from('orders')
+        .select('*')
+        .gte('created_at', sinceIso),
+      supabase.from('order_items').select('*'),
+      supabase.from('order_item_options').select('*'),
+    ]);
+
+  // Проверка ошибок
+  if (catsRes.error || itemsRes.error || ordersRes.error) {
+    console.error(
+      '[sync] Ошибка загрузки:',
+      catsRes.error?.message ||
+        itemsRes.error?.message ||
+        ordersRes.error?.message
+    );
     lastOnline = false;
     return;
   }
-  if (itemsRes.error) {
-    console.error('[sync] Ошибка items:', itemsRes.error.message);
-    lastOnline = false;
-    return;
-  }
 
-  if (catsRes.data && itemsRes.data) {
-    store.replaceMenu(catsRes.data, itemsRes.data);
-    console.log(
-      `[sync] Меню загружено: ${catsRes.data.length} категорий, ${itemsRes.data.length} блюд`
-    );
-    lastOnline = true;
-  }
+  lastOnline = true;
 
-  // Если локальная БД пустая — подтягиваем активные заказы из Supabase
-  const localOrdersCount = db
-    .prepare('SELECT COUNT(*) as c FROM orders')
-    .get().c;
+  // ---------- Меню — Supabase источник истины ----------
+  store.replaceMenu(catsRes.data ?? [], itemsRes.data ?? []);
+  console.log(
+    `[sync] Меню: ${catsRes.data?.length ?? 0} кат., ${
+      itemsRes.data?.length ?? 0
+    } блюд`
+  );
 
-  if (localOrdersCount === 0) {
-    const { data: remoteOrders, error } = await supabase
-      .from('orders')
-      .select('*')
-      .in('status', ['NEW', 'PREPARING', 'READY']);
+  // ---------- Заказы — двусторонний reconcile ----------
+  const remoteOrders = ordersRes.data ?? [];
+  const remoteItems = (orderItemsRes.data ?? []).filter((i) =>
+    remoteOrders.some((o) => o.id === i.order_id)
+  );
+  const remoteOptions = (optionsRes.data ?? []).filter((opt) =>
+    remoteItems.some((i) => i.id === opt.order_item_id)
+  );
 
-    if (!error && remoteOrders && remoteOrders.length > 0) {
-      console.log(
-        `[sync] Импортирую ${remoteOrders.length} активных заказов из Supabase`
-      );
-
-      for (const o of remoteOrders) {
-        try {
-          db.prepare(
-            `INSERT OR IGNORE INTO orders
-             (id, order_number, order_type, status, total_amount, comment,
-              created_at, updated_at, completed_at, synced)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
-          ).run(
-            o.id,
-            o.order_number,
-            o.order_type,
-            o.status,
-            o.total_amount,
-            o.comment ?? '',
-            o.created_at,
-            o.updated_at,
-            o.completed_at
-          );
-        } catch (e) {
-          console.warn(
-            '[sync] Не удалось импортировать заказ:',
-            o.id,
-            e.message
-          );
-        }
-      }
-
-      // Обновим nextOrderNumber
-      const maxRow = db
-        .prepare('SELECT MAX(order_number) as max_num FROM orders')
-        .get();
-      if (maxRow?.max_num) {
-        store.nextOrderNumber = maxRow.max_num + 1;
-      }
-    }
-  } else {
-    console.log(
-      `[sync] Локальная БД содержит ${localOrdersCount} заказов — импорт не нужен`
-    );
-  }
+  reconcileOrders(remoteOrders, remoteItems, remoteOptions);
 
   console.log('[sync] Bootstrap завершён');
 }
 
 // ============================================================
-// СИНХРОНИЗАЦИЯ — фоновый цикл каждые 1 секунду
+// ДВУСТОРОННЯЯ СИНХРОНИЗАЦИЯ ЗАКАЗОВ
+// ============================================================
+function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
+  const remoteMap = new Map();
+  for (const o of remoteOrders) {
+    remoteMap.set(o.id, o);
+  }
+
+  const localOrders = db
+    .prepare('SELECT id, order_number, updated_at, synced FROM orders')
+    .all();
+  const localMap = new Map();
+  for (const o of localOrders) {
+    localMap.set(o.id, o);
+  }
+
+  let pulledFromRemote = 0; // из Supabase → локально
+  let pushedToRemote = 0;   // локально → на отправку
+  let unchanged = 0;
+
+  // ---------- 1. Проходим по заказам из Supabase ----------
+  for (const remote of remoteOrders) {
+    const local = localMap.get(remote.id);
+    const remoteTime = new Date(remote.updated_at || remote.created_at).getTime();
+
+    if (!local) {
+      // Заказа нет локально — вставляем полностью
+      writeOrderLocally(remote, remoteItems, remoteOptions, true);
+      pulledFromRemote++;
+      continue;
+    }
+
+    const localTime = new Date(local.updated_at).getTime();
+
+    if (remoteTime > localTime) {
+      // Supabase новее — перезаписываем локальное
+      writeOrderLocally(remote, remoteItems, remoteOptions, true);
+      pulledFromRemote++;
+    } else if (localTime > remoteTime) {
+      // Локальное новее — помечаем на отправку
+      db.prepare('UPDATE orders SET synced = 0 WHERE id = ?').run(remote.id);
+      pushedToRemote++;
+    } else {
+      // Равны — просто убеждаемся что synced = 1
+      db.prepare(
+        'UPDATE orders SET synced = 1, sync_error = NULL WHERE id = ?'
+      ).run(remote.id);
+      unchanged++;
+    }
+  }
+
+  // ---------- 2. Проходим по локальным, которых нет в Supabase ----------
+  const remoteIds = new Set(remoteOrders.map((o) => o.id));
+  for (const local of localOrders) {
+    if (!remoteIds.has(local.id)) {
+      db.prepare('UPDATE orders SET synced = 0 WHERE id = ?').run(local.id);
+      pushedToRemote++;
+    }
+  }
+
+  console.log(
+    `[sync] Reconcile: +${pulledFromRemote} из Supabase, ${pushedToRemote} на отправку, ${unchanged} без изменений`
+  );
+}
+
+// ============================================================
+// ВСТАВКА ИЛИ ОБНОВЛЕНИЕ ЗАКАЗА В SQLITE
+// ============================================================
+function writeOrderLocally(remote, allItems, allOptions, synced) {
+  const items = allItems.filter((i) => i.order_id === remote.id);
+
+  db.exec('BEGIN');
+  try {
+    // Вставляем / обновляем заказ
+    db.prepare(
+      `INSERT OR REPLACE INTO orders
+       (id, order_number, order_type, status, total_amount, comment,
+        created_at, updated_at, completed_at, synced, sync_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+    ).run(
+      remote.id,
+      remote.order_number,
+      remote.order_type,
+      remote.status,
+      remote.total_amount,
+      remote.comment ?? '',
+      remote.created_at,
+      remote.updated_at,
+      remote.completed_at,
+      synced ? 1 : 0
+    );
+
+    // Удаляем старые items и options
+    const oldItemIds = db
+      .prepare('SELECT id FROM order_items WHERE order_id = ?')
+      .all(remote.id)
+      .map((r) => r.id);
+
+    for (const oldId of oldItemIds) {
+      db.prepare('DELETE FROM order_item_options WHERE order_item_id = ?').run(
+        oldId
+      );
+    }
+    db.prepare('DELETE FROM order_items WHERE order_id = ?').run(remote.id);
+
+    // Вставляем новые items
+    for (const item of items) {
+      db.prepare(
+        `INSERT INTO order_items
+         (id, order_id, menu_item_id, name, short_name, variant,
+          price, quantity, subtotal, is_removed, is_added_later)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        item.id,
+        item.order_id,
+        item.menu_item_id,
+        item.name,
+        item.short_name ?? '',
+        item.variant ?? '',
+        item.price,
+        item.quantity,
+        item.subtotal,
+        item.is_removed ? 1 : 0,
+        item.is_added_later ? 1 : 0
+      );
+
+      // Опции для этого item
+      const opts = allOptions.filter((o) => o.order_item_id === item.id);
+      for (const opt of opts) {
+        db.prepare(
+          `INSERT INTO order_item_options
+           (id, order_item_id, type, name, price, quantity)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(
+          opt.id,
+          opt.order_item_id,
+          opt.type,
+          opt.name,
+          opt.price,
+          opt.quantity
+        );
+      }
+    }
+
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    console.error('[sync] Ошибка записи заказа:', remote.id, e.message);
+  }
+}
+
+// ============================================================
+// ЦИКЛ ОТПРАВКИ В SUPABASE — как было
 // ============================================================
 export function startSyncLoop() {
   console.log('[sync] Цикл синхронизации запущен (интервал 1 сек)');
@@ -169,7 +274,7 @@ export function startSyncLoop() {
 }
 
 // ============================================================
-// Отправка одного заказа в Supabase
+// ОТПРАВКА ОДНОГО ЗАКАЗА В SUPABASE
 // ============================================================
 async function pushOrderToSupabase(order) {
   // 1. UPSERT заказа
@@ -186,14 +291,14 @@ async function pushOrderToSupabase(order) {
   });
   if (orderErr) throw orderErr;
 
-  // 2. Удаляем старые позиции
+  // 2. Удаляем старые items
   const { error: delErr } = await supabase
     .from('order_items')
     .delete()
     .eq('order_id', order.id);
   if (delErr) throw delErr;
 
-  // 3. Вставляем позиции заново
+  // 3. Вставляем заново
   if (order.order_items?.length) {
     const itemsPayload = order.order_items.map((i) => ({
       id: i.id,
@@ -214,7 +319,6 @@ async function pushOrderToSupabase(order) {
       .insert(itemsPayload);
     if (itemsErr) throw itemsErr;
 
-    // 4. Опции
     const optsPayload = [];
     for (const i of order.order_items) {
       for (const o of i.options ?? []) {
