@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { formatTimeAgo } from '@/locale/format';
 import { splitOrders, KITCHEN_LIMIT } from '@/services/kitchen';
 import {
@@ -54,7 +54,31 @@ export default function QueuePage() {
   }, []);
 
   const { kitchen, waiting, ready } = splitOrders(orders);
-  const focusOrder = ready[0] ?? kitchen[0] ?? null;
+
+  // ============================================================
+  // Последний приготовленный заказ для правой панели
+  // Приоритет:
+  //   1. Самый новый READY (по updated_at)
+  //   2. Если READY пусто — самый новый PREPARING (по updated_at)
+  //   3. Если совсем пусто — null
+  // ============================================================
+  const focusOrder = useMemo(() => {
+    if (ready.length > 0) {
+      return [...ready].sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() -
+          new Date(a.updated_at).getTime()
+      )[0];
+    }
+    if (kitchen.length > 0) {
+      return [...kitchen].sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() -
+          new Date(a.updated_at).getTime()
+      )[0];
+    }
+    return null;
+  }, [ready, kitchen]);
 
   const handleIssue = async (order: Order) => {
     pushUndo('queue', {
@@ -227,6 +251,9 @@ export default function QueuePage() {
   );
 }
 
+// ============================================================
+// COMPACT BLOCK
+// ============================================================
 type Variant = 'waiting' | 'cooking' | 'ready';
 type Size = 'large' | 'small';
 
@@ -322,6 +349,9 @@ function CompactBlock({
   );
 }
 
+// ============================================================
+// MINI CARD
+// ============================================================
 function MiniCard({
   order,
   lang,
@@ -404,6 +434,9 @@ function MiniCard({
   );
 }
 
+// ============================================================
+// BIG FOCUS
+// ============================================================
 function BigFocus({
   order,
   lang,
