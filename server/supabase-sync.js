@@ -24,13 +24,17 @@ export function isSupabaseOnline() {
   return lastOnline;
 }
 
+/** Экспорт клиента для host.js */
+export function getSupabaseClient() {
+  return supabase;
+}
+
 // ============================================================
 // BOOTSTRAP + RECONCILE
 // ============================================================
 export async function bootstrapFromSupabase() {
   console.log('[sync] Загрузка данных из Supabase...');
 
-  // Ограничиваем выборку заказов последними 90 днями
   const since = new Date();
   since.setDate(since.getDate() - 90);
   const sinceIso = since.toISOString();
@@ -39,15 +43,11 @@ export async function bootstrapFromSupabase() {
     await Promise.all([
       supabase.from('menu_categories').select('*').order('sort_order'),
       supabase.from('menu_items').select('*').order('sort_order'),
-      supabase
-        .from('orders')
-        .select('*')
-        .gte('created_at', sinceIso),
+      supabase.from('orders').select('*').gte('created_at', sinceIso),
       supabase.from('order_items').select('*'),
       supabase.from('order_item_options').select('*'),
     ]);
 
-  // Проверка ошибок
   if (catsRes.error || itemsRes.error || ordersRes.error) {
     console.error(
       '[sync] Ошибка загрузки:',
@@ -61,7 +61,7 @@ export async function bootstrapFromSupabase() {
 
   lastOnline = true;
 
-  // ---------- Меню — Supabase источник истины ----------
+  // Меню
   store.replaceMenu(catsRes.data ?? [], itemsRes.data ?? []);
   console.log(
     `[sync] Меню: ${catsRes.data?.length ?? 0} кат., ${
@@ -69,7 +69,7 @@ export async function bootstrapFromSupabase() {
     } блюд`
   );
 
-  // ---------- Заказы — двусторонний reconcile ----------
+  // Reconcile заказов
   const remoteOrders = ordersRes.data ?? [];
   const remoteItems = (orderItemsRes.data ?? []).filter((i) =>
     remoteOrders.some((o) => o.id === i.order_id)
@@ -81,17 +81,16 @@ export async function bootstrapFromSupabase() {
   reconcileOrders(remoteOrders, remoteItems, remoteOptions);
 
   console.log('[sync] Bootstrap завершён');
+
+  // Realtime подписки
+  subscribeToMenuChanges();
+  subscribeToOrderChanges();
 }
 
 // ============================================================
-// ДВУСТОРОННЯЯ СИНХРОНИЗАЦИЯ ЗАКАЗОВ
+// ДВУСТОРОННЯЯ СИНХРОНИЗАЦИЯ (bootstrap)
 // ============================================================
 function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
-  const remoteMap = new Map();
-  for (const o of remoteOrders) {
-    remoteMap.set(o.id, o);
-  }
-
   const localOrders = db
     .prepare('SELECT id, order_number, updated_at, synced FROM orders')
     .all();
@@ -100,18 +99,26 @@ function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
     localMap.set(o.id, o);
   }
 
-  let pulledFromRemote = 0; // из Supabase → локально
-  let pushedToRemote = 0;   // локально → на отправку
+  let pulledFromRemote = 0;
+  let pushedToRemote = 0;
   let unchanged = 0;
 
-  // ---------- 1. Проходим по заказам из Supabase ----------
+  // Заказы из Supabase
   for (const remote of remoteOrders) {
     const local = localMap.get(remote.id);
-    const remoteTime = new Date(remote.updated_at || remote.created_at).getTime();
+    const remoteTime = new Date(
+      remote.updated_at || remote.created_at
+    ).getTime();
 
     if (!local) {
-      // Заказа нет локально — вставляем полностью
-      writeOrderLocally(remote, remoteItems, remoteOptions, true);
+      const items = remoteItems
+        .filter((i) => i.order_id === remote.id)
+        .map((i) => ({
+          ...i,
+          options: remoteOptions.filter((o) => o.order_item_id === i.id),
+        }));
+
+      store.writeRemoteOrder({ ...remote, order_items: items });
       pulledFromRemote++;
       continue;
     }
@@ -119,15 +126,19 @@ function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
     const localTime = new Date(local.updated_at).getTime();
 
     if (remoteTime > localTime) {
-      // Supabase новее — перезаписываем локальное
-      writeOrderLocally(remote, remoteItems, remoteOptions, true);
+      const items = remoteItems
+        .filter((i) => i.order_id === remote.id)
+        .map((i) => ({
+          ...i,
+          options: remoteOptions.filter((o) => o.order_item_id === i.id),
+        }));
+
+      store.writeRemoteOrder({ ...remote, order_items: items });
       pulledFromRemote++;
     } else if (localTime > remoteTime) {
-      // Локальное новее — помечаем на отправку
       db.prepare('UPDATE orders SET synced = 0 WHERE id = ?').run(remote.id);
       pushedToRemote++;
     } else {
-      // Равны — просто убеждаемся что synced = 1
       db.prepare(
         'UPDATE orders SET synced = 1, sync_error = NULL WHERE id = ?'
       ).run(remote.id);
@@ -135,7 +146,7 @@ function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
     }
   }
 
-  // ---------- 2. Проходим по локальным, которых нет в Supabase ----------
+  // Локальные, которых нет в Supabase
   const remoteIds = new Set(remoteOrders.map((o) => o.id));
   for (const local of localOrders) {
     if (!remoteIds.has(local.id)) {
@@ -150,93 +161,7 @@ function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
 }
 
 // ============================================================
-// ВСТАВКА ИЛИ ОБНОВЛЕНИЕ ЗАКАЗА В SQLITE
-// ============================================================
-function writeOrderLocally(remote, allItems, allOptions, synced) {
-  const items = allItems.filter((i) => i.order_id === remote.id);
-
-  db.exec('BEGIN');
-  try {
-    // Вставляем / обновляем заказ
-    db.prepare(
-      `INSERT OR REPLACE INTO orders
-       (id, order_number, order_type, status, total_amount, comment,
-        created_at, updated_at, completed_at, synced, sync_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
-    ).run(
-      remote.id,
-      remote.order_number,
-      remote.order_type,
-      remote.status,
-      remote.total_amount,
-      remote.comment ?? '',
-      remote.created_at,
-      remote.updated_at,
-      remote.completed_at,
-      synced ? 1 : 0
-    );
-
-    // Удаляем старые items и options
-    const oldItemIds = db
-      .prepare('SELECT id FROM order_items WHERE order_id = ?')
-      .all(remote.id)
-      .map((r) => r.id);
-
-    for (const oldId of oldItemIds) {
-      db.prepare('DELETE FROM order_item_options WHERE order_item_id = ?').run(
-        oldId
-      );
-    }
-    db.prepare('DELETE FROM order_items WHERE order_id = ?').run(remote.id);
-
-    // Вставляем новые items
-    for (const item of items) {
-      db.prepare(
-        `INSERT INTO order_items
-         (id, order_id, menu_item_id, name, short_name, variant,
-          price, quantity, subtotal, is_removed, is_added_later)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        item.id,
-        item.order_id,
-        item.menu_item_id,
-        item.name,
-        item.short_name ?? '',
-        item.variant ?? '',
-        item.price,
-        item.quantity,
-        item.subtotal,
-        item.is_removed ? 1 : 0,
-        item.is_added_later ? 1 : 0
-      );
-
-      // Опции для этого item
-      const opts = allOptions.filter((o) => o.order_item_id === item.id);
-      for (const opt of opts) {
-        db.prepare(
-          `INSERT INTO order_item_options
-           (id, order_item_id, type, name, price, quantity)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).run(
-          opt.id,
-          opt.order_item_id,
-          opt.type,
-          opt.name,
-          opt.price,
-          opt.quantity
-        );
-      }
-    }
-
-    db.exec('COMMIT');
-  } catch (e) {
-    db.exec('ROLLBACK');
-    console.error('[sync] Ошибка записи заказа:', remote.id, e.message);
-  }
-}
-
-// ============================================================
-// ЦИКЛ ОТПРАВКИ В SUPABASE — как было
+// ЦИКЛ ОТПРАВКИ В SUPABASE
 // ============================================================
 export function startSyncLoop() {
   console.log('[sync] Цикл синхронизации запущен (интервал 1 сек)');
@@ -274,10 +199,9 @@ export function startSyncLoop() {
 }
 
 // ============================================================
-// ОТПРАВКА ОДНОГО ЗАКАЗА В SUPABASE
+// ОТПРАВКА ЗАКАЗА В SUPABASE
 // ============================================================
 async function pushOrderToSupabase(order) {
-  // 1. UPSERT заказа
   const { error: orderErr } = await supabase.from('orders').upsert({
     id: order.id,
     order_number: order.order_number,
@@ -289,16 +213,28 @@ async function pushOrderToSupabase(order) {
     updated_at: order.updated_at,
     completed_at: order.completed_at,
   });
-  if (orderErr) throw orderErr;
 
-  // 2. Удаляем старые items
+  // Защита от дубликатов
+  if (orderErr) {
+    if (
+      orderErr.code === '23505' ||
+      orderErr.message?.includes('orders_order_number_unique')
+    ) {
+      console.warn(
+        `[sync] ⚠️ Конфликт order_number #${order.order_number}. Пропускаем.`
+      );
+      store.markSynced(order.id);
+      return true;
+    }
+    throw orderErr;
+  }
+
   const { error: delErr } = await supabase
     .from('order_items')
     .delete()
     .eq('order_id', order.id);
   if (delErr) throw delErr;
 
-  // 3. Вставляем заново
   if (order.order_items?.length) {
     const itemsPayload = order.order_items.map((i) => ({
       id: i.id,
@@ -342,4 +278,161 @@ async function pushOrderToSupabase(order) {
   }
 
   return true;
+}
+
+// ============================================================
+// REALTIME — ПОДПИСКА НА ORDERS
+// ============================================================
+let ordersChannel = null;
+
+function subscribeToOrderChanges() {
+  if (ordersChannel) return;
+
+  ordersChannel = supabase
+    .channel('orders-realtime')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'orders' },
+      async (payload) => {
+        const orderId = payload.new?.id || payload.old?.id;
+        if (orderId) await pullOrderFromSupabase(orderId);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'order_items' },
+      async (payload) => {
+        const orderId = payload.new?.order_id || payload.old?.order_id;
+        if (orderId) await pullOrderFromSupabase(orderId);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'order_item_options' },
+      async (payload) => {
+        const orderItemId =
+          payload.new?.order_item_id || payload.old?.order_item_id;
+        if (!orderItemId) return;
+
+        const { data: item } = await supabase
+          .from('order_items')
+          .select('order_id')
+          .eq('id', orderItemId)
+          .maybeSingle();
+
+        if (item?.order_id) await pullOrderFromSupabase(item.order_id);
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('[sync] Realtime orders подписка активна');
+      }
+    });
+}
+
+// ============================================================
+// ПОЛУЧЕНИЕ ЗАКАЗА ИЗ SUPABASE — С ЗАЩИТОЙ ОТ ЭХА
+// ============================================================
+async function pullOrderFromSupabase(orderId) {
+  try {
+    // 1. Загружаем заказ
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', orderId)
+      .maybeSingle();
+
+    if (error || !order) return;
+
+    // ============================================================
+    // 🛡️ ЗАЩИТА ОТ ЭХА
+    // Если локально уже есть такая же (или более новая) версия —
+    // это НАШЕ СОБСТВЕННОЕ изменение, которое вернулось через Realtime.
+    // Не перезаписываем и не эмитим.
+    // ============================================================
+    const local = db
+      .prepare('SELECT updated_at, synced FROM orders WHERE id = ?')
+      .get(orderId);
+
+    if (local) {
+      const localTime = new Date(local.updated_at).getTime();
+      const remoteTime = new Date(
+        order.updated_at || order.created_at
+      ).getTime();
+
+      // Локальная версия свежее или равна удалённой → ЭХО, игнорируем
+      if (localTime >= remoteTime) {
+        return;
+      }
+    }
+
+    // 2. Загружаем items + options
+    const { data: items } = await supabase
+      .from('order_items')
+      .select('*, options:order_item_options(*)')
+      .eq('order_id', orderId);
+
+    // 3. Пишем в SQLite с synced=1
+    store.writeRemoteOrder({
+      ...order,
+      order_items: items ?? [],
+    });
+
+    console.log(
+      `[sync] 📥 Pulled from other host: #${order.order_number} (${order.status})`
+    );
+  } catch (e) {
+    console.error('[sync] pullOrder error:', e.message);
+  }
+}
+
+// ============================================================
+// REALTIME — ПОДПИСКА НА МЕНЮ
+// ============================================================
+let menuChannel = null;
+
+function subscribeToMenuChanges() {
+  if (menuChannel) return;
+
+  menuChannel = supabase
+    .channel('menu-changes')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'menu_categories' },
+      async () => {
+        console.log('[sync] Меню изменилось (categories) — перезагрузка');
+        await reloadMenu();
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'menu_items' },
+      async () => {
+        console.log('[sync] Меню изменилось (items) — перезагрузка');
+        await reloadMenu();
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('[sync] Realtime menu подписка активна');
+      }
+    });
+}
+
+async function reloadMenu() {
+  try {
+    const [catsRes, itemsRes] = await Promise.all([
+      supabase.from('menu_categories').select('*').order('sort_order'),
+      supabase.from('menu_items').select('*').order('sort_order'),
+    ]);
+
+    if (catsRes.data && itemsRes.data) {
+      store.replaceMenu(catsRes.data, itemsRes.data);
+      console.log(
+        `[sync] Меню обновлено: ${catsRes.data.length} кат., ${itemsRes.data.length} блюд`
+      );
+    }
+  } catch (e) {
+    console.error('[sync] Ошибка перезагрузки меню:', e.message);
+  }
 }
