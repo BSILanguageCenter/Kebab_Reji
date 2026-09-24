@@ -32,7 +32,7 @@ export default function QueuePage() {
   const [error, setError] = useState<string | null>(null);
   const [pendingUndo, setPendingUndo] = useState<UndoRecord | null>(null);
 
-  const undoStack = useUndoStack();
+  const undoStack = useUndoStack('queue');
 
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
@@ -57,7 +57,8 @@ export default function QueuePage() {
   const focusOrder = ready[0] ?? kitchen[0] ?? null;
 
   const handleIssue = async (order: Order) => {
-    pushUndo({
+    pushUndo('queue', {
+      kind: 'status',
       orderId: order.id,
       orderNumber: order.order_number,
       fromStatus: order.status,
@@ -82,9 +83,10 @@ export default function QueuePage() {
   };
 
   const confirmUndo = async () => {
-    const rec = popUndo();
+    const rec = popUndo('queue');
     setPendingUndo(null);
     if (!rec) return;
+    if (rec.kind !== 'status' || !rec.fromStatus) return;
     try {
       await emitUpdateStatus(rec.orderId, rec.fromStatus);
     } catch (e) {
@@ -109,7 +111,7 @@ export default function QueuePage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
-      <PageActions>
+      <PageActions forRole="queue">
         <span className="text-[10px] text-gray-400 font-mono">
           {lang === 'ru'
             ? `Кухня: макс ${KITCHEN_LIMIT}`
@@ -210,7 +212,10 @@ export default function QueuePage() {
           pendingUndo
             ? t('confirmUndo')
                 .replace('{n}', String(pendingUndo.orderNumber))
-                .replace('{status}', statusLabel(pendingUndo.fromStatus))
+                .replace(
+                  '{status}',
+                  statusLabel(pendingUndo.fromStatus ?? 'READY')
+                )
             : ''
         }
         confirmLabel={t('yes')}

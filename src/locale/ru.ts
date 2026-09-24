@@ -195,4 +195,7 @@ export const ru: Record<TranslationKey, string> = {
   timeAgoJustNow: 'только что',
   timeAgoMinutes: '{n} мин назад',
   timeAgoHours: '{n} ч назад',
+  undoCreateOrder: 'Отменить только что созданный заказ #{n}?',
+  undoEditOrder: 'Вернуть заказ #{n} к предыдущей версии?',
+  devicesOnline: 'в сети',
 };
