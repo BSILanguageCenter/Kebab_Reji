@@ -26,7 +26,7 @@ let socket: Socket | null = null;
 // ============================================================
 let lastOrders: Order[] | null = null;
 let lastMenu: ServerMenu | null = null;
-let lastClientsCount = 1; // минимум 1 — это сам клиент
+let lastClientsCount = 1;
 
 type OrdersListener = (orders: Order[]) => void;
 type MenuListener = (menu: ServerMenu) => void;
@@ -211,27 +211,29 @@ export function disconnectSocket(): void {
 // ============================================================
 // API — методы обёртки
 // ============================================================
+export interface OrderItemPayload {
+  menu_item_id: string | null;
+  name: string;
+  short_name: string;
+  variant: string;
+  price: number;
+  quantity: number;
+  subtotal: number;
+  is_removed?: boolean;
+  is_added_later?: boolean;
+  options?: Array<{
+    type: string;
+    name: string;
+    price: number;
+    quantity: number;
+  }>;
+}
+
 export function emitCreateOrder(payload: {
   order_type: 'INSIDE' | 'OUTSIDE';
   total_amount: number;
   comment: string;
-  order_items: Array<{
-    menu_item_id: string | null;
-    name: string;
-    short_name: string;
-    variant: string;
-    price: number;
-    quantity: number;
-    subtotal: number;
-    is_removed?: boolean;
-    is_added_later?: boolean;
-    options?: Array<{
-      type: string;
-      name: string;
-      price: number;
-      quantity: number;
-    }>;
-  }>;
+  order_items: OrderItemPayload[];
 }): Promise<Order> {
   return new Promise((resolve, reject) => {
     getSocket().emit(
@@ -266,23 +268,7 @@ export function emitUpdateOrder(payload: {
   order_type: 'INSIDE' | 'OUTSIDE';
   total_amount: number;
   comment: string;
-  order_items: Array<{
-    menu_item_id: string | null;
-    name: string;
-    short_name: string;
-    variant: string;
-    price: number;
-    quantity: number;
-    subtotal: number;
-    is_removed?: boolean;
-    is_added_later?: boolean;
-    options?: Array<{
-      type: string;
-      name: string;
-      price: number;
-      quantity: number;
-    }>;
-  }>;
+  order_items: OrderItemPayload[];
 }): Promise<Order | null> {
   return new Promise((resolve, reject) => {
     getSocket().emit(

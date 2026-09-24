@@ -21,7 +21,7 @@ class Store extends EventEmitter {
   }
 
   // ============================================================
-  // ЧТЕНИЕ
+  // ЧТЕНИЕ ЗАКАЗОВ
   // ============================================================
   getAllOrders() {
     const orders = db
@@ -69,7 +69,7 @@ class Store extends EventEmitter {
   }
 
   // ============================================================
-  // СОЗДАНИЕ ЗАКАЗА (локально на этом хосте)
+  // СОЗДАНИЕ ЗАКАЗА
   // ============================================================
   createOrder = (order) => {
     const id = order.id || randomUUID();
@@ -244,13 +244,11 @@ class Store extends EventEmitter {
   };
 
   // ============================================================
-  // ПРИЁМ ЗАКАЗА ИЗ SUPABASE (с другого хоста)
-  // 🛡️ ЗАЩИТА ОТ ЭХА: не перезаписываем свежие локальные данные
+  // ПРИЁМ ЗАКАЗА ИЗ SUPABASE
   // ============================================================
   writeRemoteOrder(remoteOrder) {
     const { order_items = [], ...orderData } = remoteOrder;
 
-    // Проверяем, есть ли более свежая локальная версия
     const local = db
       .prepare('SELECT updated_at FROM orders WHERE id = ?')
       .get(orderData.id);
@@ -260,11 +258,7 @@ class Store extends EventEmitter {
       const remoteTime = new Date(
         orderData.updated_at || orderData.created_at
       ).getTime();
-
-      // Локальная версия новее — не перезаписываем
-      if (localTime > remoteTime) {
-        return;
-      }
+      if (localTime > remoteTime) return;
     }
 
     db.exec('BEGIN');
@@ -286,20 +280,20 @@ class Store extends EventEmitter {
         orderData.completed_at
       );
 
-      // Удаляем старые items и options
       const oldItemIds = db
         .prepare('SELECT id FROM order_items WHERE order_id = ?')
         .all(orderData.id)
         .map((r) => r.id);
 
       for (const oldId of oldItemIds) {
-        db.prepare('DELETE FROM order_item_options WHERE order_item_id = ?').run(
-          oldId
-        );
+        db.prepare(
+          'DELETE FROM order_item_options WHERE order_item_id = ?'
+        ).run(oldId);
       }
-      db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderData.id);
+      db.prepare('DELETE FROM order_items WHERE order_id = ?').run(
+        orderData.id
+      );
 
-      // Вставляем items + options
       for (const item of order_items) {
         db.prepare(
           `INSERT INTO order_items
@@ -394,14 +388,55 @@ class Store extends EventEmitter {
     const items = db
       .prepare('SELECT * FROM menu_items ORDER BY sort_order')
       .all()
-      .map((i) => ({ ...i, active: Boolean(i.active) }));
+      .map((i) => ({
+        ...i,
+        active: Boolean(i.active),
+        variants: [],
+        properties: [],
+        set_slots: [],
+      }));
+
+    const byId = new Map(items.map((i) => [i.id, i]));
+
+    const variants = db
+      .prepare('SELECT * FROM menu_item_variants ORDER BY sort_order')
+      .all();
+    for (const v of variants) {
+      const it = byId.get(v.item_id);
+      if (it) it.variants.push(v);
+    }
+
+    const properties = db
+      .prepare('SELECT * FROM menu_item_properties ORDER BY sort_order')
+      .all();
+    for (const p of properties) {
+      const it = byId.get(p.item_id);
+      if (it) it.properties.push({ ...p, is_default: Boolean(p.is_default) });
+    }
+
+    const slots = db
+      .prepare('SELECT * FROM menu_set_slots ORDER BY sort_order')
+      .all();
+    for (const s of slots) {
+      const it = byId.get(s.set_item_id);
+      if (it) it.set_slots.push({ ...s, required: Boolean(s.required) });
+    }
 
     return { categories, items };
   }
 
-  replaceMenu = (categories, items) => {
+  replaceMenu = (
+    categories,
+    items,
+    variants = [],
+    properties = [],
+    slots = []
+  ) => {
     db.exec('BEGIN');
     try {
+      db.prepare('DELETE FROM menu_set_slots').run();
+      db.prepare('DELETE FROM menu_item_properties').run();
+      db.prepare('DELETE FROM menu_item_variants').run();
       db.prepare('DELETE FROM menu_items').run();
       db.prepare('DELETE FROM menu_categories').run();
 
@@ -424,23 +459,67 @@ class Store extends EventEmitter {
 
       const insItem = db.prepare(
         `INSERT INTO menu_items
-         (id, category_id, name, short_name, variant, price, image_url,
+         (id, category_id, type, name, short_name, price, image_url,
           active, sort_order, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       for (const i of items) {
         insItem.run(
           i.id,
-          i.category_id,
+          i.category_id ?? null,
+          i.type,
           i.name,
           i.short_name ?? '',
-          i.variant ?? '',
           i.price ?? 0,
           i.image_url ?? null,
           i.active ? 1 : 0,
           i.sort_order ?? 0,
           i.created_at ?? new Date().toISOString(),
           i.updated_at ?? new Date().toISOString()
+        );
+      }
+
+      const insVar = db.prepare(
+        `INSERT INTO menu_item_variants (id, item_id, name, price, sort_order)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const v of variants) {
+        insVar.run(v.id, v.item_id, v.name, v.price ?? 0, v.sort_order ?? 0);
+      }
+
+      const insProp = db.prepare(
+        `INSERT INTO menu_item_properties
+         (id, item_id, group_name, name, price, is_default, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const p of properties) {
+        insProp.run(
+          p.id,
+          p.item_id,
+          p.group_name ?? null,
+          p.name,
+          p.price ?? 0,
+          p.is_default ? 1 : 0,
+          p.sort_order ?? 0
+        );
+      }
+
+      const insSlot = db.prepare(
+        `INSERT INTO menu_set_slots
+         (id, set_item_id, slot_type, label, required, sort_order,
+          fixed_item_id, source_category_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const s of slots) {
+        insSlot.run(
+          s.id,
+          s.set_item_id,
+          s.slot_type,
+          s.label ?? '',
+          s.required ? 1 : 0,
+          s.sort_order ?? 0,
+          s.fixed_item_id ?? null,
+          s.source_category_id ?? null
         );
       }
 

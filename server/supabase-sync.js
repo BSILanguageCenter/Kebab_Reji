@@ -43,14 +43,25 @@ export async function bootstrapFromSupabase() {
   since.setDate(since.getDate() - 90);
   const sinceIso = since.toISOString();
 
-  const [catsRes, itemsRes, ordersRes, orderItemsRes, optionsRes] =
-    await Promise.all([
-      supabase.from('menu_categories').select('*').order('sort_order'),
-      supabase.from('menu_items').select('*').order('sort_order'),
-      supabase.from('orders').select('*').gte('created_at', sinceIso),
-      supabase.from('order_items').select('*'),
-      supabase.from('order_item_options').select('*'),
-    ]);
+  const [
+    catsRes,
+    itemsRes,
+    variantsRes,
+    propsRes,
+    slotsRes,
+    ordersRes,
+    orderItemsRes,
+    optionsRes,
+  ] = await Promise.all([
+    supabase.from('menu_categories').select('*').order('sort_order'),
+    supabase.from('menu_items').select('*').order('sort_order'),
+    supabase.from('menu_item_variants').select('*').order('sort_order'),
+    supabase.from('menu_item_properties').select('*').order('sort_order'),
+    supabase.from('menu_set_slots').select('*').order('sort_order'),
+    supabase.from('orders').select('*').gte('created_at', sinceIso),
+    supabase.from('order_items').select('*'),
+    supabase.from('order_item_options').select('*'),
+  ]);
 
   if (catsRes.error || itemsRes.error || ordersRes.error) {
     console.error(
@@ -65,11 +76,19 @@ export async function bootstrapFromSupabase() {
 
   lastOnline = true;
 
-  store.replaceMenu(catsRes.data ?? [], itemsRes.data ?? []);
+  store.replaceMenu(
+    catsRes.data ?? [],
+    itemsRes.data ?? [],
+    variantsRes.data ?? [],
+    propsRes.data ?? [],
+    slotsRes.data ?? []
+  );
   console.log(
     `[sync] Меню: ${catsRes.data?.length ?? 0} кат., ${
       itemsRes.data?.length ?? 0
-    } блюд`
+    } блюд, ${variantsRes.data?.length ?? 0} вар., ${
+      propsRes.data?.length ?? 0
+    } св., ${slotsRes.data?.length ?? 0} слотов`
   );
 
   const remoteOrders = ordersRes.data ?? [];
@@ -384,9 +403,7 @@ async function pullOrderFromSupabase(orderId) {
       order_items: items ?? [],
     });
 
-    console.log(
-      `[sync] 📥 Pulled: #${order.order_number} (${order.status})`
-    );
+    console.log(`[sync] 📥 Pulled: #${order.order_number} (${order.status})`);
   } catch (e) {
     console.error('[sync] pullOrder error:', e.message);
   }
@@ -414,6 +431,21 @@ function subscribeToMenuChanges() {
       { event: '*', schema: 'public', table: 'menu_items' },
       () => reloadMenu()
     )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'menu_item_variants' },
+      () => reloadMenu()
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'menu_item_properties' },
+      () => reloadMenu()
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'menu_set_slots' },
+      () => reloadMenu()
+    )
     .subscribe((status, err) => {
       console.log(
         `[sync] Realtime menu status: ${status}`,
@@ -427,15 +459,24 @@ function subscribeToMenuChanges() {
 
 async function reloadMenu() {
   try {
-    const [catsRes, itemsRes] = await Promise.all([
+    const [cats, items, variants, props, slots] = await Promise.all([
       supabase.from('menu_categories').select('*').order('sort_order'),
       supabase.from('menu_items').select('*').order('sort_order'),
+      supabase.from('menu_item_variants').select('*').order('sort_order'),
+      supabase.from('menu_item_properties').select('*').order('sort_order'),
+      supabase.from('menu_set_slots').select('*').order('sort_order'),
     ]);
 
-    if (catsRes.data && itemsRes.data) {
-      store.replaceMenu(catsRes.data, itemsRes.data);
+    if (cats.data && items.data) {
+      store.replaceMenu(
+        cats.data,
+        items.data,
+        variants.data ?? [],
+        props.data ?? [],
+        slots.data ?? []
+      );
       console.log(
-        `[sync] 🔄 Меню обновлено: ${catsRes.data.length} кат., ${itemsRes.data.length} блюд`
+        `[sync] 🔄 Меню обновлено: ${cats.data.length} кат., ${items.data.length} блюд`
       );
     }
   } catch (e) {
@@ -445,9 +486,9 @@ async function reloadMenu() {
 
 // ============================================================
 // POLLING FALLBACK — каждые 5 секунд
-// Гарантирует синхронизацию даже если Realtime не работает
 // ============================================================
 let lastPollTime = null;
+let lastMenuCheck = 0;
 
 export function startPollingFallback() {
   console.log('[sync] 🔁 Polling fallback запущен (каждые 5 сек)');
@@ -476,13 +517,11 @@ export function startPollingFallback() {
         return;
       }
 
-      // Обновляем lastPollTime сразу
       const newestTime = updatedOrders[updatedOrders.length - 1].updated_at;
       if (newestTime > lastPollTime) {
         lastPollTime = newestTime;
       }
 
-      // Тянем каждый заказ
       for (const o of updatedOrders) {
         await pullOrderFromSupabase(o.id);
       }
@@ -494,4 +533,12 @@ export function startPollingFallback() {
       console.error('[sync] Polling exception:', e.message);
     }
   }, 5000);
+
+  // Меню — отдельный медленный цикл (раз в 30 сек)
+  setInterval(async () => {
+    const now = Date.now();
+    if (now - lastMenuCheck < 30000) return;
+    lastMenuCheck = now;
+    await reloadMenu();
+  }, 30000);
 }

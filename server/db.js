@@ -4,10 +4,8 @@ import { dirname, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = join(__dirname, 'pos.db');
-
 const db = new DatabaseSync(dbPath);
 
-// Настройки производительности
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
@@ -63,10 +61,10 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS menu_items (
     id TEXT PRIMARY KEY,
-    category_id TEXT NOT NULL,
+    category_id TEXT,
+    type TEXT NOT NULL,
     name TEXT NOT NULL,
     short_name TEXT NOT NULL DEFAULT '',
-    variant TEXT NOT NULL DEFAULT '',
     price INTEGER NOT NULL DEFAULT 0,
     image_url TEXT,
     active INTEGER NOT NULL DEFAULT 1,
@@ -75,12 +73,48 @@ db.exec(`
     updated_at TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS menu_item_variants (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    price INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (item_id) REFERENCES menu_items(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS menu_item_properties (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    group_name TEXT,
+    name TEXT NOT NULL,
+    price INTEGER NOT NULL DEFAULT 0,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (item_id) REFERENCES menu_items(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS menu_set_slots (
+    id TEXT PRIMARY KEY,
+    set_item_id TEXT NOT NULL,
+    slot_type TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    required INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    fixed_item_id TEXT,
+    source_category_id TEXT,
+    FOREIGN KEY (set_item_id) REFERENCES menu_items(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
   CREATE INDEX IF NOT EXISTS idx_orders_synced ON orders(synced);
   CREATE INDEX IF NOT EXISTS idx_orders_number ON orders(order_number);
   CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id);
   CREATE INDEX IF NOT EXISTS idx_options_item ON order_item_options(order_item_id);
-  CREATE INDEX IF NOT EXISTS idx_menu_items_cat ON menu_items(category_id);
+  CREATE INDEX IF NOT EXISTS idx_menu_items_cat  ON menu_items(category_id);
+  CREATE INDEX IF NOT EXISTS idx_menu_items_type ON menu_items(type);
+  CREATE INDEX IF NOT EXISTS idx_variants_item   ON menu_item_variants(item_id);
+  CREATE INDEX IF NOT EXISTS idx_properties_item ON menu_item_properties(item_id);
+  CREATE INDEX IF NOT EXISTS idx_set_slots_set   ON menu_set_slots(set_item_id);
 `);
 
 export default db;

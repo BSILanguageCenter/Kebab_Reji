@@ -21,11 +21,17 @@ import {
   deleteItem,
   uploadItemImage,
   applyImageToCategory,
+  type SaveItemPayload,
 } from '@/services/menu';
 import { formatYen } from '@/locale/format';
 import { useI18n, type TranslationKey } from '@/locale';
 import { PageActions } from '@/components/PageActions';
-import type { MenuCategory, MenuItem } from '@/types/database';
+import type {
+  MenuCategory,
+  MenuItem,
+  MenuItemType,
+  SetSlotType,
+} from '@/types/database';
 import {
   BarChart3,
   Tag,
@@ -543,17 +549,20 @@ function MenuManagementTab() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                       {catItems.map((item) => {
                         const displayImage = item.image_url || coverImage;
+                        const variantCount = item.variants?.length ?? 0;
+                        const propCount = item.properties?.length ?? 0;
+                        const slotCount = item.set_slots?.length ?? 0;
 
                         return (
                           <div
                             key={item.id}
-                            className="flex items-center gap-3 bg-white rounded-xl p-3 border border-gray-200"
+                            className="flex items-start gap-3 bg-white rounded-xl p-3 border border-gray-200"
                           >
                             <div className="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 shrink-0">
                               {displayImage ? (
                                 <img
                                   src={displayImage}
-                                  alt={item.variant || item.name}
+                                  alt={item.name}
                                   className="w-full h-full object-cover"
                                   loading="lazy"
                                 />
@@ -564,15 +573,32 @@ function MenuManagementTab() {
                               )}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <div className="text-sm font-semibold truncate text-gray-900">
-                                {item.variant || item.name}
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-sm font-semibold truncate text-gray-900">
+                                  {item.name}
+                                </span>
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-black uppercase shrink-0">
+                                  {t(`type_${item.type}` as TranslationKey)}
+                                </span>
                               </div>
                               <div className="text-xs text-gray-500">
-                                {formatYen(item.price)} ·{' '}
+                                {variantCount > 0
+                                  ? `${variantCount} ${t('variantsShort')}`
+                                  : formatYen(item.price)}{' '}
+                                ·{' '}
                                 {item.active ? t('active') : t('inactive')}
                               </div>
+                              {(propCount > 0 || slotCount > 0) && (
+                                <div className="text-[10px] text-gray-400 mt-0.5">
+                                  {propCount > 0 &&
+                                    `${propCount} ${t('propsShort')}`}
+                                  {propCount > 0 && slotCount > 0 && ' · '}
+                                  {slotCount > 0 &&
+                                    `${slotCount} ${t('slotsShort')}`}
+                                </div>
+                              )}
                             </div>
-                            <div className="flex gap-1">
+                            <div className="flex gap-1 shrink-0">
                               <button
                                 onClick={() => {
                                   setEditingItem(item);
@@ -618,6 +644,7 @@ function MenuManagementTab() {
         <ItemForm
           item={editingItem}
           categories={categories}
+          allItems={items}
           onClose={() => setShowItemForm(false)}
           onSaved={() => {
             setShowItemForm(false);
@@ -728,7 +755,7 @@ function CategoryForm({
           value={name}
           onChange={(e) => setName(e.target.value)}
           className="form-input"
-          placeholder="Kebab Sandwich"
+          placeholder="Food"
         />
       </FormField>
 
@@ -737,7 +764,7 @@ function CategoryForm({
           value={shortName}
           onChange={(e) => setShortName(e.target.value)}
           className="form-input"
-          placeholder="KS"
+          placeholder="FD"
         />
       </FormField>
 
@@ -831,28 +858,68 @@ function CategoryForm({
 // ============================================================
 // ITEM FORM
 // ============================================================
+type VariantDraft = { name: string; price: number };
+type PropertyDraft = {
+  group_name: string | null;
+  name: string;
+  price: number;
+  is_default: boolean;
+};
+type SlotDraft = {
+  slot_type: SetSlotType;
+  label: string;
+  required: boolean;
+  source_mode: 'item' | 'category';
+  source_id: string;
+};
+
 function ItemForm({
   item,
   categories,
+  allItems,
   onClose,
   onSaved,
 }: {
   item: MenuItem | null;
   categories: MenuCategory[];
+  allItems: MenuItem[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const { t } = useI18n();
+
+  const [type, setType] = useState<MenuItemType>(item?.type ?? 'dish');
   const [categoryId, setCategoryId] = useState(
     item?.category_id ?? categories[0]?.id ?? ''
   );
   const [name, setName] = useState(item?.name ?? '');
   const [shortName, setShortName] = useState(item?.short_name ?? '');
-  const [variant, setVariant] = useState(item?.variant ?? '');
   const [price, setPrice] = useState(item?.price ?? 0);
   const [imageUrl, setImageUrl] = useState(item?.image_url ?? '');
   const [active, setActive] = useState(item?.active ?? true);
   const [sortOrder, setSortOrder] = useState(item?.sort_order ?? 1);
+
+  const [variants, setVariants] = useState<VariantDraft[]>(
+    (item?.variants ?? []).map((v) => ({ name: v.name, price: v.price }))
+  );
+  const [properties, setProperties] = useState<PropertyDraft[]>(
+    (item?.properties ?? []).map((p) => ({
+      group_name: p.group_name,
+      name: p.name,
+      price: p.price,
+      is_default: p.is_default,
+    }))
+  );
+  const [slots, setSlots] = useState<SlotDraft[]>(
+    (item?.set_slots ?? []).map((s) => ({
+      slot_type: s.slot_type,
+      label: s.label,
+      required: s.required,
+      source_mode: s.fixed_item_id ? 'item' : 'category',
+      source_id: (s.fixed_item_id ?? s.source_category_id) ?? '',
+    }))
+  );
+
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -875,29 +942,54 @@ function ItemForm({
     setSaving(true);
     setError(null);
     try {
-      if (item) {
-        await updateItem(item.id, {
-          category_id: categoryId,
-          name,
-          short_name: shortName,
-          variant,
-          price,
-          image_url: imageUrl || null,
-          active,
-          sort_order: sortOrder,
-        });
-      } else {
-        await createItem({
-          category_id: categoryId,
-          name,
-          short_name: shortName,
-          variant,
-          price,
-          image_url: imageUrl || null,
-          active,
-          sort_order: sortOrder,
-        });
-      }
+      const payload: SaveItemPayload = {
+        category_id: categoryId || null,
+        type,
+        name,
+        short_name: shortName,
+        price,
+        image_url: imageUrl || null,
+        active,
+        sort_order: sortOrder,
+        variants:
+          type === 'dish' || type === 'set'
+            ? variants
+                .filter((v) => v.name.trim())
+                .map((v) => ({
+                  name: v.name,
+                  price: v.price,
+                  sort_order: 0,
+                }))
+            : [],
+        properties: properties
+          .filter((p) => p.name.trim())
+          .map((p) => ({
+            group_name: p.group_name,
+            name: p.name,
+            price: p.price,
+            is_default: p.is_default,
+            sort_order: 0,
+          })),
+        set_slots:
+          type === 'set'
+            ? slots
+                .filter((s) => s.source_id)
+                .map((s) => ({
+                  slot_type: s.slot_type,
+                  label: s.label,
+                  required: s.required,
+                  sort_order: 0,
+                  fixed_item_id:
+                    s.source_mode === 'item' ? s.source_id : null,
+                  source_category_id:
+                    s.source_mode === 'category' ? s.source_id : null,
+                }))
+            : [],
+      };
+
+      if (item) await updateItem(item.id, payload);
+      else await createItem(payload);
+
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : t('failedToSaveItem'));
@@ -906,20 +998,50 @@ function ItemForm({
     }
   };
 
+  const otherItems = allItems.filter((i) => i.id !== item?.id);
+
   return (
-    <Modal title={item ? t('editItem') : t('newItemForm')} onClose={onClose}>
+    <Modal
+      title={item ? t('editItem') : t('newItemForm')}
+      onClose={onClose}
+      wide
+    >
       {error && (
         <div className="mb-3 p-2 bg-red-50 border border-red-300 rounded-lg text-red-700 text-sm">
           {error}
         </div>
       )}
 
+      {/* Тип */}
+      <FormField label={t('itemType')}>
+        <div className="grid grid-cols-5 gap-1">
+          {(['dish', 'set', 'drink', 'sauce', 'topping'] as const).map(
+            (tp) => (
+              <button
+                key={tp}
+                type="button"
+                onClick={() => setType(tp)}
+                className={`py-2 rounded-lg text-xs font-bold transition-all ${
+                  type === tp
+                    ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
+                    : 'bg-gray-100 text-gray-600'
+                }`}
+              >
+                {t(`type_${tp}` as TranslationKey)}
+              </button>
+            )
+          )}
+        </div>
+      </FormField>
+
+      {/* Категория */}
       <FormField label={t('categoryBtn')}>
         <select
           value={categoryId}
           onChange={(e) => setCategoryId(e.target.value)}
           className="form-input"
         >
+          <option value="">— {t('noCategory')} —</option>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
@@ -928,52 +1050,337 @@ function ItemForm({
         </select>
       </FormField>
 
-      <FormField label={t('fullName')}>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="form-input"
-          placeholder="Kebab Sandwich"
-        />
+      {/* Название / короткое / цена / порядок */}
+      <div className="grid grid-cols-2 gap-3">
+        <FormField label={t('fullName')}>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="form-input"
+            placeholder="Kebab Sandwich"
+          />
+        </FormField>
+        <FormField label={t('shortName')}>
+          <input
+            value={shortName}
+            onChange={(e) => setShortName(e.target.value)}
+            className="form-input"
+            placeholder="KS"
+          />
+        </FormField>
+        <FormField label={t('price')}>
+          <input
+            type="number"
+            value={price}
+            onChange={(e) => setPrice(Number(e.target.value))}
+            className="form-input"
+            disabled={(variants.length > 0 && type !== 'drink')}
+          />
+        </FormField>
+        <FormField label={t('sortOrder')}>
+          <input
+            type="number"
+            value={sortOrder}
+            onChange={(e) => setSortOrder(Number(e.target.value))}
+            className="form-input"
+          />
+        </FormField>
+      </div>
+
+      {/* Варианты (dish / set) */}
+      {(type === 'dish' || type === 'set') && (
+        <FormField label={t('variants')}>
+          <div className="space-y-1.5">
+            {variants.map((v, i) => (
+              <div key={i} className="flex gap-2">
+                <input
+                  value={v.name}
+                  onChange={(e) =>
+                    setVariants((p) =>
+                      p.map((x, j) =>
+                        j === i ? { ...x, name: e.target.value } : x
+                      )
+                    )
+                  }
+                  className="form-input flex-1"
+                  placeholder={t('variantName')}
+                />
+                <input
+                  type="number"
+                  value={v.price}
+                  onChange={(e) =>
+                    setVariants((p) =>
+                      p.map((x, j) =>
+                        j === i ? { ...x, price: Number(e.target.value) } : x
+                      )
+                    )
+                  }
+                  className="form-input w-28"
+                  placeholder={t('price')}
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setVariants((p) => p.filter((_, j) => j !== i))
+                  }
+                  className="p-2 text-gray-400 hover:text-red-600"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() =>
+                setVariants((p) => [...p, { name: '', price: 0 }])
+              }
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-bold"
+            >
+              <Plus className="w-3.5 h-3.5" /> {t('addVariant')}
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1.5">
+            {type === 'set' ? t('setVariantsHint') : t('dishVariantsHint')}
+          </p>
+        </FormField>
+      )}
+
+      {/* Слоты Set */}
+      {type === 'set' && (
+        <FormField label={t('setSlots')}>
+          <div className="space-y-2">
+            {slots.map((s, i) => (
+              <div
+                key={i}
+                className="border border-gray-200 rounded-lg p-2 space-y-1.5 bg-slate-50"
+              >
+                <div className="grid grid-cols-12 gap-1.5 items-center">
+                  <select
+                    value={s.slot_type}
+                    onChange={(e) =>
+                      setSlots((p) =>
+                        p.map((x, j) =>
+                          j === i
+                            ? {
+                                ...x,
+                                slot_type: e.target.value as SetSlotType,
+                              }
+                            : x
+                        )
+                      )
+                    }
+                    className="form-input col-span-3 text-xs"
+                  >
+                    <option value="drink">{t('slotDrink')}</option>
+                    <option value="sauce">{t('slotSauce')}</option>
+                    <option value="extra">{t('slotExtra')}</option>
+                  </select>
+                  <input
+                    value={s.label}
+                    onChange={(e) =>
+                      setSlots((p) =>
+                        p.map((x, j) =>
+                          j === i ? { ...x, label: e.target.value } : x
+                        )
+                      )
+                    }
+                    className="form-input col-span-5 text-xs"
+                    placeholder={t('slotLabel')}
+                  />
+                  <label className="col-span-3 flex items-center gap-1 text-xs font-medium">
+                    <input
+                      type="checkbox"
+                      checked={s.required}
+                      onChange={(e) =>
+                        setSlots((p) =>
+                          p.map((x, j) =>
+                            j === i
+                              ? { ...x, required: e.target.checked }
+                              : x
+                          )
+                        )
+                      }
+                    />
+                    {t('required')}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSlots((p) => p.filter((_, j) => j !== i))
+                    }
+                    className="col-span-1 p-1 text-gray-400 hover:text-red-600 justify-self-end"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <select
+                    value={s.source_mode}
+                    onChange={(e) =>
+                      setSlots((p) =>
+                        p.map((x, j) =>
+                          j === i
+                            ? {
+                                ...x,
+                                source_mode: e.target.value as
+                                  | 'item'
+                                  | 'category',
+                                source_id: '',
+                              }
+                            : x
+                        )
+                      )
+                    }
+                    className="form-input text-xs"
+                  >
+                    <option value="category">{t('fromCategory')}</option>
+                    <option value="item">{t('fixedItem')}</option>
+                  </select>
+                  <select
+                    value={s.source_id}
+                    onChange={(e) =>
+                      setSlots((p) =>
+                        p.map((x, j) =>
+                          j === i ? { ...x, source_id: e.target.value } : x
+                        )
+                      )
+                    }
+                    className="form-input text-xs"
+                  >
+                    <option value="">— {t('select')} —</option>
+                    {s.source_mode === 'category'
+                      ? categories.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))
+                      : otherItems.map((it) => (
+                          <option key={it.id} value={it.id}>
+                            {it.name}
+                          </option>
+                        ))}
+                  </select>
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() =>
+                setSlots((p) => [
+                  ...p,
+                  {
+                    slot_type: 'drink',
+                    label: '',
+                    required: true,
+                    source_mode: 'category',
+                    source_id: '',
+                  },
+                ])
+              }
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-100 hover:bg-purple-200 text-purple-800 text-xs font-bold"
+            >
+              <Plus className="w-3.5 h-3.5" /> {t('addSlot')}
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1.5">
+            {t('setSlotsHint')}
+          </p>
+        </FormField>
+      )}
+
+      {/* Свойства */}
+      <FormField label={t('properties')}>
+        <div className="space-y-1.5">
+          {properties.map((p, i) => (
+            <div key={i} className="grid grid-cols-12 gap-1.5 items-center">
+              <input
+                value={p.group_name ?? ''}
+                onChange={(e) =>
+                  setProperties((prev) =>
+                    prev.map((x, j) =>
+                      j === i
+                        ? { ...x, group_name: e.target.value || null }
+                        : x
+                    )
+                  )
+                }
+                className="form-input col-span-3 text-xs"
+                placeholder={t('groupOptional')}
+              />
+              <input
+                value={p.name}
+                onChange={(e) =>
+                  setProperties((prev) =>
+                    prev.map((x, j) =>
+                      j === i ? { ...x, name: e.target.value } : x
+                    )
+                  )
+                }
+                className="form-input col-span-4 text-xs"
+                placeholder={t('propertyName')}
+              />
+              <input
+                type="number"
+                value={p.price}
+                onChange={(e) =>
+                  setProperties((prev) =>
+                    prev.map((x, j) =>
+                      j === i ? { ...x, price: Number(e.target.value) } : x
+                    )
+                  )
+                }
+                className="form-input col-span-2 text-xs"
+                placeholder="+¥"
+              />
+              <label className="col-span-2 flex items-center gap-1 text-[10px] font-medium">
+                <input
+                  type="checkbox"
+                  checked={p.is_default}
+                  onChange={(e) =>
+                    setProperties((prev) =>
+                      prev.map((x, j) =>
+                        j === i ? { ...x, is_default: e.target.checked } : x
+                      )
+                    )
+                  }
+                />
+                {t('byDefault')}
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  setProperties((prev) => prev.filter((_, j) => j !== i))
+                }
+                className="col-span-1 p-1 text-gray-400 hover:text-red-600 justify-self-end"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              setProperties((p) => [
+                ...p,
+                {
+                  group_name: null,
+                  name: '',
+                  price: 0,
+                  is_default: false,
+                },
+              ])
+            }
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-bold"
+          >
+            <Plus className="w-3.5 h-3.5" /> {t('addProperty')}
+          </button>
+        </div>
+        <p className="text-[11px] text-gray-500 mt-1.5">
+          {t('propertiesHint')}
+        </p>
       </FormField>
 
-      <FormField label={t('shortName')}>
-        <input
-          value={shortName}
-          onChange={(e) => setShortName(e.target.value)}
-          className="form-input"
-          placeholder="KS"
-        />
-      </FormField>
-
-      <FormField label={t('variant')}>
-        <input
-          value={variant}
-          onChange={(e) => setVariant(e.target.value)}
-          className="form-input"
-          placeholder="Chicken"
-        />
-      </FormField>
-
-      <FormField label={t('price')}>
-        <input
-          type="number"
-          value={price}
-          onChange={(e) => setPrice(Number(e.target.value))}
-          className="form-input"
-          placeholder="350"
-        />
-      </FormField>
-
-      <FormField label={t('sortOrder')}>
-        <input
-          type="number"
-          value={sortOrder}
-          onChange={(e) => setSortOrder(Number(e.target.value))}
-          className="form-input"
-        />
-      </FormField>
-
+      {/* Изображение */}
       <FormField label={t('image')}>
         <div className="flex items-center gap-3">
           <div className="w-16 h-16 rounded-lg overflow-hidden bg-gray-100 shrink-0 border border-gray-200">
@@ -1004,13 +1411,12 @@ function ItemForm({
             />
           </label>
         </div>
-        <p className="text-[11px] text-gray-500 mt-1.5 leading-snug">
-          {t('categoryCoverHint')}
-        </p>
       </FormField>
 
+      {/* Активен */}
       <FormField label={t('active')}>
         <button
+          type="button"
           onClick={() => setActive(!active)}
           className={`relative w-12 h-6 rounded-full transition-colors ${
             active ? 'bg-orange-500' : 'bg-gray-300'
@@ -1033,7 +1439,7 @@ function ItemForm({
         </button>
         <button
           onClick={handleSave}
-          disabled={saving || !name || !categoryId}
+          disabled={saving || !name}
           className="flex-1 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold disabled:opacity-40"
         >
           {saving ? t('saving') : t('save')}
@@ -1050,10 +1456,12 @@ function Modal({
   title,
   onClose,
   children,
+  wide,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  wide?: boolean;
 }) {
   return (
     <div
@@ -1061,7 +1469,9 @@ function Modal({
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl border border-gray-200 p-5 w-full max-w-md max-h-[90vh] overflow-y-auto m-4 shadow-2xl"
+        className={`bg-white rounded-2xl border border-gray-200 p-5 w-full ${
+          wide ? 'max-w-2xl' : 'max-w-md'
+        } max-h-[90vh] overflow-y-auto m-4 shadow-2xl`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">

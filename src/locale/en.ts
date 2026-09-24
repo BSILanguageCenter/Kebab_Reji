@@ -83,13 +83,17 @@ export const en: Record<TranslationKey, string> = {
   newItemForm: 'New item',
   modified: 'Modified',
 
-  // ---------- Set picker ----------
-  chooseSet: 'Build your set',
-  chooseSauce: 'Choose sauce',
+  // ---------- Product builder ----------
+  chooseVariant: 'Choose variant',
   chooseDrink: 'Choose drink',
-  friesIncluded: 'French Fries included',
+  chooseSauce: 'Choose sauce',
+  chooseExtra: 'Extra dish',
+  extras: 'Extras',
+  skip: 'Skip',
+  next: 'Next',
+  requiredChoice: 'Make a choice',
   addToCartBtn: 'Add',
-  requiredChoice: 'Choose sauce and drink',
+  cancel: 'Cancel',
 
   // ---------- Kitchen ----------
   kitchenDisplay: 'Kitchen Display',
@@ -145,7 +149,6 @@ export const en: Record<TranslationKey, string> = {
   name: 'Name',
   shortName: 'Short Name',
   sortOrder: 'Sort Order',
-  cancel: 'Cancel',
   save: 'Save',
   saving: 'Saving...',
   fullName: 'Full Name',
@@ -156,8 +159,45 @@ export const en: Record<TranslationKey, string> = {
   uploading: 'Uploading...',
   categoryCover: 'Category cover',
   categoryCoverHint:
-    'One photo for the whole category — applied to all items (Chicken / Mix / Beef)',
+    'One photo for the whole category — applied to all items',
   removeCover: 'Remove cover',
+
+  // ---------- Menu v2 ----------
+  itemType: 'Type',
+  type_dish: 'Dish',
+  type_set: 'Set',
+  type_drink: 'Drink',
+  type_sauce: 'Sauce',
+  type_topping: 'Topping',
+  noCategory: 'No category',
+  variants: 'Variants',
+  addVariant: 'Add variant',
+  variantName: 'Name',
+  dishVariantsHint: 'E.g. Chicken / Mix / Beef with prices',
+  setVariantsHint: 'Main dish choice for the Set (Chicken / Mix / Beef)',
+  setSlots: 'Set components',
+  slotDrink: 'Drink',
+  slotSauce: 'Sauce',
+  slotExtra: 'Extra dish',
+  slotLabel: 'Label',
+  required: 'Required',
+  fromCategory: 'From category',
+  fixedItem: 'Fixed item',
+  select: 'Select',
+  remove: 'Remove',
+  addSlot: 'Add component',
+  setSlotsHint:
+    'Components the cashier chooses when adding the Set. Main dish comes from the Set variants.',
+  properties: 'Properties',
+  addProperty: 'Add property',
+  propertyName: 'Name',
+  groupOptional: 'Group (opt.)',
+  byDefault: 'Default',
+  propertiesHint:
+    'No group = checkbox (multiple). With group = radio (one per group). "Default" applies to radio.',
+  variantsShort: 'var.',
+  propsShort: 'props',
+  slotsShort: 'slots',
 
   // ---------- Errors ----------
   failedToLoadMenu: 'Failed to load menu',
