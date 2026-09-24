@@ -4,11 +4,6 @@
 // Единственное место, где определены ключи.
 // Каждый языковой файл (ru.ts, en.ts) импортирует
 // отсюда тип TranslationKey и обязан перевести ВСЕ ключи.
-//
-// При добавлении нового ключа:
-//   1. Добавьте строку в массив ниже
-//   2. TypeScript сразу подсветит ru.ts / en.ts красным,
-//      пока не добавите туда перевод
 // ============================================================
 
 export const translationKeys = [
@@ -91,13 +86,17 @@ export const translationKeys = [
   'newItemForm',
   'modified',
 
-  // ---------- Set picker ----------
-  'chooseSet',
-  'chooseSauce',
+  // ---------- Product builder ----------
+  'chooseVariant',
   'chooseDrink',
-  'friesIncluded',
-  'addToCartBtn',
+  'chooseSauce',
+  'chooseExtra',
+  'extras',
+  'skip',
+  'next',
   'requiredChoice',
+  'addToCartBtn',
+  'cancel',
 
   // ---------- Kitchen ----------
   'kitchenDisplay',
@@ -153,7 +152,6 @@ export const translationKeys = [
   'name',
   'shortName',
   'sortOrder',
-  'cancel',
   'save',
   'saving',
   'fullName',
@@ -165,6 +163,41 @@ export const translationKeys = [
   'categoryCover',
   'categoryCoverHint',
   'removeCover',
+
+  // ---------- Menu v2 ----------
+  'itemType',
+  'type_dish',
+  'type_set',
+  'type_drink',
+  'type_sauce',
+  'type_topping',
+  'noCategory',
+  'variants',
+  'addVariant',
+  'variantName',
+  'dishVariantsHint',
+  'setVariantsHint',
+  'setSlots',
+  'slotDrink',
+  'slotSauce',
+  'slotExtra',
+  'slotLabel',
+  'required',
+  'fromCategory',
+  'fixedItem',
+  'select',
+  'remove',
+  'addSlot',
+  'setSlotsHint',
+  'properties',
+  'addProperty',
+  'propertyName',
+  'groupOptional',
+  'byDefault',
+  'propertiesHint',
+  'variantsShort',
+  'propsShort',
+  'slotsShort',
 
   // ---------- Errors ----------
   'failedToLoadMenu',

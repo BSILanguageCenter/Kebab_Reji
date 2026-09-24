@@ -83,13 +83,17 @@ export const ru: Record<TranslationKey, string> = {
   newItemForm: 'Новое блюдо',
   modified: 'Изменён',
 
-  // ---------- Set picker ----------
-  chooseSet: 'Соберите сет',
-  chooseSauce: 'Выберите соус',
+  // ---------- Product builder ----------
+  chooseVariant: 'Выберите вариант',
   chooseDrink: 'Выберите напиток',
-  friesIncluded: 'Картофель фри включён',
+  chooseSauce: 'Выберите соус',
+  chooseExtra: 'Дополнительное блюдо',
+  extras: 'Дополнительно',
+  skip: 'Пропустить',
+  next: 'Далее',
+  requiredChoice: 'Сделайте выбор',
   addToCartBtn: 'Добавить',
-  requiredChoice: 'Выберите соус и напиток',
+  cancel: 'Отмена',
 
   // ---------- Kitchen ----------
   kitchenDisplay: 'Экран кухни',
@@ -145,7 +149,6 @@ export const ru: Record<TranslationKey, string> = {
   name: 'Название',
   shortName: 'Короткое имя',
   sortOrder: 'Порядок',
-  cancel: 'Отмена',
   save: 'Сохранить',
   saving: 'Сохранение...',
   fullName: 'Полное название',
@@ -156,8 +159,45 @@ export const ru: Record<TranslationKey, string> = {
   uploading: 'Загрузка...',
   categoryCover: 'Обложка категории',
   categoryCoverHint:
-    'Одно фото для всей категории — применится ко всем позициям (Chicken / Mix / Beef)',
+    'Одно фото для всей категории — применится ко всем позициям',
   removeCover: 'Убрать обложку',
+
+  // ---------- Menu v2 ----------
+  itemType: 'Тип',
+  type_dish: 'Блюдо',
+  type_set: 'Set',
+  type_drink: 'Напиток',
+  type_sauce: 'Соус',
+  type_topping: 'Топпинг',
+  noCategory: 'Без категории',
+  variants: 'Варианты',
+  addVariant: 'Добавить вариант',
+  variantName: 'Название',
+  dishVariantsHint: 'Например Chicken / Mix / Beef с ценами',
+  setVariantsHint: 'Выбор основного блюда Set (Chicken / Mix / Beef)',
+  setSlots: 'Компоненты Set',
+  slotDrink: 'Напиток',
+  slotSauce: 'Соус',
+  slotExtra: 'Доп. блюдо',
+  slotLabel: 'Подпись',
+  required: 'Обязательно',
+  fromCategory: 'Из категории',
+  fixedItem: 'Конкретный продукт',
+  select: 'Выбрать',
+  remove: 'Удалить',
+  addSlot: 'Добавить компонент',
+  setSlotsHint:
+    'Компоненты, которые кассир выбирает при добавлении Set. Main-блюдо определяется вариантами Set.',
+  properties: 'Свойства',
+  addProperty: 'Добавить свойство',
+  propertyName: 'Название',
+  groupOptional: 'Группа (опц.)',
+  byDefault: 'По умолч.',
+  propertiesHint:
+    'Без группы = чекбокс (можно несколько). С группой = radio (одно из группы). «По умолч.» работает для radio.',
+  variantsShort: 'вар.',
+  propsShort: 'свойств',
+  slotsShort: 'компонентов',
 
   // ---------- Errors ----------
   failedToLoadMenu: 'Не удалось загрузить меню',

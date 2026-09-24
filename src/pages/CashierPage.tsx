@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { formatYen, formatTimeAgo } from '@/locale/format';
 import { useI18n } from '@/locale';
 import {
@@ -11,10 +11,7 @@ import {
   emitUpdateStatus,
 } from '@/lib/socket';
 import { ClearCartDialog } from '@/components/ClearCartDialog';
-import {
-  SetPickerDialog,
-  type CategoryWithItems,
-} from '@/components/SetPickerDialog';
+import { ProductBuilderDialog } from '@/components/ProductBuilderDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageActions';
 import { printCustomerTicket } from '@/services/printer';
@@ -49,10 +46,7 @@ import {
   Undo2,
 } from 'lucide-react';
 
-const QUICK_ACCESS_REGEX =
-  /sauce|topping|extra|drink|напит|соус|топпинг|добавк|ichim|qo'shim/i;
-
-const SET_REGEX = /set/i;
+const QUICK_ACCESS_TYPES = ['drink', 'sauce', 'topping'];
 
 export default function CashierPage() {
   const { t, lang } = useI18n();
@@ -71,12 +65,15 @@ export default function CashierPage() {
   const [lastOrderNumber, setLastOrderNumber] = useState<number | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
-  const [setPickerItem, setSetPickerItem] = useState<MenuItem | null>(null);
+  const [builderItem, setBuilderItem] = useState<MenuItem | null>(null);
   const [pendingUndo, setPendingUndo] = useState<UndoRecord | null>(null);
   const cartIdCounter = useRef(0);
 
   const undoStack = useUndoStack('cashier');
 
+  // ============================================================
+  // Socket подписки
+  // ============================================================
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
       setActiveOrders(snap.orders);
@@ -103,59 +100,45 @@ export default function CashierPage() {
     };
   }, [sending]);
 
-  const quickAccessCategories = useMemo(
+  // ============================================================
+  // Быстрый доступ = все drink/sauce/topping, независимо от категорий
+  // ============================================================
+  const quickAccessItems = useMemo(
     () =>
-      categories.filter((c) =>
-        QUICK_ACCESS_REGEX.test(`${c.name} ${c.short_name}`)
-      ),
-    [categories]
+      menuItems
+        .filter((i) => i.active && QUICK_ACCESS_TYPES.includes(i.type))
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [menuItems]
   );
 
   const quickAccessIds = useMemo(
-    () => new Set(quickAccessCategories.map((c) => c.id)),
-    [quickAccessCategories]
+    () => new Set(quickAccessItems.map((i) => i.id)),
+    [quickAccessItems]
   );
 
+  // ============================================================
+  // Категории, которые показываются в основной сетке (без quick-access)
+  // ============================================================
   const mainCategories = useMemo(
-    () => categories.filter((c) => !quickAccessIds.has(c.id)),
-    [categories, quickAccessIds]
-  );
-
-  const sauceCategory: CategoryWithItems | null = useMemo(() => {
-    const cat = categories.find((c) => /sauce/i.test(c.name));
-    if (!cat) return null;
-    return {
-      ...cat,
-      items: menuItems.filter((i) => i.category_id === cat.id && i.active),
-    };
-  }, [categories, menuItems]);
-
-  const drinkCategory: CategoryWithItems | null = useMemo(() => {
-    const cat = categories.find((c) => /drink|напит/i.test(c.name));
-    if (!cat) return null;
-    return {
-      ...cat,
-      items: menuItems.filter((i) => i.category_id === cat.id && i.active),
-    };
-  }, [categories, menuItems]);
-
-  const isSetItem = useCallback(
-    (item: MenuItem) => {
-      const cat = categories.find((c) => c.id === item.category_id);
-      return cat ? SET_REGEX.test(cat.name) : false;
-    },
-    [categories]
+    () =>
+      categories.filter((c) => {
+        const catItems = menuItems.filter((i) => i.category_id === c.id);
+        if (catItems.length === 0) return false;
+        // Категория попадает в main, если в ней есть хотя бы один не quick-access item
+        return catItems.some((i) => !quickAccessIds.has(i.id));
+      }),
+    [categories, menuItems, quickAccessIds]
   );
 
   const filteredItems = useMemo(
     () =>
       menuItems.filter((item) => {
-        if (quickAccessIds.has(item.category_id)) return false;
+        if (!item.active) return false;
+        if (quickAccessIds.has(item.id)) return false;
         if (searchQuery) {
           const q = searchQuery.toLowerCase();
           return (
             item.name.toLowerCase().includes(q) ||
-            item.variant.toLowerCase().includes(q) ||
             item.short_name.toLowerCase().includes(q)
           );
         }
@@ -176,6 +159,9 @@ export default function CashierPage() {
     [mainCategories, filteredItems]
   );
 
+  // ============================================================
+  // Корзина
+  // ============================================================
   const cartTotal = useMemo(
     () =>
       cart
@@ -184,7 +170,8 @@ export default function CashierPage() {
           (sum, item) =>
             sum +
             item.price * item.quantity +
-            item.options.reduce((s, o) => s + o.price * o.quantity, 0),
+            item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
+              item.quantity,
           0
         ),
     [cart]
@@ -221,7 +208,7 @@ export default function CashierPage() {
           menu_item_id: item.id,
           name: item.name,
           short_name: item.short_name,
-          variant: item.variant,
+          variant: '',
           price: item.price,
           quantity: 1,
           options: [],
@@ -232,7 +219,12 @@ export default function CashierPage() {
     });
   };
 
-  const addToCartWithOptions = (item: MenuItem, options: CartItemOption[]) => {
+  const addToCartFromBuilder = (
+    item: MenuItem,
+    variant: string,
+    price: number,
+    options: CartItemOption[]
+  ) => {
     cartIdCounter.current += 1;
     setCart((prev) => [
       ...prev,
@@ -241,8 +233,8 @@ export default function CashierPage() {
         menu_item_id: item.id,
         name: item.name,
         short_name: item.short_name,
-        variant: item.variant,
-        price: item.price,
+        variant,
+        price,
         quantity: 1,
         options,
         is_removed: false,
@@ -252,7 +244,12 @@ export default function CashierPage() {
   };
 
   const handleItemClick = (item: MenuItem) => {
-    if (isSetItem(item)) setSetPickerItem(item);
+    const hasVariants = (item.variants?.length ?? 0) > 0;
+    const hasProps = (item.properties?.length ?? 0) > 0;
+    const hasSlots = (item.set_slots?.length ?? 0) > 0;
+    const needsBuilder =
+      item.type === 'set' || hasVariants || hasProps || hasSlots;
+    if (needsBuilder) setBuilderItem(item);
     else addToCart(item);
   };
 
@@ -287,6 +284,9 @@ export default function CashierPage() {
     });
   };
 
+  // ============================================================
+  // Создание заказа
+  // ============================================================
   const handleSendToKitchen = async () => {
     if (!hasActiveItems) return;
     setSending(true);
@@ -306,7 +306,10 @@ export default function CashierPage() {
             variant: c.variant,
             price: c.price,
             quantity: c.quantity,
-            subtotal: c.price * c.quantity,
+            subtotal:
+              c.price * c.quantity +
+              c.options.reduce((s, o) => s + o.price * o.quantity, 0) *
+                c.quantity,
             options: c.options.map((o) => ({
               type: o.type,
               name: o.name,
@@ -414,7 +417,11 @@ export default function CashierPage() {
           variant: c.variant,
           price: c.price,
           quantity: c.quantity,
-          subtotal: c.is_removed ? 0 : c.price * c.quantity,
+          subtotal: c.is_removed
+            ? 0
+            : c.price * c.quantity +
+              c.options.reduce((s, o) => s + o.price * o.quantity, 0) *
+                c.quantity,
           is_removed: c.is_removed ?? false,
           is_added_later: c.is_added_later ?? false,
           options: c.options.map((o) => ({
@@ -518,6 +525,9 @@ export default function CashierPage() {
     }
   };
 
+  // ============================================================
+  // Рендер
+  // ============================================================
   return (
     <div className="flex h-full min-h-0">
       <PageActions forRole="cashier">
@@ -667,6 +677,7 @@ export default function CashierPage() {
 
       {/* ============ CENTER: Меню ============ */}
       <div className="flex-1 flex flex-col overflow-hidden min-h-0 bg-slate-50">
+        {/* Панель типа заказа + поиск */}
         <div className="flex items-center gap-2 px-3 py-2.5 bg-white border-b border-gray-200 shrink-0">
           <div className="flex rounded-xl overflow-hidden border-2 border-gray-300 shadow-sm">
             <button
@@ -713,6 +724,7 @@ export default function CashierPage() {
           </div>
         </div>
 
+        {/* Категории */}
         <div className="flex gap-1.5 px-3 py-2 overflow-x-auto bg-white border-b border-gray-200 shrink-0">
           <button
             onClick={() => setActiveCategory(null)}
@@ -740,6 +752,7 @@ export default function CashierPage() {
         </div>
 
         <div className="flex-1 min-h-0 flex overflow-hidden">
+          {/* Сетка блюд по категориям */}
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
             {error && (
               <div className="mb-3 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
@@ -787,6 +800,11 @@ export default function CashierPage() {
                         {items.map((item) => {
                           const displayImage =
                             item.image_url || categoryImage;
+                          const isComposite =
+                            item.type === 'set' ||
+                            (item.variants?.length ?? 0) > 0 ||
+                            (item.properties?.length ?? 0) > 0 ||
+                            (item.set_slots?.length ?? 0) > 0;
 
                           return (
                             <button
@@ -798,7 +816,7 @@ export default function CashierPage() {
                                 <>
                                   <img
                                     src={displayImage}
-                                    alt={item.variant || item.name}
+                                    alt={item.name}
                                     className="absolute inset-0 w-full h-full object-cover"
                                     loading="lazy"
                                   />
@@ -808,13 +826,34 @@ export default function CashierPage() {
                                 <div className="absolute inset-0 bg-gradient-to-br from-orange-500 to-red-500" />
                               )}
 
+                              {isComposite && (
+                                <div className="absolute top-1 right-1 bg-purple-600 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full shadow">
+                                  ⋯
+                                </div>
+                              )}
+                              {item.type === 'set' && (
+                                <div className="absolute top-1 left-1 bg-orange-600 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full shadow">
+                                  SET
+                                </div>
+                              )}
+
                               <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
                                 <div className="text-sm sm:text-base font-black text-white leading-tight drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
-                                  {item.variant || item.name}
+                                  {item.name}
                                 </div>
-                                {item.price > 0 && (
+                                {item.price > 0 && (item.variants?.length ?? 0) === 0 && (
                                   <div className="text-sm sm:text-base font-black leading-tight mt-1 text-yellow-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
                                     {formatYen(item.price)}
+                                  </div>
+                                )}
+                                {(item.variants?.length ?? 0) > 0 && (
+                                  <div className="text-[10px] font-bold text-yellow-300 mt-1 drop-shadow">
+                                    {item.variants![0].name}
+                                    {item.variants!.length > 1
+                                      ? ` … ${formatYen(
+                                          item.variants![0].price
+                                        )}+`
+                                      : ` ${formatYen(item.variants![0].price)}`}
                                   </div>
                                 )}
                               </div>
@@ -829,6 +868,7 @@ export default function CashierPage() {
             </div>
           </div>
 
+          {/* Правая панель: Quick Access (все drink/sauce/topping) */}
           <div className="w-48 lg:w-56 xl:w-60 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
             <div className="px-3 py-2.5 border-b border-gray-200 shrink-0 flex items-center gap-2">
               <Zap className="w-4 h-4 text-orange-500 shrink-0" />
@@ -837,63 +877,60 @@ export default function CashierPage() {
               </h2>
             </div>
 
-            <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-3">
-              {quickAccessCategories.map((cat) => {
-                const items = menuItems.filter(
-                  (i) => i.category_id === cat.id && i.active
-                );
-                if (items.length === 0) return null;
+            <div className="flex-1 min-h-0 overflow-y-auto p-2">
+              {quickAccessItems.length === 0 ? (
+                <p className="text-xs text-gray-400 text-center py-4">
+                  —
+                </p>
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {quickAccessItems.map((item) => {
+                    const cat = categories.find(
+                      (c) => c.id === item.category_id
+                    );
+                    const displayImage =
+                      item.image_url ||
+                      menuItems.find(
+                        (x) => x.category_id === item.category_id && x.image_url
+                      )?.image_url ||
+                      null;
 
-                const categoryImage =
-                  items.find((i) => i.image_url)?.image_url ?? null;
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => handleItemClick(item)}
+                        className="group relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br from-gray-100 to-gray-200 border-2 border-gray-200 active:border-orange-400 transition-all active:scale-95"
+                        title={cat?.name ?? ''}
+                      >
+                        {displayImage ? (
+                          <>
+                            <img
+                              src={displayImage}
+                              alt={item.name}
+                              className="absolute inset-0 w-full h-full object-cover"
+                              loading="lazy"
+                            />
+                            <div className="absolute inset-0 bg-black/45" />
+                          </>
+                        ) : (
+                          <div className="absolute inset-0 bg-gradient-to-br from-cyan-500 to-blue-500" />
+                        )}
 
-                return (
-                  <div key={cat.id}>
-                    <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5 px-1">
-                      {cat.name}
-                    </h3>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {items.map((item) => {
-                        const displayImage =
-                          item.image_url || categoryImage;
-
-                        return (
-                          <button
-                            key={item.id}
-                            onClick={() => addToCart(item)}
-                            className="group relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br from-gray-100 to-gray-200 border-2 border-gray-200 active:border-orange-400 transition-all active:scale-95"
-                          >
-                            {displayImage ? (
-                              <>
-                                <img
-                                  src={displayImage}
-                                  alt={item.variant || item.name}
-                                  className="absolute inset-0 w-full h-full object-cover"
-                                  loading="lazy"
-                                />
-                                <div className="absolute inset-0 bg-black/45" />
-                              </>
-                            ) : (
-                              <div className="absolute inset-0 bg-gradient-to-br from-orange-500 to-red-500" />
-                            )}
-
-                            <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
-                              <div className="text-xs font-black text-white leading-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] line-clamp-2">
-                                {item.variant || item.name}
-                              </div>
-                              {item.price > 0 && (
-                                <div className="text-xs font-black leading-tight mt-1 text-yellow-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
-                                  ¥{item.price}
-                                </div>
-                              )}
+                        <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
+                          <div className="text-xs font-black text-white leading-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] line-clamp-2">
+                            {item.name}
+                          </div>
+                          {item.price > 0 && (
+                            <div className="text-xs font-black leading-tight mt-1 text-yellow-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+                              ¥{item.price}
                             </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -957,6 +994,11 @@ export default function CashierPage() {
               ? 'bg-orange-50 border-orange-400 ring-1 ring-orange-300'
               : 'bg-white border-gray-200';
 
+            const lineTotal =
+              item.price * item.quantity +
+              item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
+                item.quantity;
+
             return (
               <div
                 key={item.id}
@@ -1013,6 +1055,11 @@ export default function CashierPage() {
                       >
                         <span className="text-orange-500 font-bold">+</span>
                         <span className="font-medium">{opt.name}</span>
+                        {opt.price > 0 && (
+                          <span className="text-gray-400">
+                            ({formatYen(opt.price)})
+                          </span>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1051,9 +1098,7 @@ export default function CashierPage() {
                         : 'text-orange-600'
                     }`}
                   >
-                    {removed
-                      ? formatYen(0)
-                      : formatYen(item.price * item.quantity)}
+                    {removed ? formatYen(0) : formatYen(lineTotal)}
                   </span>
                 </div>
               </div>
@@ -1139,16 +1184,17 @@ export default function CashierPage() {
         </div>
       </div>
 
-      <SetPickerDialog
-        open={setPickerItem !== null}
-        item={setPickerItem}
-        sauceCategory={sauceCategory}
-        drinkCategory={drinkCategory}
-        onConfirm={(options) => {
-          if (setPickerItem) addToCartWithOptions(setPickerItem, options);
-          setSetPickerItem(null);
+      {/* ============ Диалоги ============ */}
+      <ProductBuilderDialog
+        open={builderItem !== null}
+        item={builderItem}
+        allItems={menuItems}
+        onConfirm={({ variant, price, options }) => {
+          if (builderItem)
+            addToCartFromBuilder(builderItem, variant, price, options);
+          setBuilderItem(null);
         }}
-        onCancel={() => setSetPickerItem(null)}
+        onCancel={() => setBuilderItem(null)}
       />
 
       <ClearCartDialog
