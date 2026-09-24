@@ -77,6 +77,7 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
   CREATE INDEX IF NOT EXISTS idx_orders_synced ON orders(synced);
+  CREATE INDEX IF NOT EXISTS idx_orders_number ON orders(order_number);
   CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id);
   CREATE INDEX IF NOT EXISTS idx_options_item ON order_item_options(order_item_id);
   CREATE INDEX IF NOT EXISTS idx_menu_items_cat ON menu_items(category_id);

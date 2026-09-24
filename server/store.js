@@ -2,23 +2,6 @@ import { randomUUID } from 'crypto';
 import db from './db.js';
 import { EventEmitter } from 'events';
 
-/**
- * Обёртка для транзакций (node:sqlite не имеет .transaction())
- */
-function tx(fn) {
-  return (...args) => {
-    db.exec('BEGIN');
-    try {
-      const result = fn(...args);
-      db.exec('COMMIT');
-      return result;
-    } catch (e) {
-      db.exec('ROLLBACK');
-      throw e;
-    }
-  };
-}
-
 class Store extends EventEmitter {
   constructor() {
     super();
@@ -26,11 +9,19 @@ class Store extends EventEmitter {
     const row = db
       .prepare('SELECT MAX(order_number) as max_num FROM orders')
       .get();
-    this.nextOrderNumber = (row?.max_num ?? 100) + 1;
+    this.nextOrderNumber = (row?.max_num ?? 99) + 1;
+  }
+
+  setNextOrderNumber(n) {
+    this.nextOrderNumber = n;
+  }
+
+  peekNextOrderNumber() {
+    return this.nextOrderNumber;
   }
 
   // ============================================================
-  // ЗАКАЗЫ — чтение
+  // ЧТЕНИЕ
   // ============================================================
   getAllOrders() {
     const orders = db
@@ -78,11 +69,11 @@ class Store extends EventEmitter {
   }
 
   // ============================================================
-  // ЗАКАЗЫ — запись
+  // СОЗДАНИЕ ЗАКАЗА (локально на этом хосте)
   // ============================================================
   createOrder = (order) => {
     const id = order.id || randomUUID();
-    const number = this.nextOrderNumber++;
+    const number = order.order_number ?? this.nextOrderNumber++;
     const now = new Date().toISOString();
 
     db.exec('BEGIN');
@@ -145,10 +136,17 @@ class Store extends EventEmitter {
       throw e;
     }
 
+    if (number >= this.nextOrderNumber) {
+      this.nextOrderNumber = number + 1;
+    }
+
     this.emit('orders-changed');
     return this.getOrder(id);
   };
 
+  // ============================================================
+  // ОБНОВЛЕНИЕ СТАТУСА
+  // ============================================================
   updateStatus(orderId, status) {
     const order = db
       .prepare('SELECT id FROM orders WHERE id = ?')
@@ -170,6 +168,9 @@ class Store extends EventEmitter {
     return this.getOrder(orderId);
   }
 
+  // ============================================================
+  // РЕДАКТИРОВАНИЕ ЗАКАЗА
+  // ============================================================
   updateOrder = (orderId, patch) => {
     const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(orderId);
     if (!order) return null;
@@ -243,7 +244,114 @@ class Store extends EventEmitter {
   };
 
   // ============================================================
-  // СИНХРОНИЗАЦИЯ С SUPABASE
+  // ПРИЁМ ЗАКАЗА ИЗ SUPABASE (с другого хоста)
+  // 🛡️ ЗАЩИТА ОТ ЭХА: не перезаписываем свежие локальные данные
+  // ============================================================
+  writeRemoteOrder(remoteOrder) {
+    const { order_items = [], ...orderData } = remoteOrder;
+
+    // Проверяем, есть ли более свежая локальная версия
+    const local = db
+      .prepare('SELECT updated_at FROM orders WHERE id = ?')
+      .get(orderData.id);
+
+    if (local) {
+      const localTime = new Date(local.updated_at).getTime();
+      const remoteTime = new Date(
+        orderData.updated_at || orderData.created_at
+      ).getTime();
+
+      // Локальная версия новее — не перезаписываем
+      if (localTime > remoteTime) {
+        return;
+      }
+    }
+
+    db.exec('BEGIN');
+    try {
+      db.prepare(
+        `INSERT OR REPLACE INTO orders
+         (id, order_number, order_type, status, total_amount, comment,
+          created_at, updated_at, completed_at, synced, sync_error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL)`
+      ).run(
+        orderData.id,
+        orderData.order_number,
+        orderData.order_type,
+        orderData.status,
+        orderData.total_amount,
+        orderData.comment ?? '',
+        orderData.created_at,
+        orderData.updated_at,
+        orderData.completed_at
+      );
+
+      // Удаляем старые items и options
+      const oldItemIds = db
+        .prepare('SELECT id FROM order_items WHERE order_id = ?')
+        .all(orderData.id)
+        .map((r) => r.id);
+
+      for (const oldId of oldItemIds) {
+        db.prepare('DELETE FROM order_item_options WHERE order_item_id = ?').run(
+          oldId
+        );
+      }
+      db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderData.id);
+
+      // Вставляем items + options
+      for (const item of order_items) {
+        db.prepare(
+          `INSERT INTO order_items
+           (id, order_id, menu_item_id, name, short_name, variant,
+            price, quantity, subtotal, is_removed, is_added_later)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          item.id,
+          orderData.id,
+          item.menu_item_id ?? null,
+          item.name,
+          item.short_name ?? '',
+          item.variant ?? '',
+          item.price ?? 0,
+          item.quantity ?? 1,
+          item.subtotal ?? 0,
+          item.is_removed ? 1 : 0,
+          item.is_added_later ? 1 : 0
+        );
+
+        for (const opt of item.options ?? []) {
+          db.prepare(
+            `INSERT INTO order_item_options
+             (id, order_item_id, type, name, price, quantity)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).run(
+            opt.id,
+            item.id,
+            opt.type,
+            opt.name,
+            opt.price ?? 0,
+            opt.quantity ?? 1
+          );
+        }
+      }
+
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      console.error('[store] writeRemoteOrder error:', e.message);
+      return;
+    }
+
+    if (orderData.order_number >= this.nextOrderNumber) {
+      this.nextOrderNumber = orderData.order_number + 1;
+    }
+
+    this.emit('orders-changed');
+  }
+
+  // ============================================================
+  // СИНХРОНИЗАЦИЯ
   // ============================================================
   getUnsyncedOrders() {
     return db
@@ -265,6 +373,13 @@ class Store extends EventEmitter {
       String(errorMessage).slice(0, 500),
       orderId
     );
+  }
+
+  getMaxOrderNumber() {
+    const row = db
+      .prepare('SELECT MAX(order_number) as max_num FROM orders')
+      .get();
+    return row?.max_num ?? 99;
   }
 
   // ============================================================

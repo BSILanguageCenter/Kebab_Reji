@@ -10,7 +10,14 @@ import {
   bootstrapFromSupabase,
   startSyncLoop,
   isSupabaseOnline,
+  getSupabaseClient,
 } from './supabase-sync.js';
+import {
+  initHost,
+  getHostInfo,
+  getNextOrderNumber,
+  bumpNextOrderNumber,
+} from './host.js';
 
 const PORT = process.env.PORT || 3001;
 
@@ -23,6 +30,7 @@ app.use(express.json());
 
 app.get('/health', (_req, res) => {
   const stats = store.getStats();
+  const hostInfo = getHostInfo();
   res.json({
     ok: true,
     online: isSupabaseOnline(),
@@ -30,6 +38,13 @@ app.get('/health', (_req, res) => {
     unsynced: stats.unsyncedCount,
     clients: io.engine.clientsCount,
     uptime: Math.floor(process.uptime()),
+    host: {
+      uuid: hostInfo.hostUuid,
+      number: hostInfo.hostNumber,
+      rangeStart: hostInfo.rangeStart,
+      rangeEnd: hostInfo.rangeEnd,
+      nextOrderNumber: hostInfo.nextOrderNumber,
+    },
   });
 });
 
@@ -44,7 +59,7 @@ const io = new SocketIOServer(httpServer, {
 });
 
 // ============================================================
-// ЕДИНЫЙ BROADCAST — один listener на весь io
+// ЕДИНЫЙ BROADCAST
 // ============================================================
 store.on('orders-changed', () => {
   io.emit('orders', store.getAllOrders());
@@ -55,7 +70,7 @@ store.on('menu-changed', () => {
 });
 
 // ============================================================
-// СЧЁТЧИК ПОДКЛЮЧЁННЫХ КЛИЕНТОВ
+// СЧЁТЧИК КЛИЕНТОВ
 // ============================================================
 function broadcastClientsCount() {
   const count = io.engine.clientsCount;
@@ -69,19 +84,23 @@ function broadcastClientsCount() {
 io.on('connection', (socket) => {
   console.log(`[ws] + ${socket.id} (всего: ${io.engine.clientsCount})`);
 
-  // Отправляем снимок при подключении
   socket.emit('init', {
     orders: store.getAllOrders(),
     menu: store.getMenu(),
   });
 
-  // Отправляем всем актуальный счётчик клиентов
   broadcastClientsCount();
 
   // ---------- СОЗДАНИЕ ЗАКАЗА ----------
   socket.on('create-order', (order, ack) => {
     try {
-      const created = store.createOrder(order);
+      // Получаем номер от host.js (учитывает диапазон и глобальный max)
+      const orderNumber = getNextOrderNumber();
+      const created = store.createOrder({
+        ...order,
+        order_number: orderNumber,
+      });
+      bumpNextOrderNumber(orderNumber);
       if (typeof ack === 'function') ack({ ok: true, order: created });
     } catch (e) {
       console.error('[ws] create-order error:', e);
@@ -120,7 +139,6 @@ io.on('connection', (socket) => {
   // ---------- ОТКЛЮЧЕНИЕ ----------
   socket.on('disconnect', () => {
     console.log(`[ws] - ${socket.id} (всего: ${io.engine.clientsCount})`);
-    // Обновляем счётчик у остальных после того, как Socket.IO обновит свой счётчик
     setTimeout(() => broadcastClientsCount(), 100);
   });
 });
@@ -138,14 +156,33 @@ async function main() {
     );
   }
 
+  // ============================================================
+  // ИНИЦИАЛИЗАЦИЯ ХОСТА — регистрация, диапазон, heartbeat
+  // ============================================================
+  try {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      await initHost(supabase, store);
+    } else {
+      console.warn('[boot] Нет Supabase-клиента — host не инициализирован');
+    }
+  } catch (e) {
+    console.error('[boot] Не удалось инициализировать хост:', e.message);
+  }
+
   startSyncLoop();
 
   httpServer.listen(PORT, '0.0.0.0', () => {
+    const hostInfo = getHostInfo();
     console.log('');
     console.log('🚀 Kebab POS local server');
     console.log(`   HTTP:      http://localhost:${PORT}`);
     console.log(`   WebSocket: ws://localhost:${PORT}`);
     console.log(`   В сети:    http://<YOUR-LAN-IP>:${PORT}`);
+    console.log('');
+    console.log(`   Host #${hostInfo.hostNumber}`);
+    console.log(`   Диапазон заказов: ${hostInfo.rangeStart}–${hostInfo.rangeEnd}`);
+    console.log(`   Следующий заказ:  ${hostInfo.nextOrderNumber}`);
     console.log('');
   });
 }
