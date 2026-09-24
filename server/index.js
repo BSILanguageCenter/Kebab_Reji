@@ -1,6 +1,6 @@
-// ⚠️ ЭТОТ ИМПОРТ ДОЛЖЕН БЫТЬ ПЕРВЫМ — он загружает .env
-import './env.js';
-
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
@@ -11,6 +11,23 @@ import {
   startSyncLoop,
   isSupabaseOnline,
 } from './supabase-sync.js';
+
+// ============================================================
+// Загрузка .env из КОРНЯ проекта (на уровень выше server/)
+// ============================================================
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const envPath = join(__dirname, '..', '.env');
+dotenv.config({ path: envPath });
+
+console.log('[env] Читаю .env из:', envPath);
+console.log('  SUPABASE_URL:', process.env.SUPABASE_URL ? 'OK' : '❌ НЕТ');
+console.log(
+  '  SUPABASE_KEY:',
+  process.env.SUPABASE_KEY
+    ? 'OK (' + process.env.SUPABASE_KEY.length + ' симв.)'
+    : '❌ НЕТ'
+);
+console.log('  PORT:', process.env.PORT ?? '3001 (по умолчанию)');
 
 const PORT = process.env.PORT || 3001;
 
@@ -28,6 +45,7 @@ app.get('/health', (_req, res) => {
     online: isSupabaseOnline(),
     orders: stats.totalOrders,
     unsynced: stats.unsyncedCount,
+    clients: io.engine.clientsCount,
     uptime: Math.floor(process.uptime()),
   });
 });
@@ -42,25 +60,40 @@ const io = new SocketIOServer(httpServer, {
   pingTimeout: 5000,
 });
 
+// ============================================================
+// ЕДИНЫЙ BROADCAST — один listener на весь io
+// ============================================================
+store.on('orders-changed', () => {
+  io.emit('orders', store.getAllOrders());
+});
+
+store.on('menu-changed', () => {
+  io.emit('menu', store.getMenu());
+});
+
+// ============================================================
+// СЧЁТЧИК ПОДКЛЮЧЁННЫХ КЛИЕНТОВ
+// ============================================================
+function broadcastClientsCount() {
+  const count = io.engine.clientsCount;
+  io.emit('clients-count', count);
+  console.log(`[ws] clients-count: ${count}`);
+}
+
+// ============================================================
+// ПОДКЛЮЧЕНИЕ КЛИЕНТОВ
+// ============================================================
 io.on('connection', (socket) => {
   console.log(`[ws] + ${socket.id} (всего: ${io.engine.clientsCount})`);
 
-  // Отправляем полный снимок новому клиенту
+  // Отправляем снимок при подключении
   socket.emit('init', {
     orders: store.getAllOrders(),
     menu: store.getMenu(),
   });
 
-  // Broadcast изменений
-  const onOrdersChanged = () => {
-    io.emit('orders', store.getAllOrders());
-  };
-  const onMenuChanged = () => {
-    io.emit('menu', store.getMenu());
-  };
-
-  store.on('orders-changed', onOrdersChanged);
-  store.on('menu-changed', onMenuChanged);
+  // Отправляем всем актуальный счётчик клиентов
+  broadcastClientsCount();
 
   // ---------- СОЗДАНИЕ ЗАКАЗА ----------
   socket.on('create-order', (order, ack) => {
@@ -104,8 +137,8 @@ io.on('connection', (socket) => {
   // ---------- ОТКЛЮЧЕНИЕ ----------
   socket.on('disconnect', () => {
     console.log(`[ws] - ${socket.id} (всего: ${io.engine.clientsCount})`);
-    store.off('orders-changed', onOrdersChanged);
-    store.off('menu-changed', onMenuChanged);
+    // Обновляем счётчик у остальных после того, как Socket.IO обновит свой счётчик
+    setTimeout(() => broadcastClientsCount(), 100);
   });
 });
 

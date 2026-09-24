@@ -22,18 +22,21 @@ export interface SyncStats {
 let socket: Socket | null = null;
 
 // ============================================================
-// Кеш последнего состояния — отдаём новым подписчикам сразу
+// Кеш последнего состояния
 // ============================================================
 let lastOrders: Order[] | null = null;
 let lastMenu: ServerMenu | null = null;
+let lastClientsCount = 1; // минимум 1 — это сам клиент
 
 type OrdersListener = (orders: Order[]) => void;
 type MenuListener = (menu: ServerMenu) => void;
 type InitListener = (snap: ServerSnapshot) => void;
+type ClientsListener = (count: number) => void;
 
 const ordersListeners = new Set<OrdersListener>();
 const menuListeners = new Set<MenuListener>();
 const initListeners = new Set<InitListener>();
+const clientsListeners = new Set<ClientsListener>();
 
 function notifyOrders(orders: Order[]) {
   lastOrders = orders;
@@ -53,8 +56,13 @@ function notifyInit(snap: ServerSnapshot) {
   menuListeners.forEach((l) => l(snap.menu));
 }
 
+function notifyClientsCount(count: number) {
+  lastClientsCount = count;
+  clientsListeners.forEach((l) => l(count));
+}
+
 // ============================================================
-// Подписки — сразу получают кешированные данные, если есть
+// Подписки
 // ============================================================
 export function subscribeOrders(listener: OrdersListener): () => void {
   ordersListeners.add(listener);
@@ -86,6 +94,14 @@ export function subscribeInit(listener: InitListener): () => void {
   };
 }
 
+export function subscribeClientsCount(listener: ClientsListener): () => void {
+  clientsListeners.add(listener);
+  listener(lastClientsCount);
+  return () => {
+    clientsListeners.delete(listener);
+  };
+}
+
 // ============================================================
 // Определяем URL сервера автоматически
 // ============================================================
@@ -93,7 +109,6 @@ const MODE_KEY = 'kebab-pos-mode';
 const HOST_IP_KEY = 'kebab-pos-host-ip';
 
 function resolveServerUrl(): string {
-  // 1. Явно заданный VITE_SOCKET_URL — самый высокий приоритет
   const explicit = import.meta.env.VITE_SOCKET_URL as string | undefined;
   if (explicit && explicit.trim().length > 0) {
     return explicit;
@@ -103,7 +118,6 @@ function resolveServerUrl(): string {
     return 'http://localhost:3001';
   }
 
-  // 2. Режим "Клиент" — используем IP хоста из localStorage
   const mode = window.localStorage.getItem(MODE_KEY);
   const hostIp = window.localStorage.getItem(HOST_IP_KEY);
 
@@ -111,7 +125,6 @@ function resolveServerUrl(): string {
     return `http://${hostIp.trim()}:3001`;
   }
 
-  // 3. Хост-режим (или первый запуск) — используем hostname браузера
   const hostname = window.location.hostname;
   const protocol =
     window.location.protocol === 'https:' ? 'https:' : 'http:';
@@ -147,7 +160,6 @@ export function getSocket(): Socket {
       console.error('[ws] Ошибка подключения:', err.message);
     });
 
-    // ---------- Основные события от сервера ----------
     socket.on('init', (snap: ServerSnapshot) => {
       console.log(
         '[ws] init: заказов',
@@ -168,6 +180,11 @@ export function getSocket(): Socket {
     socket.on('menu', (menu: ServerMenu) => {
       notifyMenu(menu);
     });
+
+    socket.on('clients-count', (count: number) => {
+      console.log('[ws] clients-count:', count);
+      notifyClientsCount(count);
+    });
   }
   return socket;
 }
@@ -176,7 +193,6 @@ export function isConnected(): boolean {
   return socket?.connected ?? false;
 }
 
-/** Полное отключение сокета — используется при смене режима */
 export function disconnectSocket(): void {
   if (socket) {
     socket.removeAllListeners();
@@ -184,9 +200,11 @@ export function disconnectSocket(): void {
     socket = null;
     lastOrders = null;
     lastMenu = null;
+    lastClientsCount = 1;
     ordersListeners.clear();
     menuListeners.clear();
     initListeners.clear();
+    clientsListeners.clear();
   }
 }
 

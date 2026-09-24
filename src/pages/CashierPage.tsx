@@ -8,13 +8,22 @@ import {
   subscribeMenu,
   emitCreateOrder,
   emitUpdateOrder,
+  emitUpdateStatus,
 } from '@/lib/socket';
 import { ClearCartDialog } from '@/components/ClearCartDialog';
 import {
   SetPickerDialog,
   type CategoryWithItems,
 } from '@/components/SetPickerDialog';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { PageActions } from '@/components/PageActions';
 import { printCustomerTicket } from '@/services/printer';
+import {
+  pushUndo,
+  popUndo,
+  useUndoStack,
+  type UndoRecord,
+} from '@/services/undo';
 import type {
   MenuCategory,
   MenuItem,
@@ -37,6 +46,7 @@ import {
   FilePlus2,
   Save,
   RotateCcw,
+  Undo2,
 } from 'lucide-react';
 
 const QUICK_ACCESS_REGEX =
@@ -62,11 +72,11 @@ export default function CashierPage() {
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
   const [setPickerItem, setSetPickerItem] = useState<MenuItem | null>(null);
+  const [pendingUndo, setPendingUndo] = useState<UndoRecord | null>(null);
   const cartIdCounter = useRef(0);
 
-  // ============================================================
-  // Подписки на сервер
-  // ============================================================
+  const undoStack = useUndoStack('cashier');
+
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
       setActiveOrders(snap.orders);
@@ -93,9 +103,6 @@ export default function CashierPage() {
     };
   }, [sending]);
 
-  // ============================================================
-  // Вычисления
-  // ============================================================
   const quickAccessCategories = useMemo(
     () =>
       categories.filter((c) =>
@@ -188,9 +195,6 @@ export default function CashierPage() {
     [cart]
   );
 
-  // ============================================================
-  // Корзина
-  // ============================================================
   const confirmIfCartNotEmpty = (action: () => void) => {
     if (cart.length > 0) setPendingAction(() => action);
     else action();
@@ -283,9 +287,6 @@ export default function CashierPage() {
     });
   };
 
-  // ============================================================
-  // Отправка заказа
-  // ============================================================
   const handleSendToKitchen = async () => {
     if (!hasActiveItems) return;
     setSending(true);
@@ -313,6 +314,13 @@ export default function CashierPage() {
               quantity: o.quantity,
             })),
           })),
+      });
+
+      pushUndo('cashier', {
+        kind: 'create',
+        orderId: created.id,
+        orderNumber: created.order_number,
+        timestamp: Date.now(),
       });
 
       setLastOrderNumber(created.order_number);
@@ -365,6 +373,35 @@ export default function CashierPage() {
     setError(null);
     setPrintError(null);
     try {
+      pushUndo('cashier', {
+        kind: 'edit',
+        orderId: editingOrder.id,
+        orderNumber: editingOrder.order_number,
+        snapshot: {
+          order_type: editingOrder.order_type,
+          total_amount: editingOrder.total_amount,
+          comment: editingOrder.comment ?? '',
+          order_items: (editingOrder.order_items ?? []).map((i) => ({
+            menu_item_id: i.menu_item_id,
+            name: i.name,
+            short_name: i.short_name,
+            variant: i.variant,
+            price: i.price,
+            quantity: i.quantity,
+            subtotal: i.subtotal,
+            is_removed: i.is_removed ?? false,
+            is_added_later: i.is_added_later ?? false,
+            options: (i.options ?? []).map((o) => ({
+              type: o.type,
+              name: o.name,
+              price: o.price,
+              quantity: o.quantity,
+            })),
+          })),
+        },
+        timestamp: Date.now(),
+      });
+
       await emitUpdateOrder({
         id: editingOrder.id,
         order_type: orderType,
@@ -399,9 +436,6 @@ export default function CashierPage() {
     }
   };
 
-  // ============================================================
-  // Редактирование
-  // ============================================================
   const actuallyEditOrder = (order: Order) => {
     const restored: CartItem[] = (order.order_items ?? []).map((item) => {
       cartIdCounter.current += 1;
@@ -455,12 +489,54 @@ export default function CashierPage() {
     setEditingOrder(null);
   };
 
-  // ============================================================
-  // JSX
-  // ============================================================
+  const askUndo = () => {
+    const last = undoStack[undoStack.length - 1];
+    if (!last) return;
+    setPendingUndo(last);
+  };
+
+  const confirmUndo = async () => {
+    if (!pendingUndo) return;
+    const rec = popUndo('cashier');
+    setPendingUndo(null);
+    if (!rec) return;
+
+    try {
+      if (rec.kind === 'create') {
+        await emitUpdateStatus(rec.orderId, 'CANCELLED');
+      } else if (rec.kind === 'edit' && rec.snapshot) {
+        await emitUpdateOrder({
+          id: rec.orderId,
+          order_type: rec.snapshot.order_type,
+          total_amount: rec.snapshot.total_amount,
+          comment: rec.snapshot.comment,
+          order_items: rec.snapshot.order_items,
+        });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('unknownError'));
+    }
+  };
+
   return (
     <div className="flex h-full min-h-0">
-      {/* ============ LEFT ============ */}
+      <PageActions forRole="cashier">
+        <button
+          onClick={askUndo}
+          disabled={undoStack.length === 0}
+          className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Undo2 className="w-3.5 h-3.5" />
+          {t('undoLast')}
+          {undoStack.length > 0 && (
+            <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-black">
+              {undoStack.length}
+            </span>
+          )}
+        </button>
+      </PageActions>
+
+      {/* ============ LEFT: Заказы ============ */}
       <div className="w-44 lg:w-56 xl:w-60 shrink-0 bg-white border-r border-gray-200 flex flex-col min-h-0">
         <div className="px-3 py-2.5 border-b border-gray-200 shrink-0">
           <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
@@ -589,7 +665,7 @@ export default function CashierPage() {
         </div>
       </div>
 
-      {/* ============ CENTER ============ */}
+      {/* ============ CENTER: Меню ============ */}
       <div className="flex-1 flex flex-col overflow-hidden min-h-0 bg-slate-50">
         <div className="flex items-center gap-2 px-3 py-2.5 bg-white border-b border-gray-200 shrink-0">
           <div className="flex rounded-xl overflow-hidden border-2 border-gray-300 shadow-sm">
@@ -753,7 +829,6 @@ export default function CashierPage() {
             </div>
           </div>
 
-          {/* Quick Access */}
           <div className="w-48 lg:w-56 xl:w-60 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
             <div className="px-3 py-2.5 border-b border-gray-200 shrink-0 flex items-center gap-2">
               <Zap className="w-4 h-4 text-orange-500 shrink-0" />
@@ -824,7 +899,7 @@ export default function CashierPage() {
         </div>
       </div>
 
-      {/* ============ RIGHT ============ */}
+      {/* ============ RIGHT: Корзина ============ */}
       <div className="w-80 lg:w-96 xl:w-[26rem] shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
         <div
           className={`px-4 py-3 border-b shrink-0 ${
@@ -1084,6 +1159,28 @@ export default function CashierPage() {
           fn?.();
         }}
         onCancel={() => setPendingAction(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingUndo !== null}
+        title={t('confirmTitle')}
+        message={
+          pendingUndo?.kind === 'create'
+            ? t('undoCreateOrder').replace(
+                '{n}',
+                String(pendingUndo.orderNumber)
+              )
+            : pendingUndo?.kind === 'edit'
+            ? t('undoEditOrder').replace(
+                '{n}',
+                String(pendingUndo.orderNumber)
+              )
+            : ''
+        }
+        confirmLabel={t('yes')}
+        variant="red"
+        onConfirm={confirmUndo}
+        onCancel={() => setPendingUndo(null)}
       />
     </div>
   );

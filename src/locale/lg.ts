@@ -202,6 +202,9 @@ export const translationKeys = [
   'timeAgoJustNow',
   'timeAgoMinutes',
   'timeAgoHours',
+  'undoCreateOrder',
+  'undoEditOrder',
+  'devicesOnline',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];
