@@ -22,7 +22,6 @@ import {
   type UndoRecord,
 } from '@/services/undo';
 import type {
-  MenuCategory,
   MenuItem,
   CartItem,
   CartItemOption,
@@ -38,7 +37,6 @@ import {
   Store,
   X,
   Search,
-  Zap,
   Pencil,
   FilePlus2,
   Save,
@@ -46,12 +44,9 @@ import {
   Undo2,
 } from 'lucide-react';
 
-const QUICK_ACCESS_TYPES = ['drink', 'sauce', 'topping'];
-
 export default function CashierPage() {
   const { t, lang } = useI18n();
 
-  const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [orderType, setOrderType] = useState<OrderType>('OUTSIDE');
@@ -59,7 +54,6 @@ export default function CashierPage() {
   const [comment, setComment] = useState('');
   const [sending, setSending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [printError, setPrintError] = useState<string | null>(null);
   const [lastOrderNumber, setLastOrderNumber] = useState<number | null>(null);
@@ -71,25 +65,16 @@ export default function CashierPage() {
 
   const undoStack = useUndoStack('cashier');
 
-  // ============================================================
-  // Socket подписки
-  // ============================================================
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
       setActiveOrders(snap.orders);
-      setCategories(snap.menu.categories);
       setMenuItems(snap.menu.items);
     });
-
     const unsubOrders = subscribeOrders((orders) => {
       if (sending) return;
       setActiveOrders(orders);
     });
-
-    const unsubMenu = subscribeMenu((m) => {
-      setCategories(m.categories);
-      setMenuItems(m.items);
-    });
+    const unsubMenu = subscribeMenu((m) => setMenuItems(m.items));
 
     getSocket();
 
@@ -100,68 +85,62 @@ export default function CashierPage() {
     };
   }, [sending]);
 
-  // ============================================================
-  // Быстрый доступ = все drink/sauce/topping, независимо от категорий
-  // ============================================================
-  const quickAccessItems = useMemo(
+  // ---------- Группировка по типам ----------
+  const dishes = useMemo(
     () =>
       menuItems
-        .filter((i) => i.active && QUICK_ACCESS_TYPES.includes(i.type))
+        .filter((i) => i.type === 'dish' && i.active)
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [menuItems]
+  );
+  const sets = useMemo(
+    () =>
+      menuItems
+        .filter((i) => i.type === 'set' && i.active)
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [menuItems]
+  );
+  const toppings = useMemo(
+    () =>
+      menuItems
+        .filter((i) => i.type === 'topping' && i.active)
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [menuItems]
+  );
+  const drinks = useMemo(
+    () =>
+      menuItems
+        .filter((i) => i.type === 'drink' && i.active)
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [menuItems]
+  );
+  const sauces = useMemo(
+    () =>
+      menuItems
+        .filter((i) => i.type === 'sauce' && i.active)
         .sort((a, b) => a.sort_order - b.sort_order),
     [menuItems]
   );
 
-  const quickAccessIds = useMemo(
-    () => new Set(quickAccessItems.map((i) => i.id)),
-    [quickAccessItems]
+  const filterBySearch = (arr: MenuItem[]) =>
+    searchQuery
+      ? arr.filter(
+          (i) =>
+            i.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            i.short_name.toLowerCase().includes(searchQuery.toLowerCase())
+        )
+      : arr;
+
+  const filteredDishes = useMemo(
+    () => filterBySearch(dishes),
+    [dishes, searchQuery]
+  );
+  const filteredSets = useMemo(
+    () => filterBySearch(sets),
+    [sets, searchQuery]
   );
 
-  // ============================================================
-  // Категории, которые показываются в основной сетке (без quick-access)
-  // ============================================================
-  const mainCategories = useMemo(
-    () =>
-      categories.filter((c) => {
-        const catItems = menuItems.filter((i) => i.category_id === c.id);
-        if (catItems.length === 0) return false;
-        // Категория попадает в main, если в ней есть хотя бы один не quick-access item
-        return catItems.some((i) => !quickAccessIds.has(i.id));
-      }),
-    [categories, menuItems, quickAccessIds]
-  );
-
-  const filteredItems = useMemo(
-    () =>
-      menuItems.filter((item) => {
-        if (!item.active) return false;
-        if (quickAccessIds.has(item.id)) return false;
-        if (searchQuery) {
-          const q = searchQuery.toLowerCase();
-          return (
-            item.name.toLowerCase().includes(q) ||
-            item.short_name.toLowerCase().includes(q)
-          );
-        }
-        if (activeCategory) return item.category_id === activeCategory;
-        return true;
-      }),
-    [menuItems, quickAccessIds, searchQuery, activeCategory]
-  );
-
-  const groupedItems = useMemo(
-    () =>
-      mainCategories
-        .map((cat) => ({
-          category: cat,
-          items: filteredItems.filter((i) => i.category_id === cat.id),
-        }))
-        .filter((g) => g.items.length > 0),
-    [mainCategories, filteredItems]
-  );
-
-  // ============================================================
-  // Корзина
-  // ============================================================
+  // ---------- Корзина ----------
   const cartTotal = useMemo(
     () =>
       cart
@@ -246,9 +225,18 @@ export default function CashierPage() {
   const handleItemClick = (item: MenuItem) => {
     const hasVariants = (item.variants?.length ?? 0) > 0;
     const hasProps = (item.properties?.length ?? 0) > 0;
-    const hasSlots = (item.set_slots?.length ?? 0) > 0;
+    const hasSauces =
+      item.sauce_mode === 'with' && (item.allowed_sauces?.length ?? 0) > 0;
+    const hasExtras = (item.set_extra_groups?.length ?? 0) > 0;
+
     const needsBuilder =
-      item.type === 'set' || hasVariants || hasProps || hasSlots;
+      item.type === 'set' ||
+      (item.type === 'dish' && item.dish_kind === 'group') ||
+      hasVariants ||
+      hasProps ||
+      hasSauces ||
+      hasExtras;
+
     if (needsBuilder) setBuilderItem(item);
     else addToCart(item);
   };
@@ -264,9 +252,7 @@ export default function CashierPage() {
   const decrementItem = (cartId: string) => {
     setCart((prev) =>
       prev
-        .map((c) =>
-          c.id === cartId ? { ...c, quantity: c.quantity - 1 } : c
-        )
+        .map((c) => (c.id === cartId ? { ...c, quantity: c.quantity - 1 } : c))
         .filter((c) => c.quantity > 0)
     );
   };
@@ -284,9 +270,7 @@ export default function CashierPage() {
     });
   };
 
-  // ============================================================
-  // Создание заказа
-  // ============================================================
+  // ---------- Отправка ----------
   const handleSendToKitchen = async () => {
     if (!hasActiveItems) return;
     setSending(true);
@@ -507,7 +491,6 @@ export default function CashierPage() {
     const rec = popUndo('cashier');
     setPendingUndo(null);
     if (!rec) return;
-
     try {
       if (rec.kind === 'create') {
         await emitUpdateStatus(rec.orderId, 'CANCELLED');
@@ -526,665 +509,518 @@ export default function CashierPage() {
   };
 
   // ============================================================
-  // Рендер
+  // RENDER
   // ============================================================
   return (
-    <div className="flex h-full min-h-0">
-      <PageActions forRole="cashier">
-        <button
-          onClick={askUndo}
-          disabled={undoStack.length === 0}
-          className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <Undo2 className="w-3.5 h-3.5" />
-          {t('undoLast')}
-          {undoStack.length > 0 && (
-            <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-black">
-              {undoStack.length}
+    <div className="h-full min-h-0 flex flex-col bg-slate-100">
+      {/* ============ HEADER ============ */}
+      <div className="flex items-center gap-3 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
+        <PageActions forRole="cashier">
+          <button
+            onClick={askUndo}
+            disabled={undoStack.length === 0}
+            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            {t('undoLast')}
+            {undoStack.length > 0 && (
+              <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-black">
+                {undoStack.length}
+              </span>
+            )}
+          </button>
+        </PageActions>
+      </div>
+
+      {/* ============ MAIN 4-COLUMN LAYOUT ============ */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {/* -------- COLUMN 1: ORDERS -------- */}
+        <div className="w-44 lg:w-52 xl:w-56 shrink-0 bg-white border-r border-gray-200 flex flex-col min-h-0">
+          <div className="px-3 py-2 border-b border-gray-200 shrink-0">
+            <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
+              {t('activeOrders')}
+            </h2>
+            <span className="text-xl font-bold text-orange-600">
+              {activeOrders.filter((o) => o.status !== 'CANCELLED').length}
             </span>
-          )}
-        </button>
-      </PageActions>
+          </div>
 
-      {/* ============ LEFT: Заказы ============ */}
-      <div className="w-44 lg:w-56 xl:w-60 shrink-0 bg-white border-r border-gray-200 flex flex-col min-h-0">
-        <div className="px-3 py-2.5 border-b border-gray-200 shrink-0">
-          <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-            {t('activeOrders')}
-          </h2>
-          <span className="text-2xl font-bold text-orange-600">
-            {activeOrders.filter((o) => o.status !== 'CANCELLED').length}
-          </span>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
-          {activeOrders.length === 0 && (
-            <p className="text-gray-400 text-xs text-center mt-6">
-              {t('noActiveOrders')}
-            </p>
-          )}
-          {activeOrders.map((order) => {
-            const isCancelled = order.status === 'CANCELLED';
-            const isEditing = editingOrder?.id === order.id;
-            const isModified = order.is_modified === true;
-
-            const baseClasses = isCancelled
-              ? 'bg-red-50 border-red-300 opacity-60'
-              : isEditing
-              ? 'bg-orange-100 border-orange-500 ring-2 ring-orange-300'
-              : isModified
-              ? 'bg-orange-50 border-orange-400'
-              : order.status === 'READY'
-              ? 'bg-green-50 border-green-400'
-              : order.status === 'PREPARING'
-              ? 'bg-yellow-50 border-yellow-400'
-              : 'bg-gray-50 border-gray-200';
-
-            return (
-              <button
-                key={order.id}
-                onClick={() => handleEditOrder(order)}
-                disabled={isCancelled}
-                className={`w-full text-left p-3 rounded-xl border-2 transition-all ${baseClasses} ${
-                  isCancelled
-                    ? 'cursor-not-allowed'
-                    : 'cursor-pointer active:scale-[0.97]'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span
-                    className={`text-xl font-bold ${
-                      isCancelled
-                        ? 'text-red-700'
-                        : isEditing || isModified
-                        ? 'text-orange-700'
-                        : 'text-gray-900'
-                    }`}
-                  >
-                    #{order.order_number}
-                  </span>
-                  <span
-                    className={`text-xs px-2 py-1 rounded-full font-bold ${
-                      order.order_type === 'INSIDE'
-                        ? 'bg-blue-100 text-blue-700'
-                        : 'bg-purple-100 text-purple-700'
-                    }`}
-                  >
-                    {order.order_type === 'INSIDE' ? 'IN' : 'OUT'}
-                  </span>
-                </div>
-
-                <div className={isCancelled ? 'line-through' : ''}>
-                  <div className="flex items-center justify-between mt-1.5">
-                    <span className="text-xs text-gray-500">
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
+            {activeOrders.length === 0 && (
+              <p className="text-gray-400 text-xs text-center mt-6">
+                {t('noActiveOrders')}
+              </p>
+            )}
+            {activeOrders.map((order) => {
+              const isCancelled = order.status === 'CANCELLED';
+              const isEditing = editingOrder?.id === order.id;
+              const baseClasses = isCancelled
+                ? 'bg-red-50 border-red-300 opacity-60'
+                : isEditing
+                ? 'bg-orange-100 border-orange-500 ring-2 ring-orange-300'
+                : order.status === 'READY'
+                ? 'bg-green-50 border-green-400'
+                : order.status === 'PREPARING'
+                ? 'bg-yellow-50 border-yellow-400'
+                : 'bg-gray-50 border-gray-200';
+              return (
+                <button
+                  key={order.id}
+                  onClick={() => handleEditOrder(order)}
+                  disabled={isCancelled}
+                  className={`w-full text-left p-2.5 rounded-xl border-2 transition-all ${baseClasses} ${
+                    isCancelled
+                      ? 'cursor-not-allowed'
+                      : 'cursor-pointer active:scale-[0.97]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-lg font-bold text-gray-900">
+                      #{order.order_number}
+                    </span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                        order.order_type === 'INSIDE'
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'bg-purple-100 text-purple-700'
+                      }`}
+                    >
+                      {order.order_type === 'INSIDE' ? 'IN' : 'OUT'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-[10px] text-gray-500">
                       {formatTimeAgo(order.created_at, lang)}
                     </span>
-                    <span className="text-sm font-bold text-gray-700">
+                    <span className="text-xs font-bold text-gray-700">
                       {formatYen(order.total_amount)}
                     </span>
                   </div>
-                </div>
-
-                {order.status === 'READY' && !isEditing && !isModified && (
-                  <div className="mt-1 text-xs text-green-600 font-bold">
-                    {t('statusReady')}
-                  </div>
-                )}
-                {order.status === 'PREPARING' && !isEditing && !isModified && (
-                  <div className="mt-1 text-xs text-yellow-600 font-bold">
-                    {t('statusCooking')}
-                  </div>
-                )}
-                {isCancelled && (
-                  <div className="mt-1 text-xs text-red-600 font-bold">
-                    {t('cancelled')}
-                  </div>
-                )}
-                {isEditing && (
-                  <div className="mt-1 text-xs text-orange-700 font-bold flex items-center gap-1">
-                    <Pencil className="w-3 h-3" />
-                    {t('editingOrder')}
-                  </div>
-                )}
-                {!isEditing && isModified && !isCancelled && (
-                  <div className="mt-1 text-xs text-orange-700 font-bold flex items-center gap-1">
-                    <Pencil className="w-3 h-3" />
-                    {t('modified')}
-                  </div>
-                )}
-
-                {!isCancelled && !isEditing && !isModified && (
-                  <div className="mt-1.5 flex items-center gap-1 text-[10px] text-gray-400 font-medium">
-                    <Pencil className="w-3 h-3" />
-                    {t('editOrder')}
-                  </div>
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="p-2 border-t border-gray-200 shrink-0">
-          <button
-            onClick={handleNewOrder}
-            className="w-full flex items-center justify-center gap-2 px-3 py-3.5 rounded-xl bg-orange-500 active:bg-orange-600 text-white text-sm font-bold transition-all active:scale-[0.97] shadow-md shadow-orange-500/20"
-          >
-            <FilePlus2 className="w-5 h-5" />
-            {t('newOrder')}
-          </button>
-        </div>
-      </div>
-
-      {/* ============ CENTER: Меню ============ */}
-      <div className="flex-1 flex flex-col overflow-hidden min-h-0 bg-slate-50">
-        {/* Панель типа заказа + поиск */}
-        <div className="flex items-center gap-2 px-3 py-2.5 bg-white border-b border-gray-200 shrink-0">
-          <div className="flex rounded-xl overflow-hidden border-2 border-gray-300 shadow-sm">
-            <button
-              onClick={() => setOrderType('OUTSIDE')}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-bold transition-all ${
-                orderType === 'OUTSIDE'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-white text-gray-600'
-              }`}
-            >
-              <ShoppingBag className="w-4 h-4" />
-              {t('orderTypeOutside')}
-            </button>
-            <button
-              onClick={() => setOrderType('INSIDE')}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-bold transition-all ${
-                orderType === 'INSIDE'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white text-gray-600'
-              }`}
-            >
-              <Store className="w-4 h-4" />
-              {t('orderTypeInside')}
-            </button>
+                  {isEditing && (
+                    <div className="mt-1 text-[10px] text-orange-700 font-bold flex items-center gap-1">
+                      <Pencil className="w-3 h-3" />
+                      {t('editingOrder')}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={t('searchMenu')}
-              className="w-full bg-white border-2 border-gray-300 rounded-xl pl-10 pr-10 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
-            />
-            {searchQuery && (
+          <div className="p-2 border-t border-gray-200 shrink-0">
+            <button
+              onClick={handleNewOrder}
+              className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl bg-orange-500 active:bg-orange-600 text-white text-xs font-bold shadow-md shadow-orange-500/20"
+            >
+              <FilePlus2 className="w-4 h-4" />
+              {t('newOrder')}
+            </button>
+          </div>
+        </div>
+
+        {/* -------- COLUMN 2: DISHES + SETS + TOPPINGS -------- */}
+        <div className="flex-1 min-w-0 bg-slate-50 flex flex-col min-h-0">
+          {/* Order type + search */}
+          <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
+            <div className="flex rounded-xl overflow-hidden border-2 border-gray-300 shadow-sm">
               <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg active:bg-gray-100"
+                onClick={() => setOrderType('OUTSIDE')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-all ${
+                  orderType === 'OUTSIDE'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-white text-gray-600'
+                }`}
               >
-                <X className="w-5 h-5 text-gray-400" />
+                <ShoppingBag className="w-3.5 h-3.5" />
+                {t('orderTypeOutside')}
               </button>
-            )}
+              <button
+                onClick={() => setOrderType('INSIDE')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-all ${
+                  orderType === 'INSIDE'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-600'
+                }`}
+              >
+                <Store className="w-3.5 h-3.5" />
+                {t('orderTypeInside')}
+              </button>
+            </div>
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={t('searchMenu')}
+                className="w-full bg-white border-2 border-gray-300 rounded-xl pl-9 pr-9 py-1.5 text-xs text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg active:bg-gray-100"
+                >
+                  <X className="w-3.5 h-3.5 text-gray-400" />
+                </button>
+              )}
+            </div>
           </div>
-        </div>
 
-        {/* Категории */}
-        <div className="flex gap-1.5 px-3 py-2 overflow-x-auto bg-white border-b border-gray-200 shrink-0">
-          <button
-            onClick={() => setActiveCategory(null)}
-            className={`px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-all active:scale-95 ${
-              activeCategory === null
-                ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
-                : 'bg-gray-100 text-gray-700'
-            }`}
-          >
-            {t('all')}
-          </button>
-          {mainCategories.map((cat) => (
-            <button
-              key={cat.id}
-              onClick={() => setActiveCategory(cat.id)}
-              className={`px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-all active:scale-95 ${
-                activeCategory === cat.id
-                  ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
-                  : 'bg-gray-100 text-gray-700'
-              }`}
-            >
-              {cat.name}
-            </button>
-          ))}
-        </div>
+          {error && (
+            <div className="m-2 p-2 bg-red-50 border border-red-300 rounded-xl text-red-700 text-xs">
+              {error}
+            </div>
+          )}
 
-        <div className="flex-1 min-h-0 flex overflow-hidden">
-          {/* Сетка блюд по категориям */}
+          {/* Bludi i Set */}
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
-            {error && (
-              <div className="mb-3 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
-                {error}
+            {(filteredDishes.length > 0 || filteredSets.length > 0) && (
+              <div className="mb-2">
+                <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
+                  {t('bludiAndSet')}
+                </h3>
               </div>
             )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
-              {groupedItems.map(({ category, items }) => {
-                const categoryImage =
-                  items.find((i) => i.image_url)?.image_url ?? null;
+            {/* Dishes */}
+            {filteredDishes.length > 0 && (
+              <div className="mb-3">
+                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
+                  {filteredDishes.map((dish) => (
+                    <DishCard key={dish.id} item={dish} onClick={handleItemClick} />
+                  ))}
+                </div>
+              </div>
+            )}
 
-                return (
-                  <div
-                    key={category.id}
-                    className="bg-white border-2 border-gray-200 rounded-2xl overflow-hidden shadow-sm"
-                  >
-                    <div className="relative h-20 bg-gradient-to-br from-orange-100 via-orange-50 to-amber-50 flex items-center justify-center overflow-hidden">
-                      {categoryImage ? (
-                        <img
-                          src={categoryImage}
-                          alt={category.name}
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <span className="text-3xl font-black text-orange-300 tracking-tight">
-                          {category.short_name ||
-                            category.name.slice(0, 3).toUpperCase()}
-                        </span>
-                      )}
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
-                      <div className="absolute bottom-0 left-0 right-0 px-3 py-1.5 flex items-center justify-between gap-1">
-                        <h3 className="text-sm font-bold text-white uppercase tracking-wider truncate drop-shadow">
-                          {category.name}
-                        </h3>
-                        <span className="text-xs font-bold text-white bg-black/40 px-2 py-0.5 rounded-full shrink-0">
-                          {items.length}
-                        </span>
-                      </div>
-                    </div>
+            {/* Sets */}
+            {filteredSets.length > 0 && (
+              <div className="mb-3">
+                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
+                  {filteredSets.map((s) => (
+                    <SimpleCard
+                      key={s.id}
+                      item={s}
+                      onClick={handleItemClick}
+                      badge="SET"
+                      badgeColor="bg-orange-600"
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
-                    <div className="p-2">
-                      <div className="grid grid-cols-3 gap-2">
-                        {items.map((item) => {
-                          const displayImage =
-                            item.image_url || categoryImage;
-                          const isComposite =
-                            item.type === 'set' ||
-                            (item.variants?.length ?? 0) > 0 ||
-                            (item.properties?.length ?? 0) > 0 ||
-                            (item.set_slots?.length ?? 0) > 0;
+            {filteredDishes.length === 0 && filteredSets.length === 0 && (
+              <div className="text-center text-gray-400 text-sm mt-12">
+                {searchQuery ? t('noResults') : t('noMenuItems')}
+              </div>
+            )}
+          </div>
 
-                          return (
-                            <button
-                              key={item.id}
-                              onClick={() => handleItemClick(item)}
-                              className="group relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br from-gray-100 to-gray-200 border-2 border-gray-200 active:border-orange-400 transition-all active:scale-95"
-                            >
-                              {displayImage ? (
-                                <>
-                                  <img
-                                    src={displayImage}
-                                    alt={item.name}
-                                    className="absolute inset-0 w-full h-full object-cover"
-                                    loading="lazy"
-                                  />
-                                  <div className="absolute inset-0 bg-black/45" />
-                                </>
-                              ) : (
-                                <div className="absolute inset-0 bg-gradient-to-br from-orange-500 to-red-500" />
-                              )}
+          {/* Toppings */}
+          {toppings.length > 0 && (
+            <div className="shrink-0 border-t border-gray-200 bg-white px-3 py-2">
+              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5">
+                {t('type_topping')}
+              </h3>
+              <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
+                {toppings.map((tp) => (
+                  <SimpleCard
+                    key={tp.id}
+                    item={tp}
+                    onClick={handleItemClick}
+                    compact
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
 
-                              {isComposite && (
-                                <div className="absolute top-1 right-1 bg-purple-600 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full shadow">
-                                  ⋯
-                                </div>
-                              )}
-                              {item.type === 'set' && (
-                                <div className="absolute top-1 left-1 bg-orange-600 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full shadow">
-                                  SET
-                                </div>
-                              )}
-
-                              <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
-                                <div className="text-sm sm:text-base font-black text-white leading-tight drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
-                                  {item.name}
-                                </div>
-                                {item.price > 0 && (item.variants?.length ?? 0) === 0 && (
-                                  <div className="text-sm sm:text-base font-black leading-tight mt-1 text-yellow-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
-                                    {formatYen(item.price)}
-                                  </div>
-                                )}
-                                {(item.variants?.length ?? 0) > 0 && (
-                                  <div className="text-[10px] font-bold text-yellow-300 mt-1 drop-shadow">
-                                    {item.variants![0].name}
-                                    {item.variants!.length > 1
-                                      ? ` … ${formatYen(
-                                          item.variants![0].price
-                                        )}+`
-                                      : ` ${formatYen(item.variants![0].price)}`}
-                                  </div>
-                                )}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+        {/* -------- COLUMN 3: DRINKS + SAUCES -------- */}
+        <div className="w-40 lg:w-48 xl:w-56 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
+          {/* Drinks */}
+          <div className="flex-1 min-h-0 flex flex-col border-b border-gray-200">
+            <div className="px-3 py-2 border-b border-gray-100 shrink-0">
+              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
+                {t('type_drink')}
+              </h3>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-2">
+              {drinks.length === 0 ? (
+                <p className="text-[10px] text-gray-400 text-center py-3">—</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {drinks.map((d) => (
+                    <SimpleCard
+                      key={d.id}
+                      item={d}
+                      onClick={handleItemClick}
+                      compact
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Правая панель: Quick Access (все drink/sauce/topping) */}
-          <div className="w-48 lg:w-56 xl:w-60 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
-            <div className="px-3 py-2.5 border-b border-gray-200 shrink-0 flex items-center gap-2">
-              <Zap className="w-4 h-4 text-orange-500 shrink-0" />
-              <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-wider truncate">
-                {t('quickAccess')}
-              </h2>
+          {/* Sauces */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="px-3 py-2 border-b border-gray-100 shrink-0">
+              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
+                {t('type_sauce')}
+              </h3>
             </div>
-
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {quickAccessItems.length === 0 ? (
-                <p className="text-xs text-gray-400 text-center py-4">
-                  —
-                </p>
+              {sauces.length === 0 ? (
+                <p className="text-[10px] text-gray-400 text-center py-3">—</p>
               ) : (
                 <div className="grid grid-cols-2 gap-1.5">
-                  {quickAccessItems.map((item) => {
-                    const cat = categories.find(
-                      (c) => c.id === item.category_id
-                    );
-                    const displayImage =
-                      item.image_url ||
-                      menuItems.find(
-                        (x) => x.category_id === item.category_id && x.image_url
-                      )?.image_url ||
-                      null;
-
-                    return (
-                      <button
-                        key={item.id}
-                        onClick={() => handleItemClick(item)}
-                        className="group relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br from-gray-100 to-gray-200 border-2 border-gray-200 active:border-orange-400 transition-all active:scale-95"
-                        title={cat?.name ?? ''}
-                      >
-                        {displayImage ? (
-                          <>
-                            <img
-                              src={displayImage}
-                              alt={item.name}
-                              className="absolute inset-0 w-full h-full object-cover"
-                              loading="lazy"
-                            />
-                            <div className="absolute inset-0 bg-black/45" />
-                          </>
-                        ) : (
-                          <div className="absolute inset-0 bg-gradient-to-br from-cyan-500 to-blue-500" />
-                        )}
-
-                        <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
-                          <div className="text-xs font-black text-white leading-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] line-clamp-2">
-                            {item.name}
-                          </div>
-                          {item.price > 0 && (
-                            <div className="text-xs font-black leading-tight mt-1 text-yellow-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
-                              ¥{item.price}
-                            </div>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
+                  {sauces.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => handleItemClick(s)}
+                      className="flex flex-col items-center gap-1 p-1.5 rounded-xl border-2 border-gray-200 hover:border-orange-400 bg-white active:scale-95 transition-all"
+                    >
+                      <div
+                        className="w-8 h-8 rounded-full border-2 border-white shadow"
+                        style={{ backgroundColor: s.color ?? '#e5e7eb' }}
+                      />
+                      <span className="text-[10px] font-bold text-gray-700 truncate w-full text-center">
+                        {s.short_name || s.name}
+                      </span>
+                      <span className="text-[10px] font-black text-orange-600">
+                        {s.free ? t('free') : formatYen(s.price)}
+                      </span>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
           </div>
         </div>
-      </div>
 
-      {/* ============ RIGHT: Корзина ============ */}
-      <div className="w-80 lg:w-96 xl:w-[26rem] shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
-        <div
-          className={`px-4 py-3 border-b shrink-0 ${
-            editingOrder
-              ? 'bg-orange-50 border-orange-300'
-              : 'border-gray-200'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-bold text-gray-900">
-              {editingOrder
-                ? `${t('editingOrder')} #${editingOrder.order_number}`
-                : t('currentOrder')}
-            </h2>
-            <span
-              className={`text-xs px-2.5 py-1 rounded-full font-bold ${
-                orderType === 'INSIDE'
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'bg-purple-100 text-purple-700'
-              }`}
-            >
-              {orderType === 'INSIDE' ? t('inside') : t('outside')}
-            </span>
-          </div>
-          {!editingOrder && lastOrderNumber && (
-            <p className="text-xs text-green-600 mt-1">
-              {t('lastOrder')}: #{lastOrderNumber}
-            </p>
-          )}
-          {editingOrder && (
-            <button
-              onClick={handleCancelEdit}
-              className="mt-2 flex items-center gap-1.5 text-xs text-orange-700 font-bold active:text-orange-800"
-            >
-              <RotateCcw className="w-4 h-4" />
-              {t('cancelEdit')}
-            </button>
-          )}
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto p-2.5 space-y-2 bg-slate-50">
-          {cart.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-gray-400">
-              <ShoppingBag className="w-14 h-14 mb-2 opacity-40" />
-              <p className="text-sm">{t('tapItemsToAdd')}</p>
-            </div>
-          )}
-          {cart.map((item) => {
-            const removed = item.is_removed ?? false;
-            const isNew = item.is_added_later ?? false;
-
-            const cardClass = removed
-              ? 'bg-red-50 border-red-300 opacity-70'
-              : isNew
-              ? 'bg-orange-50 border-orange-400 ring-1 ring-orange-300'
-              : 'bg-white border-gray-200';
-
-            const lineTotal =
-              item.price * item.quantity +
-              item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
-                item.quantity;
-
-            return (
-              <div
-                key={item.id}
-                className={`rounded-xl p-3 border-2 shadow-sm transition-all ${cardClass}`}
+        {/* -------- COLUMN 4: CART -------- */}
+        <div className="w-72 lg:w-80 xl:w-96 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
+          <div
+            className={`px-3 py-2 border-b shrink-0 ${
+              editingOrder
+                ? 'bg-orange-50 border-orange-300'
+                : 'border-gray-200'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-gray-900 truncate">
+                {editingOrder
+                  ? `${t('editingOrder')} #${editingOrder.order_number}`
+                  : t('currentOrder')}
+              </h2>
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ml-2 ${
+                  orderType === 'INSIDE'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'bg-purple-100 text-purple-700'
+                }`}
               >
-                <div className="flex items-start justify-between mb-2">
-                  <div
-                    className={`flex-1 min-w-0 ${
-                      removed ? 'line-through' : ''
-                    }`}
-                  >
-                    <div className="text-sm font-bold text-gray-900 truncate">
-                      {item.name} {item.variant}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-0.5">
-                      {item.price > 0 ? formatYen(item.price) : t('free')}
-                    </div>
-                  </div>
+                {orderType === 'INSIDE' ? t('inside') : t('outside')}
+              </span>
+            </div>
+            {editingOrder && (
+              <button
+                onClick={handleCancelEdit}
+                className="mt-1 flex items-center gap-1 text-[11px] text-orange-700 font-bold"
+              >
+                <RotateCcw className="w-3 h-3" />
+                {t('cancelEdit')}
+              </button>
+            )}
+            {!editingOrder && lastOrderNumber && (
+              <p className="text-[10px] text-green-600 mt-0.5">
+                {t('lastOrder')}: #{lastOrderNumber}
+              </p>
+            )}
+          </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    {removed && (
-                      <span className="text-[9px] bg-red-200 text-red-800 px-1.5 py-0.5 rounded font-black uppercase">
-                        {t('removed')}
-                      </span>
-                    )}
-                    {isNew && !removed && (
-                      <span className="text-[9px] bg-orange-500 text-white px-1.5 py-0.5 rounded font-black uppercase">
-                        {t('newItem')}
-                      </span>
-                    )}
-                    <button
-                      onClick={() => removeItem(item.id)}
-                      className={`p-2 rounded-lg active:scale-95 transition-transform ${
-                        removed
-                          ? 'text-green-600 active:bg-green-100'
-                          : 'text-gray-400 active:bg-red-100'
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5 bg-slate-50">
+            {cart.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                <ShoppingBag className="w-12 h-12 mb-2 opacity-40" />
+                <p className="text-xs">{t('tapItemsToAdd')}</p>
+              </div>
+            )}
+            {cart.map((item) => {
+              const removed = item.is_removed ?? false;
+              const isNew = item.is_added_later ?? false;
+              const cardClass = removed
+                ? 'bg-red-50 border-red-300 opacity-70'
+                : isNew
+                ? 'bg-orange-50 border-orange-400 ring-1 ring-orange-300'
+                : 'bg-white border-gray-200';
+              const lineTotal =
+                item.price * item.quantity +
+                item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
+                  item.quantity;
+              return (
+                <div
+                  key={item.id}
+                  className={`rounded-xl p-2.5 border-2 ${cardClass}`}
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1.5">
+                    <div
+                      className={`flex-1 min-w-0 ${
+                        removed ? 'line-through' : ''
                       }`}
                     >
-                      {removed ? (
-                        <RotateCcw className="w-5 h-5" />
-                      ) : (
-                        <Trash2 className="w-5 h-5" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {item.options.length > 0 && !removed && (
-                  <div className="mb-2 pl-1 space-y-0.5">
-                    {item.options.map((opt, i) => (
-                      <div
-                        key={i}
-                        className="text-[11px] text-gray-600 flex items-center gap-1"
-                      >
-                        <span className="text-orange-500 font-bold">+</span>
-                        <span className="font-medium">{opt.name}</span>
-                        {opt.price > 0 && (
-                          <span className="text-gray-400">
-                            ({formatYen(opt.price)})
+                      <div className="text-xs font-bold text-gray-900 truncate">
+                        {item.name}
+                        {item.variant && (
+                          <span className="ml-1 text-orange-600">
+                            {item.variant}
                           </span>
                         )}
                       </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between">
-                  <div
-                    className={`flex items-center gap-2 ${
-                      removed ? 'opacity-50' : ''
-                    }`}
-                  >
+                    </div>
                     <button
-                      onClick={() => decrementItem(item.id)}
-                      disabled={removed}
-                      className="w-11 h-11 rounded-xl bg-gray-100 active:bg-gray-200 flex items-center justify-center transition-colors text-gray-700 disabled:opacity-50 active:scale-95"
+                      onClick={() => removeItem(item.id)}
+                      className={`p-1 rounded-lg ${
+                        removed
+                          ? 'text-green-600'
+                          : 'text-gray-400 hover:text-red-600'
+                      }`}
                     >
-                      <Minus className="w-5 h-5" />
+                      {removed ? (
+                        <RotateCcw className="w-4 h-4" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
                     </button>
-                    <span className="text-xl font-bold w-10 text-center text-gray-900">
-                      {item.quantity}
+                  </div>
+                  {item.options.length > 0 && !removed && (
+                    <div className="mb-1.5 space-y-0.5">
+                      {item.options.map((opt, i) => (
+                        <div
+                          key={i}
+                          className="text-[10px] text-gray-600 flex items-center gap-1"
+                        >
+                          <span className="text-orange-500 font-bold">+</span>
+                          <span className="truncate">{opt.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => decrementItem(item.id)}
+                        disabled={removed}
+                        className="w-7 h-7 rounded-lg bg-gray-100 active:bg-gray-200 flex items-center justify-center disabled:opacity-50"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="text-sm font-bold w-6 text-center">
+                        {item.quantity}
+                      </span>
+                      <button
+                        onClick={() => incrementItem(item.id)}
+                        disabled={removed}
+                        className="w-7 h-7 rounded-lg bg-gray-100 active:bg-gray-200 flex items-center justify-center disabled:opacity-50"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <span
+                      className={`text-sm font-black ${
+                        removed ? 'text-gray-400 line-through' : 'text-orange-600'
+                      }`}
+                    >
+                      {removed ? formatYen(0) : formatYen(lineTotal)}
                     </span>
-                    <button
-                      onClick={() => incrementItem(item.id)}
-                      disabled={removed}
-                      className="w-11 h-11 rounded-xl bg-gray-100 active:bg-gray-200 flex items-center justify-center transition-colors text-gray-700 disabled:opacity-50 active:scale-95"
-                    >
-                      <Plus className="w-5 h-5" />
-                    </button>
                   </div>
-                  <span
-                    className={`text-base font-bold ${
-                      removed
-                        ? 'text-gray-400 line-through'
-                        : isNew
-                        ? 'text-orange-700'
-                        : 'text-orange-600'
-                    }`}
-                  >
-                    {removed ? formatYen(0) : formatYen(lineTotal)}
-                  </span>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="p-3 border-t border-gray-200 bg-white shrink-0">
-          <input
-            type="text"
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder={t('addComment')}
-            className="w-full bg-white border-2 border-gray-300 rounded-xl px-3.5 py-3 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
-          />
-        </div>
-
-        <div className="p-3 border-t border-gray-200 space-y-3 bg-white shrink-0">
-          {printError && (
-            <div className="p-2.5 bg-red-50 border border-red-300 rounded-lg text-red-700 text-xs flex items-center justify-between">
-              <span>{t('printerError')}</span>
-              <button
-                onClick={() => setPrintError(null)}
-                className="text-red-600 font-bold underline"
-              >
-                {t('retryPrint')}
-              </button>
-            </div>
-          )}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-500">{t('total')}</span>
-            <span className="text-2xl font-bold text-orange-600">
-              {formatYen(cartTotal)}
-            </span>
+              );
+            })}
           </div>
 
-          {editingOrder ? (
-            <button
-              onClick={handleSaveChanges}
-              disabled={!hasActiveItems || sending}
-              className="w-full py-4 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-bold text-base flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-orange-500/30"
-            >
-              {sending ? (
-                <>
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  {t('sending')}
-                </>
-              ) : (
-                <>
-                  <Save className="w-5 h-5" />
-                  {t('saveChanges')}
-                </>
-              )}
-            </button>
-          ) : (
-            <button
-              onClick={handleSendToKitchen}
-              disabled={!hasActiveItems || sending}
-              className="w-full py-4 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-bold text-base flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-orange-500/30"
-            >
-              {sending ? (
-                <>
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  {t('sending')}
-                </>
-              ) : (
-                <>
-                  <Send className="w-5 h-5" />
-                  {t('sendToKitchen')}
-                </>
-              )}
-            </button>
-          )}
+          <div className="p-2 border-t border-gray-200 bg-white shrink-0">
+            <input
+              type="text"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder={t('addComment')}
+              className="w-full bg-white border-2 border-gray-300 rounded-xl px-3 py-2 text-xs text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+            />
+          </div>
 
-          {cart.length > 0 && !editingOrder && (
-            <button
-              onClick={() => setCart([])}
-              className="w-full py-2.5 text-sm text-gray-500 active:text-red-500 font-medium rounded-lg active:bg-gray-100"
-            >
-              {t('clearAll')}
-            </button>
-          )}
+          <div className="p-2 border-t border-gray-200 space-y-2 bg-white shrink-0">
+            {printError && (
+              <div className="p-2 bg-red-50 border border-red-300 rounded-lg text-red-700 text-[11px] flex items-center justify-between">
+                <span>{t('printerError')}</span>
+                <button
+                  onClick={() => setPrintError(null)}
+                  className="text-red-600 font-bold underline"
+                >
+                  {t('retryPrint')}
+                </button>
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-500">{t('total')}</span>
+              <span className="text-xl font-black text-orange-600">
+                {formatYen(cartTotal)}
+              </span>
+            </div>
+
+            {editingOrder ? (
+              <button
+                onClick={handleSaveChanges}
+                disabled={!hasActiveItems || sending}
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-40"
+              >
+                {sending ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    {t('sending')}
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4" />
+                    {t('saveChanges')}
+                  </>
+                )}
+              </button>
+            ) : (
+              <button
+                onClick={handleSendToKitchen}
+                disabled={!hasActiveItems || sending}
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-40"
+              >
+                {sending ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    {t('sending')}
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    {t('sendToKitchen')}
+                  </>
+                )}
+              </button>
+            )}
+
+            {cart.length > 0 && !editingOrder && (
+              <button
+                onClick={() => setCart([])}
+                className="w-full py-1.5 text-[11px] text-gray-500 active:text-red-500 font-medium"
+              >
+                {t('clearAll')}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* ============ Диалоги ============ */}
+      {/* ============ DIALOGS ============ */}
       <ProductBuilderDialog
         open={builderItem !== null}
         item={builderItem}
@@ -1229,5 +1065,133 @@ export default function CashierPage() {
         onCancel={() => setPendingUndo(null)}
       />
     </div>
+  );
+}
+
+// ============================================================
+// CARD COMPONENTS
+// ============================================================
+function DishCard({
+  item,
+  onClick,
+}: {
+  item: MenuItem;
+  onClick: (i: MenuItem) => void;
+}) {
+  const isGroup = item.dish_kind === 'group' && (item.variants?.length ?? 0) > 0;
+
+  if (isGroup) {
+    return (
+      <div className="rounded-xl border-2 border-gray-200 bg-white p-2 shadow-sm">
+        <div className="flex items-center justify-between mb-1.5 px-0.5">
+          <span className="text-xs font-black text-gray-900 truncate">
+            {item.name}
+          </span>
+          <span className="text-[9px] font-bold bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full shrink-0 ml-1">
+            {item.variants!.length}
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-1">
+          {item.variants!.map((v) => (
+            <button
+              key={v.id}
+              onClick={() => onClick(v)}
+              className="relative aspect-square rounded-lg overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border border-white active:scale-95 transition-transform"
+            >
+              {(v.image_url || item.image_url) && (
+                <>
+                  <img
+                    src={v.image_url || item.image_url || ''}
+                    alt={v.name}
+                    className="absolute inset-0 w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                  <div className="absolute inset-0 bg-black/40" />
+                </>
+              )}
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-white text-center px-0.5">
+                <div className="text-[9px] font-black leading-tight drop-shadow">
+                  {v.name}
+                </div>
+                <div className="text-[9px] font-black text-yellow-300 mt-0.5 drop-shadow">
+                  {v.free ? '0' : formatYen(v.price)}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return <SimpleCard item={item} onClick={onClick} />;
+}
+
+function SimpleCard({
+  item,
+  onClick,
+  badge,
+  badgeColor,
+  compact,
+}: {
+  item: MenuItem;
+  onClick: (i: MenuItem) => void;
+  badge?: string;
+  badgeColor?: string;
+  compact?: boolean;
+}) {
+  const hasBuilder =
+    item.type === 'set' ||
+    (item.dish_kind === 'group' && (item.variants?.length ?? 0) > 0) ||
+    (item.properties?.length ?? 0) > 0 ||
+    (item.sauce_mode === 'with' && (item.allowed_sauces?.length ?? 0) > 0);
+
+  return (
+    <button
+      onClick={() => onClick(item)}
+      className="group relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 border-gray-200 active:border-orange-400 active:scale-95 transition-all"
+    >
+      {item.image_url && (
+        <>
+          <img
+            src={item.image_url}
+            alt={item.name}
+            className="absolute inset-0 w-full h-full object-cover"
+            loading="lazy"
+          />
+          <div className="absolute inset-0 bg-black/40" />
+        </>
+      )}
+      {badge && (
+        <div
+          className={`absolute top-1 left-1 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full ${
+            badgeColor ?? 'bg-orange-600'
+          }`}
+        >
+          {badge}
+        </div>
+      )}
+      {hasBuilder && (
+        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-600 text-white text-[10px] font-black flex items-center justify-center shadow">
+          ⋯
+        </div>
+      )}
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
+        <div
+          className={`${
+            compact ? 'text-[10px]' : 'text-xs'
+          } font-black text-white leading-tight drop-shadow line-clamp-2`}
+        >
+          {item.short_name || item.name}
+        </div>
+        <div
+          className={`${
+            compact ? 'text-[10px]' : 'text-xs'
+          } font-black mt-1 text-yellow-300 drop-shadow`}
+        >
+          {item.free ? '0' : formatYen(item.price)}
+        </div>
+      </div>
+    </button>
   );
 }

@@ -164,7 +164,7 @@ export const translationKeys = [
   'categoryCoverHint',
   'removeCover',
 
-  // ---------- Menu v2 ----------
+  // ---------- Item types ----------
   'itemType',
   'type_dish',
   'type_set',
@@ -172,11 +172,15 @@ export const translationKeys = [
   'type_sauce',
   'type_topping',
   'noCategory',
+
+  // ---------- Variants (dish-group) ----------
   'variants',
   'addVariant',
   'variantName',
   'dishVariantsHint',
   'setVariantsHint',
+
+  // ---------- Set (legacy, kept for safety) ----------
   'setSlots',
   'slotDrink',
   'slotSauce',
@@ -189,6 +193,8 @@ export const translationKeys = [
   'remove',
   'addSlot',
   'setSlotsHint',
+
+  // ---------- Properties ----------
   'properties',
   'addProperty',
   'propertyName',
@@ -198,6 +204,39 @@ export const translationKeys = [
   'variantsShort',
   'propsShort',
   'slotsShort',
+
+  // ---------- Menu v3 ----------
+  'addProduct',
+  'pickCategory',
+  'dishKind',
+  'dishKindSingle',
+  'dishKindSingleHint',
+  'dishKindGroup',
+  'dishKindGroupHint',
+  'sauceMode',
+  'sauceNone',
+  'sauceWith',
+  'allowedSauces',
+  'pickSauces',
+  'station',
+  'stationKitchen',
+  'stationReady',
+  'cookTimeMin',
+  'min',
+  'sauceColor',
+  'addDishBtn',
+  'mainProduct',
+  'mainOverrides',
+  'priceOverride',
+  'extraGroups',
+  'addExtraGroup',
+  'groupLabel',
+  'addOption',
+  'pickItem',
+  'chooseSauceStep',
+  'chooseProperties',
+  'saucesShort',
+  'noSauces',
 
   // ---------- Errors ----------
   'failedToLoadMenu',
@@ -238,6 +277,16 @@ export const translationKeys = [
   'undoCreateOrder',
   'undoEditOrder',
   'devicesOnline',
+  
+  'dragHint',
+  'delete',
+  'edit',
+  
+  'bludiAndSet',
+  'productsByCategory',
+  'dragHintShort',
+  'noResults',
+  'noMenuItems',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];

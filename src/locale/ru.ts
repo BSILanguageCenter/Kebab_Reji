@@ -80,14 +80,14 @@ export const ru: Record<TranslationKey, string> = {
   cancelEdit: 'Отменить',
   removed: 'Удалён',
   newItem: 'Новый',
-  newItemForm: 'Новое блюдо',
+  newItemForm: 'Новый продукт',
   modified: 'Изменён',
 
   // ---------- Product builder ----------
   chooseVariant: 'Выберите вариант',
   chooseDrink: 'Выберите напиток',
   chooseSauce: 'Выберите соус',
-  chooseExtra: 'Дополнительное блюдо',
+  chooseExtra: 'Дополнительно',
   extras: 'Дополнительно',
   skip: 'Пропустить',
   next: 'Далее',
@@ -139,13 +139,13 @@ export const ru: Record<TranslationKey, string> = {
   to: 'по',
   categoriesAndItems: 'Категории и блюда',
   categoryBtn: 'Категория',
-  itemBtn: 'Блюдо',
-  noItemsInCategory: 'В этой категории нет блюд',
+  itemBtn: 'Продукт',
+  noItemsInCategory: 'В этой категории нет продуктов',
   active: 'Активно',
   inactive: 'Неактивно',
   editCategory: 'Изменить категорию',
   newCategory: 'Новая категория',
-  editItem: 'Изменить блюдо',
+  editItem: 'Изменить продукт',
   name: 'Название',
   shortName: 'Короткое имя',
   sortOrder: 'Порядок',
@@ -157,12 +157,11 @@ export const ru: Record<TranslationKey, string> = {
   image: 'Изображение',
   uploadImage: 'Загрузить фото',
   uploading: 'Загрузка...',
-  categoryCover: 'Обложка категории',
-  categoryCoverHint:
-    'Одно фото для всей категории — применится ко всем позициям',
-  removeCover: 'Убрать обложку',
+  categoryCover: 'Обложка',
+  categoryCoverHint: 'Одно фото на весь продукт',
+  removeCover: 'Убрать фото',
 
-  // ---------- Menu v2 ----------
+  // ---------- Item types ----------
   itemType: 'Тип',
   type_dish: 'Блюдо',
   type_set: 'Set',
@@ -170,11 +169,16 @@ export const ru: Record<TranslationKey, string> = {
   type_sauce: 'Соус',
   type_topping: 'Топпинг',
   noCategory: 'Без категории',
+
+  // ---------- Variants (dish-group) ----------
   variants: 'Варианты',
   addVariant: 'Добавить вариант',
   variantName: 'Название',
-  dishVariantsHint: 'Например Chicken / Mix / Beef с ценами',
-  setVariantsHint: 'Выбор основного блюда Set (Chicken / Mix / Beef)',
+  dishVariantsHint:
+    'Например Chicken / Mix / Beef, у каждого — своя цена и фото',
+  setVariantsHint: 'Основное блюдо Set',
+
+  // ---------- Set (legacy) ----------
   setSlots: 'Компоненты Set',
   slotDrink: 'Напиток',
   slotSauce: 'Соус',
@@ -186,18 +190,52 @@ export const ru: Record<TranslationKey, string> = {
   select: 'Выбрать',
   remove: 'Удалить',
   addSlot: 'Добавить компонент',
-  setSlotsHint:
-    'Компоненты, которые кассир выбирает при добавлении Set. Main-блюдо определяется вариантами Set.',
+  setSlotsHint: 'Компоненты Set',
+
+  // ---------- Properties ----------
   properties: 'Свойства',
   addProperty: 'Добавить свойство',
   propertyName: 'Название',
   groupOptional: 'Группа (опц.)',
   byDefault: 'По умолч.',
   propertiesHint:
-    'Без группы = чекбокс (можно несколько). С группой = radio (одно из группы). «По умолч.» работает для radio.',
+    'Без группы = чекбокс (можно несколько). С группой = radio (одно из группы).',
   variantsShort: 'вар.',
   propsShort: 'свойств',
   slotsShort: 'компонентов',
+
+  // ---------- Menu v3 ----------
+  addProduct: '+ Добавить продукт',
+  pickCategory: 'Выберите категорию',
+  dishKind: 'Тип блюда',
+  dishKindSingle: 'Самостоятельный продукт',
+  dishKindSingleHint: 'Одно блюдо с ценой',
+  dishKindGroup: 'Группа продуктов',
+  dishKindGroupHint: 'Несколько вариантов (Chicken / Beef / Lamb)',
+  sauceMode: 'Тип соуса',
+  sauceNone: 'Без соуса',
+  sauceWith: 'С соусом',
+  allowedSauces: 'Разрешённые соусы',
+  pickSauces: 'Выбрать соусы',
+  station: 'Тип приготовления',
+  stationKitchen: 'На кухне',
+  stationReady: 'Готовый продукт',
+  cookTimeMin: 'Примерное время (мин)',
+  min: 'мин',
+  sauceColor: 'Цвет соуса',
+  addDishBtn: '+ Добавить блюдо',
+  mainProduct: 'Основной продукт',
+  mainOverrides: 'Переопределение вариантов',
+  priceOverride: 'Переопр. цены',
+  extraGroups: 'Дополнительные продукты',
+  addExtraGroup: '+ Добавить группу',
+  groupLabel: 'Подпись группы',
+  addOption: '+ Добавить опцию',
+  pickItem: 'Выберите товар',
+  chooseSauceStep: 'Выберите соус',
+  chooseProperties: 'Выберите свойства',
+  saucesShort: 'соусов',
+  noSauces: 'Нет соусов',
 
   // ---------- Errors ----------
   failedToLoadMenu: 'Не удалось загрузить меню',
@@ -207,15 +245,15 @@ export const ru: Record<TranslationKey, string> = {
   failedToUpdateStatus: 'Не удалось обновить статус',
   failedToDeleteOrder: 'Не удалось удалить заказ',
   failedToDeleteCategory: 'Не удалось удалить категорию',
-  failedToDeleteItem: 'Не удалось удалить блюдо',
+  failedToDeleteItem: 'Не удалось удалить продукт',
   failedToSaveCategory: 'Не удалось сохранить категорию',
-  failedToSaveItem: 'Не удалось сохранить блюдо',
+  failedToSaveItem: 'Не удалось сохранить продукт',
   failedToUploadImage: 'Не удалось загрузить изображение',
   unknownError: 'Неизвестная ошибка',
 
   // ---------- Confirmations ----------
-  deleteCategoryConfirm: 'Удалить категорию и все её блюда?',
-  deleteItemConfirm: 'Удалить это блюдо?',
+  deleteCategoryConfirm: 'Удалить категорию и все её продукты?',
+  deleteItemConfirm: 'Удалить этот продукт?',
 
   // ---------- Undo ----------
   undoLast: 'Отменить',
@@ -238,4 +276,14 @@ export const ru: Record<TranslationKey, string> = {
   undoCreateOrder: 'Отменить только что созданный заказ #{n}?',
   undoEditOrder: 'Вернуть заказ #{n} к предыдущей версии?',
   devicesOnline: 'в сети',
+
+  dragHint: 'Перетаскивайте карточки, чтобы изменить порядок в кассе',
+  delete: 'Удалить',
+  edit: 'Изменить',
+
+  bludiAndSet: 'Блюда и Сеты',
+  productsByCategory: 'Продукты по категориям',
+  dragHintShort: 'перетащите, чтобы изменить порядок',
+  noResults: 'Ничего не найдено',
+  noMenuItems: 'Меню пустое',
 };
