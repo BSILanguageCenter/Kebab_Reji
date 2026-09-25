@@ -1,8 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
-import type { Order, MenuCategory, MenuItem } from '@/types/database';
+import type { Order, MenuItem } from '@/types/database';
 
 export interface ServerMenu {
-  categories: MenuCategory[];
   items: MenuItem[];
 }
 
@@ -164,11 +163,8 @@ export function getSocket(): Socket {
       console.log(
         '[ws] init: заказов',
         snap.orders.length,
-        ', меню:',
-        snap.menu.categories.length,
-        'кат.,',
-        snap.menu.items.length,
-        'блюд'
+        ', товаров в меню:',
+        snap.menu.items.length
       );
       notifyInit(snap);
     });

@@ -80,14 +80,14 @@ export const en: Record<TranslationKey, string> = {
   cancelEdit: 'Cancel',
   removed: 'Removed',
   newItem: 'New',
-  newItemForm: 'New item',
+  newItemForm: 'New product',
   modified: 'Modified',
 
   // ---------- Product builder ----------
   chooseVariant: 'Choose variant',
   chooseDrink: 'Choose drink',
   chooseSauce: 'Choose sauce',
-  chooseExtra: 'Extra dish',
+  chooseExtra: 'Extra',
   extras: 'Extras',
   skip: 'Skip',
   next: 'Next',
@@ -139,13 +139,13 @@ export const en: Record<TranslationKey, string> = {
   to: 'to',
   categoriesAndItems: 'Categories & Items',
   categoryBtn: 'Category',
-  itemBtn: 'Item',
-  noItemsInCategory: 'No items in this category',
+  itemBtn: 'Product',
+  noItemsInCategory: 'No products in this category',
   active: 'Active',
   inactive: 'Inactive',
   editCategory: 'Edit Category',
   newCategory: 'New Category',
-  editItem: 'Edit Item',
+  editItem: 'Edit Product',
   name: 'Name',
   shortName: 'Short Name',
   sortOrder: 'Sort Order',
@@ -157,12 +157,11 @@ export const en: Record<TranslationKey, string> = {
   image: 'Image',
   uploadImage: 'Upload Image',
   uploading: 'Uploading...',
-  categoryCover: 'Category cover',
-  categoryCoverHint:
-    'One photo for the whole category — applied to all items',
-  removeCover: 'Remove cover',
+  categoryCover: 'Cover',
+  categoryCoverHint: 'One photo for the whole product',
+  removeCover: 'Remove photo',
 
-  // ---------- Menu v2 ----------
+  // ---------- Item types ----------
   itemType: 'Type',
   type_dish: 'Dish',
   type_set: 'Set',
@@ -170,11 +169,16 @@ export const en: Record<TranslationKey, string> = {
   type_sauce: 'Sauce',
   type_topping: 'Topping',
   noCategory: 'No category',
+
+  // ---------- Variants (dish-group) ----------
   variants: 'Variants',
   addVariant: 'Add variant',
   variantName: 'Name',
-  dishVariantsHint: 'E.g. Chicken / Mix / Beef with prices',
-  setVariantsHint: 'Main dish choice for the Set (Chicken / Mix / Beef)',
+  dishVariantsHint:
+    'E.g. Chicken / Mix / Beef, each with own price and photo',
+  setVariantsHint: 'Set main dish',
+
+  // ---------- Set (legacy) ----------
   setSlots: 'Set components',
   slotDrink: 'Drink',
   slotSauce: 'Sauce',
@@ -186,18 +190,52 @@ export const en: Record<TranslationKey, string> = {
   select: 'Select',
   remove: 'Remove',
   addSlot: 'Add component',
-  setSlotsHint:
-    'Components the cashier chooses when adding the Set. Main dish comes from the Set variants.',
+  setSlotsHint: 'Set components',
+
+  // ---------- Properties ----------
   properties: 'Properties',
   addProperty: 'Add property',
   propertyName: 'Name',
   groupOptional: 'Group (opt.)',
   byDefault: 'Default',
   propertiesHint:
-    'No group = checkbox (multiple). With group = radio (one per group). "Default" applies to radio.',
+    'No group = checkbox (multiple). With group = radio (one per group).',
   variantsShort: 'var.',
   propsShort: 'props',
   slotsShort: 'slots',
+
+  // ---------- Menu v3 ----------
+  addProduct: '+ Add product',
+  pickCategory: 'Choose category',
+  dishKind: 'Dish kind',
+  dishKindSingle: 'Single product',
+  dishKindSingleHint: 'One item with a price',
+  dishKindGroup: 'Product group',
+  dishKindGroupHint: 'Multiple variants (Chicken / Beef / Lamb)',
+  sauceMode: 'Sauce type',
+  sauceNone: 'No sauce',
+  sauceWith: 'With sauce',
+  allowedSauces: 'Allowed sauces',
+  pickSauces: 'Pick sauces',
+  station: 'Cooking type',
+  stationKitchen: 'In kitchen',
+  stationReady: 'Ready product',
+  cookTimeMin: 'Approx time (min)',
+  min: 'min',
+  sauceColor: 'Sauce color',
+  addDishBtn: '+ Add dish',
+  mainProduct: 'Main product',
+  mainOverrides: 'Variant overrides',
+  priceOverride: 'Price override',
+  extraGroups: 'Extra products',
+  addExtraGroup: '+ Add group',
+  groupLabel: 'Group label',
+  addOption: '+ Add option',
+  pickItem: 'Pick item',
+  chooseSauceStep: 'Choose sauce',
+  chooseProperties: 'Choose properties',
+  saucesShort: 'sauces',
+  noSauces: 'No sauces',
 
   // ---------- Errors ----------
   failedToLoadMenu: 'Failed to load menu',
@@ -207,15 +245,15 @@ export const en: Record<TranslationKey, string> = {
   failedToUpdateStatus: 'Failed to update status',
   failedToDeleteOrder: 'Failed to delete order',
   failedToDeleteCategory: 'Failed to delete category',
-  failedToDeleteItem: 'Failed to delete item',
+  failedToDeleteItem: 'Failed to delete product',
   failedToSaveCategory: 'Failed to save category',
-  failedToSaveItem: 'Failed to save item',
+  failedToSaveItem: 'Failed to save product',
   failedToUploadImage: 'Failed to upload image',
   unknownError: 'Unknown error',
 
   // ---------- Confirmations ----------
-  deleteCategoryConfirm: 'Delete this category and all its items?',
-  deleteItemConfirm: 'Delete this item?',
+  deleteCategoryConfirm: 'Delete this category and all its products?',
+  deleteItemConfirm: 'Delete this product?',
 
   // ---------- Undo ----------
   undoLast: 'Undo',
@@ -238,4 +276,14 @@ export const en: Record<TranslationKey, string> = {
   undoCreateOrder: 'Cancel just-created order #{n}?',
   undoEditOrder: 'Revert order #{n} to previous version?',
   devicesOnline: 'online',
+
+  dragHint: 'Drag cards to change their order in the POS',
+  delete: 'Delete',
+  edit: 'Edit',
+  
+  bludiAndSet: 'Dishes & Sets',
+  productsByCategory: 'Products by category',
+  dragHintShort: 'drag to reorder',
+  noResults: 'Nothing found',
+  noMenuItems: 'Menu is empty',
 };

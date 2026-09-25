@@ -345,7 +345,7 @@ class Store extends EventEmitter {
   }
 
   // ============================================================
-  // СИНХРОНИЗАЦИЯ
+  // СИНХРОНИЗАЦИЯ ЗАКАЗОВ
   // ============================================================
   getUnsyncedOrders() {
     return db
@@ -377,101 +377,225 @@ class Store extends EventEmitter {
   }
 
   // ============================================================
-  // МЕНЮ
+  // МЕНЮ — СБОРКА ВЛОЖЕННОЙ СТРУКТУРЫ
   // ============================================================
   getMenu() {
-    const categories = db
-      .prepare('SELECT * FROM menu_categories ORDER BY sort_order')
-      .all()
-      .map((c) => ({ ...c, active: Boolean(c.active) }));
-
-    const items = db
+    // 1. Грузим все таблицы
+    const rawItems = db
       .prepare('SELECT * FROM menu_items ORDER BY sort_order')
-      .all()
-      .map((i) => ({
-        ...i,
-        active: Boolean(i.active),
-        variants: [],
-        properties: [],
-        set_slots: [],
-      }));
-
-    const byId = new Map(items.map((i) => [i.id, i]));
-
-    const variants = db
-      .prepare('SELECT * FROM menu_item_variants ORDER BY sort_order')
       .all();
-    for (const v of variants) {
-      const it = byId.get(v.item_id);
-      if (it) it.variants.push(v);
-    }
-
-    const properties = db
+    const rawProps = db
       .prepare('SELECT * FROM menu_item_properties ORDER BY sort_order')
       .all();
-    for (const p of properties) {
-      const it = byId.get(p.item_id);
-      if (it) it.properties.push({ ...p, is_default: Boolean(p.is_default) });
-    }
-
-    const slots = db
-      .prepare('SELECT * FROM menu_set_slots ORDER BY sort_order')
+    const rawSauces = db
+      .prepare('SELECT * FROM menu_dish_sauces ORDER BY sort_order')
       .all();
-    for (const s of slots) {
-      const it = byId.get(s.set_item_id);
-      if (it) it.set_slots.push({ ...s, required: Boolean(s.required) });
+    const rawSetMain = db.prepare('SELECT * FROM menu_set_main').all();
+    const rawOverrides = db
+      .prepare('SELECT * FROM menu_set_main_overrides')
+      .all();
+    const rawGroups = db
+      .prepare('SELECT * FROM menu_set_extra_groups ORDER BY sort_order')
+      .all();
+    const rawOptions = db
+      .prepare('SELECT * FROM menu_set_extra_options ORDER BY sort_order')
+      .all();
+
+    // 2. Индексы
+    const itemsById = new Map();
+    for (const it of rawItems) itemsById.set(it.id, it);
+
+    const propsByItem = new Map();
+    for (const p of rawProps) {
+      const arr = propsByItem.get(p.item_id) ?? [];
+      arr.push({ id: p.id, item_id: p.item_id, name: p.name, sort_order: p.sort_order });
+      propsByItem.set(p.item_id, arr);
     }
 
-    return { categories, items };
-  }
+    const sauceIdsByItem = new Map();
+    for (const s of rawSauces) {
+      const arr = sauceIdsByItem.get(s.dish_item_id) ?? [];
+      arr.push(s.sauce_item_id);
+      sauceIdsByItem.set(s.dish_item_id, arr);
+    }
 
-  replaceMenu = (
-    categories,
-    items,
-    variants = [],
-    properties = [],
-    slots = []
-  ) => {
-    db.exec('BEGIN');
-    try {
-      db.prepare('DELETE FROM menu_set_slots').run();
-      db.prepare('DELETE FROM menu_item_properties').run();
-      db.prepare('DELETE FROM menu_item_variants').run();
-      db.prepare('DELETE FROM menu_items').run();
-      db.prepare('DELETE FROM menu_categories').run();
+    const variantsByParent = new Map();
+    for (const it of rawItems) {
+      if (!it.parent_id) continue;
+      const arr = variantsByParent.get(it.parent_id) ?? [];
+      arr.push(it);
+      variantsByParent.set(it.parent_id, arr);
+    }
 
-      const insCat = db.prepare(
-        `INSERT INTO menu_categories
-         (id, name, short_name, sort_order, active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      );
-      for (const c of categories) {
-        insCat.run(
-          c.id,
-          c.name,
-          c.short_name ?? '',
-          c.sort_order ?? 0,
-          c.active ? 1 : 0,
-          c.created_at ?? new Date().toISOString(),
-          c.updated_at ?? new Date().toISOString()
-        );
+    const mainBySet = new Map();
+    for (const m of rawSetMain) mainBySet.set(m.set_item_id, m.main_item_id);
+
+    const overridesBySet = new Map();
+    for (const o of rawOverrides) {
+      const map = overridesBySet.get(o.set_item_id) ?? new Map();
+      map.set(o.variant_item_id, o);
+      overridesBySet.set(o.set_item_id, map);
+    }
+
+    const groupsBySet = new Map();
+    for (const g of rawGroups) {
+      const arr = groupsBySet.get(g.set_item_id) ?? [];
+      arr.push(g);
+      groupsBySet.set(g.set_item_id, arr);
+    }
+
+    const optionsByGroup = new Map();
+    for (const o of rawOptions) {
+      const arr = optionsByGroup.get(o.group_id) ?? [];
+      arr.push(o);
+      optionsByGroup.set(o.group_id, arr);
+    }
+
+    // 3. Гидратация одного item
+    const hydrateOne = (raw) => ({
+      ...raw,
+      active: Boolean(raw.active),
+      free: Boolean(raw.free),
+      properties: propsByItem.get(raw.id) ?? [],
+      allowed_sauces: (sauceIdsByItem.get(raw.id) ?? [])
+        .map((sid) => itemsById.get(sid))
+        .filter(Boolean)
+        .map((s) => ({
+          id: s.id,
+          name: s.name,
+          short_name: s.short_name,
+          image_url: s.image_url,
+          price: s.price,
+          free: Boolean(s.free),
+          color: s.color,
+          active: Boolean(s.active),
+        })),
+    });
+
+    // 4. Собираем верхнеуровневые items
+    const result = [];
+    for (const it of rawItems) {
+      if (it.parent_id) continue;
+      if (!it.active) continue;
+
+      const base = hydrateOne(it);
+
+      // dish-group: докидываем варианты
+      if (it.type === 'dish' && it.dish_kind === 'group') {
+        const variants = variantsByParent.get(it.id) ?? [];
+        base.variants = variants
+          .filter((v) => v.active)
+          .map((v) => hydrateOne(v));
       }
 
+      // set: main + extras
+      if (it.type === 'set') {
+        const mainId = mainBySet.get(it.id);
+        const mainRaw = mainId ? itemsById.get(mainId) : null;
+        if (mainRaw) {
+          const main = hydrateOne(mainRaw);
+          if (mainRaw.type === 'dish' && mainRaw.dish_kind === 'group') {
+            const variants = variantsByParent.get(mainRaw.id) ?? [];
+            main.variants = variants
+              .filter((v) => v.active)
+              .map((v) => {
+                const hyd = hydrateOne(v);
+                const ov = overridesBySet.get(it.id)?.get(v.id);
+                if (ov) {
+                  if (ov.price_override != null) hyd.price = ov.price_override;
+                  if (ov.image_override) hyd.image_url = ov.image_override;
+                }
+                return hyd;
+              });
+          }
+          base.set_main = main;
+        }
+
+        const groups = groupsBySet.get(it.id) ?? [];
+        base.set_extra_groups = groups.map((g) => ({
+          id: g.id,
+          set_item_id: g.set_item_id,
+          label: g.label,
+          required: Boolean(g.required),
+          sort_order: g.sort_order,
+          options: (optionsByGroup.get(g.id) ?? [])
+            .map((o) => {
+              const optRaw = itemsById.get(o.item_id);
+              if (!optRaw) return null;
+              const hyd = hydrateOne(optRaw);
+              if (o.price_override != null) hyd.price = o.price_override;
+              if (o.image_override) hyd.image_url = o.image_override;
+              return {
+                option_id: o.id,
+                item: hyd,
+              };
+            })
+            .filter(Boolean),
+        }));
+      }
+
+      result.push(base);
+    }
+
+    return { items: result };
+  }
+
+  // ============================================================
+  // МЕНЮ — ПОЛНАЯ ЗАМЕНА
+  // ============================================================
+  replaceMenu = ({
+    items = [],
+    properties = [],
+    dishSauces = [],
+    setMain = [],
+    setMainOverrides = [],
+    setExtraGroups = [],
+    setExtraOptions = [],
+  }) => {
+    db.exec('BEGIN');
+    try {
+      // Чистим всё
+      db.prepare('DELETE FROM menu_set_extra_options').run();
+      db.prepare('DELETE FROM menu_set_extra_groups').run();
+      db.prepare('DELETE FROM menu_set_main_overrides').run();
+      db.prepare('DELETE FROM menu_set_main').run();
+      db.prepare('DELETE FROM menu_dish_sauces').run();
+      db.prepare('DELETE FROM menu_item_properties').run();
+
+      // Сначала обнуляем parent_id, чтобы избежать FK-конфликтов при удалении
+      db.prepare('UPDATE menu_items SET parent_id = NULL').run();
+      db.prepare('DELETE FROM menu_items').run();
+
+      // Items: сначала без parent (топ-левел), потом с parent
       const insItem = db.prepare(
         `INSERT INTO menu_items
-         (id, category_id, type, name, short_name, price, image_url,
-          active, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, type, name, short_name, image_url, price, free,
+          station, cook_time_min, color, dish_kind, sauce_mode,
+          parent_id, active, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
-      for (const i of items) {
+
+      const sortedItems = [...items].sort((a, b) => {
+        const ap = a.parent_id ? 1 : 0;
+        const bp = b.parent_id ? 1 : 0;
+        return ap - bp;
+      });
+
+      for (const i of sortedItems) {
         insItem.run(
           i.id,
-          i.category_id ?? null,
           i.type,
           i.name,
           i.short_name ?? '',
-          i.price ?? 0,
           i.image_url ?? null,
+          i.price ?? 0,
+          i.free ? 1 : 0,
+          i.station ?? null,
+          i.cook_time_min ?? null,
+          i.color ?? null,
+          i.dish_kind ?? null,
+          i.sauce_mode ?? null,
+          i.parent_id ?? null,
           i.active ? 1 : 0,
           i.sort_order ?? 0,
           i.created_at ?? new Date().toISOString(),
@@ -479,47 +603,72 @@ class Store extends EventEmitter {
         );
       }
 
-      const insVar = db.prepare(
-        `INSERT INTO menu_item_variants (id, item_id, name, price, sort_order)
-         VALUES (?, ?, ?, ?, ?)`
-      );
-      for (const v of variants) {
-        insVar.run(v.id, v.item_id, v.name, v.price ?? 0, v.sort_order ?? 0);
-      }
-
       const insProp = db.prepare(
-        `INSERT INTO menu_item_properties
-         (id, item_id, group_name, name, price, is_default, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO menu_item_properties (id, item_id, name, sort_order)
+         VALUES (?, ?, ?, ?)`
       );
       for (const p of properties) {
-        insProp.run(
-          p.id,
-          p.item_id,
-          p.group_name ?? null,
-          p.name,
-          p.price ?? 0,
-          p.is_default ? 1 : 0,
-          p.sort_order ?? 0
+        insProp.run(p.id, p.item_id, p.name, p.sort_order ?? 0);
+      }
+
+      const insSauce = db.prepare(
+        `INSERT INTO menu_dish_sauces (dish_item_id, sauce_item_id, sort_order)
+         VALUES (?, ?, ?)`
+      );
+      for (const s of dishSauces) {
+        insSauce.run(s.dish_item_id, s.sauce_item_id, s.sort_order ?? 0);
+      }
+
+      const insMain = db.prepare(
+        `INSERT INTO menu_set_main (set_item_id, main_item_id)
+         VALUES (?, ?)`
+      );
+      for (const m of setMain) {
+        insMain.run(m.set_item_id, m.main_item_id);
+      }
+
+      const insOv = db.prepare(
+        `INSERT INTO menu_set_main_overrides
+         (set_item_id, variant_item_id, price_override, image_override)
+         VALUES (?, ?, ?, ?)`
+      );
+      for (const o of setMainOverrides) {
+        insOv.run(
+          o.set_item_id,
+          o.variant_item_id,
+          o.price_override ?? null,
+          o.image_override ?? null
         );
       }
 
-      const insSlot = db.prepare(
-        `INSERT INTO menu_set_slots
-         (id, set_item_id, slot_type, label, required, sort_order,
-          fixed_item_id, source_category_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      const insGroup = db.prepare(
+        `INSERT INTO menu_set_extra_groups
+         (id, set_item_id, label, required, sort_order)
+         VALUES (?, ?, ?, ?, ?)`
       );
-      for (const s of slots) {
-        insSlot.run(
-          s.id,
-          s.set_item_id,
-          s.slot_type,
-          s.label ?? '',
-          s.required ? 1 : 0,
-          s.sort_order ?? 0,
-          s.fixed_item_id ?? null,
-          s.source_category_id ?? null
+      for (const g of setExtraGroups) {
+        insGroup.run(
+          g.id,
+          g.set_item_id,
+          g.label ?? '',
+          g.required ? 1 : 0,
+          g.sort_order ?? 0
+        );
+      }
+
+      const insOpt = db.prepare(
+        `INSERT INTO menu_set_extra_options
+         (id, group_id, item_id, price_override, image_override, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const o of setExtraOptions) {
+        insOpt.run(
+          o.id,
+          o.group_id,
+          o.item_id,
+          o.price_override ?? null,
+          o.image_override ?? null,
+          o.sort_order ?? 0
         );
       }
 
