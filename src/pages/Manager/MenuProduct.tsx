@@ -39,17 +39,12 @@ import {
   Droplet,
   Sparkles,
   LayoutGrid,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 // ============================================================
 // ПРОСТРАНСТВО КАТЕГОРИЙ
-//
-//   dish + set  →  'dishset'  (одна общая сетка)
-//   drink       →  'drink'    (своя сетка)
-//   sauce       →  'sauce'    (своя сетка)
-//   topping     →  'topping'  (своя сетка)
-//
-// У каждого пространства независимый sort_order.
 // ============================================================
 type CategorySpace = 'dishset' | 'drink' | 'sauce' | 'topping';
 
@@ -66,7 +61,7 @@ function getSpaceItems(tops: MenuItem[], space: CategorySpace): MenuItem[] {
 }
 
 // ============================================================
-// ШИРИНА КАРТОЧКИ В ЯЧЕЙКАХ
+// ШИРИНА КАРТОЧКИ
 // ============================================================
 function getItemWidth(item: MenuItem): number {
   if (item.type === 'dish' && item.dish_kind === 'group') {
@@ -81,6 +76,13 @@ function getItemWidth(item: MenuItem): number {
 const GRID_GAP = 12;
 
 // ============================================================
+// СКОЛЬКО ПУСТЫХ ЯЧЕЕК ПОКАЗЫВАТЬ
+// ============================================================
+const EMPTY_SLOTS_AFTER_END = 12;
+const EMPTY_SLOTS_WHILE_DRAG = 36;
+const MIN_TOTAL_SLOTS = 24;
+
+// ============================================================
 // Порядок при «Сбросе»
 // ============================================================
 const TYPE_ORDER: Record<MenuItemType, number> = {
@@ -91,10 +93,6 @@ const TYPE_ORDER: Record<MenuItemType, number> = {
   topping: 4,
 };
 
-// ============================================================
-// Конфликты sort_order внутри каждого пространства.
-// (т.е. два блюда/сета с одинаковым sort_order → надо мигрировать)
-// ============================================================
 function hasSortConflicts(tops: MenuItem[]): boolean {
   const spaces: CategorySpace[] = ['dishset', 'drink', 'sauce', 'topping'];
   for (const sp of spaces) {
@@ -108,18 +106,11 @@ function hasSortConflicts(tops: MenuItem[]): boolean {
   return false;
 }
 
-// ============================================================
-// Разложить по категориям:
-//   dishset: сначала dish (по sort_order), потом set (по sort_order)
-//   drink / sauce / topping: по sort_order
-// sort_order в каждой категории пересчитывается с 0 и с учётом ширины.
-// ============================================================
 function buildCategorizedOrder(
   tops: MenuItem[]
 ): { id: string; sort_order: number }[] {
   const updates: { id: string; sort_order: number }[] = [];
 
-  // ---- dishset: dish сначала, затем set ----
   const dsItems = tops
     .filter((it) => it.type === 'dish' || it.type === 'set')
     .sort((a, b) => {
@@ -133,7 +124,6 @@ function buildCategorizedOrder(
     cursor += getItemWidth(it);
   }
 
-  // ---- остальные категории: каждая с нуля ----
   for (const sp of ['drink', 'sauce', 'topping'] as CategorySpace[]) {
     const arr = tops
       .filter((it) => getSpaceOfType(it.type) === sp)
@@ -146,6 +136,43 @@ function buildCategorizedOrder(
   }
 
   return updates;
+}
+
+// ============================================================
+// Проверка: свободны ли ячейки [start, start + width - 1]
+// ============================================================
+function isRangeFree(
+  spaceItems: MenuItem[],
+  start: number,
+  width: number,
+  excludeId: string
+): boolean {
+  if (start < 0) return false;
+  const end = start + width - 1;
+  for (const it of spaceItems) {
+    if (it.id === excludeId) continue;
+    const w = getItemWidth(it);
+    const iStart = it.sort_order;
+    const iEnd = iStart + w - 1;
+    if (iEnd >= start && iStart <= end) return false;
+  }
+  return true;
+}
+
+// ============================================================
+// Карта: какая карточка занимает какую ячейку
+// ============================================================
+function getOccupiedSlots(
+  spaceItems: MenuItem[]
+): Map<number, MenuItem> {
+  const map = new Map<number, MenuItem>();
+  for (const it of spaceItems) {
+    const w = getItemWidth(it);
+    for (let i = 0; i < w; i++) {
+      map.set(it.sort_order + i, it);
+    }
+  }
+  return map;
 }
 
 export function MenuProduct() {
@@ -161,6 +188,7 @@ export function MenuProduct() {
   const [deleting, setDeleting] = useState(false);
 
   const dragId = useRef<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [dragOverSlot, setDragOverSlot] = useState<{
     space: CategorySpace;
     slot: number;
@@ -207,10 +235,12 @@ export function MenuProduct() {
 
   const handleDragStart = (id: string) => {
     dragId.current = id;
+    setIsDragging(true);
   };
 
   const handleDragEnd = () => {
     dragId.current = null;
+    setIsDragging(false);
     setDragOverSlot(null);
   };
 
@@ -233,10 +263,8 @@ export function MenuProduct() {
     }
   };
 
-  // Все верхнеуровневые
   const allTops = items.filter((i) => !i.parent_id);
 
-  // Найти карточку в её пространстве, в чьём диапазоне находится slot
   const findCardAtSlot = useCallback(
     (space: CategorySpace, slot: number): MenuItem | null => {
       const spaceItems = getSpaceItems(allTops, space);
@@ -250,7 +278,7 @@ export function MenuProduct() {
   );
 
   // ============================================================
-  // DROP — только внутри категории
+  // DROP
   // ============================================================
   const handleSlotDrop = async (
     space: CategorySpace,
@@ -258,6 +286,7 @@ export function MenuProduct() {
   ) => {
     const fromId = dragId.current;
     dragId.current = null;
+    setIsDragging(false);
     setDragOverSlot(null);
     if (!fromId) return;
 
@@ -268,46 +297,99 @@ export function MenuProduct() {
 
     const fromStart = fromItem.sort_order;
     const fromWidth = getItemWidth(fromItem);
+    const spaceItems = getSpaceItems(allTops, space);
 
     const targetCard = findCardAtSlot(space, targetSlot);
+
     if (targetCard && targetCard.id === fromItem.id) return;
 
-    // пустая ячейка
+    // ---------- ПУСТАЯ ЯЧЕЙКА ----------
     if (!targetCard) {
       if (targetSlot === fromStart) return;
+      if (!isRangeFree(spaceItems, targetSlot, fromWidth, fromItem.id)) {
+        return;
+      }
       await applyReorder([{ id: fromItem.id, sort_order: targetSlot }]);
       return;
     }
 
+    // ---------- НА КАРТОЧКУ ----------
     const targetStart = targetCard.sort_order;
     if (targetStart === fromStart) return;
 
-    const others = getSpaceItems(allTops, space).filter(
-      (i) => i.id !== fromItem.id
-    );
-
+    const others = spaceItems.filter((i) => i.id !== fromItem.id);
     const updates: { id: string; sort_order: number }[] = [];
 
-    if (fromStart > targetStart) {
-      // тащим влево
+    if (fromStart < targetStart) {
+      // тащим вправо
+      const fromEnd = fromStart + fromWidth - 1;
+      const targetEnd = targetStart + fromWidth - 1;
+
       for (const it of others) {
-        if (it.sort_order >= targetStart && it.sort_order < fromStart) {
-          updates.push({ id: it.id, sort_order: it.sort_order + fromWidth });
-        }
+        const itStart = it.sort_order;
+        const itEnd = itStart + getItemWidth(it) - 1;
+        if (itEnd <= fromEnd) continue;
+        if (itStart > targetEnd) continue;
+        updates.push({ id: it.id, sort_order: itStart - fromWidth });
       }
       updates.push({ id: fromItem.id, sort_order: targetStart });
     } else {
-      // тащим вправо
+      // тащим влево
       for (const it of others) {
-        if (it.sort_order > fromStart && it.sort_order <= targetStart) {
-          updates.push({ id: it.id, sort_order: it.sort_order - fromWidth });
-        }
+        const itStart = it.sort_order;
+        const itEnd = itStart + getItemWidth(it) - 1;
+        if (itStart >= fromStart) continue;
+        if (itEnd < targetStart) continue;
+        updates.push({ id: it.id, sort_order: itStart + fromWidth });
       }
       updates.push({ id: fromItem.id, sort_order: targetStart });
     }
 
     if (updates.length === 0) return;
     await applyReorder(updates);
+  };
+
+  // ============================================================
+  // СДВИГ НА 1 ЯЧЕЙКУ ◀ ▶
+  //
+  //   Вправо:
+  //     Все карточки, чей start >= fromStart + fromWidth,
+  //     сдвигаются вправо на 1. Сама карточка встаёт на fromStart + 1.
+  //
+  //   Влево:
+  //     Все карточки, чей end < fromStart (то есть полностью слева),
+  //     сдвигаются влево на 1. Сама карточка встаёт на fromStart - 1.
+  //
+  //   Это даёт "сдвиг на 1 ячейку" для любой карточки:
+  //   всё, что мешает, автоматически подвинется.
+  // ============================================================
+  const canMoveItem = (item: MenuItem, direction: -1 | 1): boolean => {
+    if (item.parent_id) return false;
+    const space = getSpaceOfType(item.type);
+    const spaceItems = getSpaceItems(allTops, space);
+    const fromStart = item.sort_order;
+    const fromWidth = getItemWidth(item);
+    const newStart = fromStart + direction;
+    if (newStart < 0) return false;
+    return isRangeFree(spaceItems, newStart, fromWidth, item.id);
+  };
+
+  const moveItemByOne = async (item: MenuItem, direction: -1 | 1) => {
+    if (item.parent_id) return;
+    const space = getSpaceOfType(item.type);
+    const spaceItems = getSpaceItems(allTops, space);
+    const fromStart = item.sort_order;
+    const fromWidth = getItemWidth(item);
+    const newStart = fromStart + direction;
+    if (newStart < 0) return;
+
+    // Если целевые ячейки заняты — ничего не делаем (кнопка disabled)
+    if (!isRangeFree(spaceItems, newStart, fromWidth, item.id)) {
+      return;
+    }
+
+    // Свободно — двигаем только саму карточку, соседей не трогаем
+    await applyReorder([{ id: item.id, sort_order: newStart }]);
   };
 
   // ============================================================
@@ -429,7 +511,7 @@ export function MenuProduct() {
   };
 
   // ============================================================
-  // GRID RENDER для одного пространства
+  // GRID RENDER
   // ============================================================
   const renderGrid = (
     space: CategorySpace,
@@ -438,17 +520,22 @@ export function MenuProduct() {
   ) => {
     const spaceItems = getSpaceItems(allTops, space);
 
-    const bySlot = new Map<number, MenuItem>();
+    const occupied = getOccupiedSlots(spaceItems);
     let maxEnd = -1;
     for (const it of spaceItems) {
-      bySlot.set(it.sort_order, it);
       const w = getItemWidth(it);
       maxEnd = Math.max(maxEnd, it.sort_order + w - 1);
     }
-    const totalSlots = Math.max(12, maxEnd + 4);
-    const cellH = compact ? size + 50 : size + 90;
 
-    // ---- вычисляем drop-диапазон только для этой категории ----
+    const emptyAfter = isDragging
+      ? EMPTY_SLOTS_WHILE_DRAG
+      : EMPTY_SLOTS_AFTER_END;
+    const totalSlots = Math.max(
+      MIN_TOTAL_SLOTS,
+      maxEnd + 1 + emptyAfter
+    );
+    const cellH = compact ? size + 32 : size + 50;
+
     const draggedItem = dragId.current
       ? items.find((i) => i.id === dragId.current) ?? null
       : null;
@@ -471,11 +558,10 @@ export function MenuProduct() {
     const cells: React.ReactNode[] = [];
     let slot = 0;
     while (slot < totalSlots) {
-      // фиксируем currentSlot — иначе замыкания onDrop увидят последнее значение
       const currentSlot = slot;
-      const card = bySlot.get(currentSlot);
+      const card = occupied.get(currentSlot);
 
-      // ---------------- пустая ячейка ----------------
+      // -------- пустая ячейка --------
       if (!card) {
         const inDropRange =
           dropStart != null &&
@@ -513,7 +599,7 @@ export function MenuProduct() {
             className={`rounded-xl border-2 border-dashed transition-all ${
               inDropRange
                 ? 'border-orange-400 bg-orange-100'
-                : 'border-gray-200'
+                : 'border-gray-200 bg-gray-50/60'
             }`}
           />
         );
@@ -521,7 +607,12 @@ export function MenuProduct() {
         continue;
       }
 
-      // ---------------- карточка ----------------
+      // -------- карточка --------
+      if (card.sort_order < currentSlot) {
+        slot = currentSlot + 1;
+        continue;
+      }
+
       const w = getItemWidth(card);
       const cardStart = currentSlot;
       const cardEnd = currentSlot + w - 1;
@@ -541,6 +632,9 @@ export function MenuProduct() {
       ) {
         variants = card.set_main.variants;
       }
+
+      const canLeft = canMoveItem(card, -1);
+      const canRight = canMoveItem(card, 1);
 
       cells.push(
         <div
@@ -590,13 +684,17 @@ export function MenuProduct() {
             }}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
+            onMoveLeft={() => moveItemByOne(card, -1)}
+            onMoveRight={() => moveItemByOne(card, 1)}
+            canMoveLeft={canLeft}
+            canMoveRight={canRight}
             size={size}
             textSize={layout.itemTextSize}
             compact={compact}
           />
         </div>
       );
-      slot = currentSlot + w;
+      slot = cardEnd + 1;
     }
 
     return (
@@ -620,10 +718,7 @@ export function MenuProduct() {
     );
   }
 
-  const hasDishSet = getSpaceItems(allTops, 'dishset').length > 0;
   const hasTopping = getSpaceItems(allTops, 'topping').length > 0;
-  const hasDrink = getSpaceItems(allTops, 'drink').length > 0;
-  const hasSauce = getSpaceItems(allTops, 'sauce').length > 0;
   const hasAny = allTops.length > 0;
 
   return (
@@ -638,13 +733,13 @@ export function MenuProduct() {
       )}
 
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* ---- COLUMN 1: PRODUCTS LIST ---- */}
+        {/* COLUMN 1: PRODUCTS LIST */}
         <div
           className="shrink-0 bg-white border-r-2 border-gray-300 flex flex-col min-h-0"
           style={{ width: layout.ordersWidth }}
         >
-          <div className="px-3 py-2 border-b-2 border-blue-300 shrink-0 bg-blue-50">
-            <h2 className="text-[11px] font-bold text-blue-800 uppercase tracking-wider border-l-4 border-blue-500 pl-2">
+          <div className="px-2 py-1 border-b-2 border-blue-300 shrink-0 bg-blue-50">
+            <h2 className="text-[9px] font-black text-blue-800 uppercase tracking-wider border-l-2 border-blue-500 pl-1.5 leading-none">
               {t('productsByCategory')}
             </h2>
           </div>
@@ -688,32 +783,26 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* ---- COLUMN 2: БЛЮДА И СЕТЫ + ТОППИНГИ ---- */}
+        {/* COLUMN 2: БЛЮДА И СЕТЫ + ТОППИНГИ */}
         <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-50">
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
             <div className="flex items-center gap-2 mb-2">
-              <div className="flex-1 min-w-0 px-2 py-1 rounded-md bg-orange-100 border-l-4 border-orange-500">
-                <h3 className="text-[10px] font-black text-orange-800 uppercase tracking-widest truncate">
+              <div className="flex-1 min-w-0 px-2 py-1 rounded-md bg-orange-100 border-l-2 border-orange-500">
+                <h3 className="text-[9px] font-black text-orange-800 uppercase tracking-wider truncate leading-none">
                   {t('bludiAndSet')} · {t('dragHintShort')}
                 </h3>
               </div>
               <button
                 onClick={handleResetOrder}
                 disabled={!hasAny}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold active:scale-[0.97] transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-[10px] font-bold active:scale-[0.97] transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Разложить по категориям"
               >
-                <LayoutGrid className="w-3.5 h-3.5" />
+                <LayoutGrid className="w-3 h-3" />
                 Сброс
               </button>
             </div>
-            {!hasDishSet ? (
-              <div className="text-center text-gray-400 text-sm mt-12">
-                {t('noMenuItems')}
-              </div>
-            ) : (
-              renderGrid('dishset', layout.dishCardSize, false)
-            )}
+            {renderGrid('dishset', layout.dishCardSize, false)}
           </div>
 
           {hasTopping && (
@@ -725,13 +814,13 @@ export function MenuProduct() {
                 onEnd={endResize}
               />
               <div
-                className="shrink-0 bg-white px-3 py-2 overflow-hidden border-t-2 border-purple-300"
+                className="shrink-0 bg-white px-2 py-1 overflow-hidden border-t-2 border-purple-300"
                 style={{ height: layout.toppingsHeight }}
               >
-                <h3 className="text-[10px] font-black text-purple-800 uppercase tracking-widest mb-1.5 border-l-4 border-purple-500 pl-2">
+                <h3 className="text-[9px] font-black text-purple-800 uppercase tracking-wider mb-1 border-l-2 border-purple-500 pl-1.5 leading-none">
                   {t('type_topping')}
                 </h3>
-                <div className="overflow-y-auto h-[calc(100%-20px)]">
+                <div className="overflow-y-auto h-[calc(100%-16px)]">
                   {renderGrid('topping', layout.toppingCardSize, true)}
                 </div>
               </div>
@@ -745,7 +834,7 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* ---- COLUMN 3: НАПИТКИ + СОУСЫ ---- */}
+        {/* COLUMN 3: НАПИТКИ + СОУСЫ */}
         <div
           ref={drinksWrapRef}
           className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
@@ -755,19 +844,13 @@ export function MenuProduct() {
             className="flex flex-col border-b-2 border-cyan-300"
             style={{ height: `${layout.drinksShare}%` }}
           >
-            <div className="px-3 py-2 border-b-2 border-cyan-300 shrink-0 bg-cyan-50">
-              <h3 className="text-[10px] font-black text-cyan-800 uppercase tracking-widest border-l-4 border-cyan-500 pl-2">
+            <div className="px-2 py-1 border-b border-cyan-300 shrink-0 bg-cyan-50">
+              <h3 className="text-[9px] font-black text-cyan-800 uppercase tracking-wider border-l-2 border-cyan-500 pl-1.5 leading-none">
                 {t('type_drink')}
               </h3>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {!hasDrink ? (
-                <p className="text-[10px] text-gray-400 text-center w-full py-3">
-                  —
-                </p>
-              ) : (
-                renderGrid('drink', layout.drinkCardSize, true)
-              )}
+              {renderGrid('drink', layout.drinkCardSize, true)}
             </div>
           </div>
 
@@ -779,19 +862,13 @@ export function MenuProduct() {
           />
 
           <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-3 py-2 border-b-2 border-red-300 shrink-0 bg-red-50">
-              <h3 className="text-[10px] font-black text-red-800 uppercase tracking-widest border-l-4 border-red-500 pl-2">
+            <div className="px-2 py-1 border-b border-red-300 shrink-0 bg-red-50">
+              <h3 className="text-[9px] font-black text-red-800 uppercase tracking-wider border-l-2 border-red-500 pl-1.5 leading-none">
                 {t('type_sauce')}
               </h3>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {!hasSauce ? (
-                <p className="text-[10px] text-gray-400 text-center w-full py-3">
-                  —
-                </p>
-              ) : (
-                renderGrid('sauce', layout.sauceCardSize, true)
-              )}
+              {renderGrid('sauce', layout.sauceCardSize, true)}
             </div>
           </div>
         </div>
@@ -802,7 +879,7 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* ---- COLUMN 4: ADD BUTTON + PANEL SETTINGS ---- */}
+        {/* COLUMN 4: ADD BUTTON + PANEL SETTINGS */}
         <div
           className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
           style={{ width: layout.cartWidth }}
@@ -886,6 +963,10 @@ const DraggableCard = memo(function DraggableCard({
   onVariantClick,
   onDragStart,
   onDragEnd,
+  onMoveLeft,
+  onMoveRight,
+  canMoveLeft,
+  canMoveRight,
   size,
   textSize,
   compact,
@@ -896,6 +977,10 @@ const DraggableCard = memo(function DraggableCard({
   onVariantClick?: (v: MenuItem) => void;
   onDragStart: (id: string) => void;
   onDragEnd: () => void;
+  onMoveLeft?: () => void;
+  onMoveRight?: () => void;
+  canMoveLeft?: boolean;
+  canMoveRight?: boolean;
   size: number;
   textSize: number;
   compact?: boolean;
@@ -904,147 +989,206 @@ const DraggableCard = memo(function DraggableCard({
   const nameSize = compact ? Math.max(8, textSize - 2) : textSize;
   const priceSize = compact ? Math.max(8, textSize - 2) : textSize;
 
+  const leftBtn = (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onMoveLeft?.();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      draggable={false}
+      disabled={!canMoveLeft}
+      className={`absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-20 w-7 h-7 rounded-full border-2 shadow-md flex items-center justify-center transition-all ${
+        canMoveLeft
+          ? 'bg-white border-gray-300 opacity-0 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
+          : 'bg-gray-100 border-gray-200 opacity-0 group-hover:opacity-40 cursor-not-allowed'
+      }`}
+      title={canMoveLeft ? 'Сдвинуть на 1 влево' : 'Слева занято'}
+    >
+      <ChevronLeft
+        className={`w-4 h-4 ${
+          canMoveLeft ? 'text-gray-700' : 'text-gray-400'
+        }`}
+      />
+    </button>
+  );
+
+  const rightBtn = (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onMoveRight?.();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      draggable={false}
+      disabled={!canMoveRight}
+      className={`absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-20 w-7 h-7 rounded-full border-2 shadow-md flex items-center justify-center transition-all ${
+        canMoveRight
+          ? 'bg-white border-gray-300 opacity-0 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
+          : 'bg-gray-100 border-gray-200 opacity-0 group-hover:opacity-40 cursor-not-allowed'
+      }`}
+      title={canMoveRight ? 'Сдвинуть на 1 вправо' : 'Справа занято'}
+    >
+      <ChevronRight
+        className={`w-4 h-4 ${
+          canMoveRight ? 'text-gray-700' : 'text-gray-400'
+        }`}
+      />
+    </button>
+  );
+
   // ============ SINGLE ============
   if (!isGroup) {
     return (
-      <div
-        draggable
-        data-card-id={item.id}
-        onDragStart={() => onDragStart(item.id)}
-        onDragEnd={onDragEnd}
-        onClick={() => onEdit(item)}
-        style={{ width: size }}
-        className="flex flex-col items-center select-none cursor-grab active:cursor-grabbing"
-      >
+      <div className="relative group" style={{ width: size }}>
         <div
-          className="relative rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 border-gray-300 hover:border-orange-400 transition-all"
-          style={{ width: size, height: size }}
+          draggable
+          data-card-id={item.id}
+          onDragStart={() => onDragStart(item.id)}
+          onDragEnd={onDragEnd}
+          onClick={() => onEdit(item)}
+          className="flex flex-col items-center select-none cursor-grab active:cursor-grabbing"
         >
-          {item.image_url ? (
-            <>
-              <img
-                src={item.image_url}
-                alt={item.name}
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                loading="lazy"
-                draggable={false}
+          <div
+            className="relative rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 border-gray-300 hover:border-orange-400 transition-all"
+            style={{ width: size, height: size }}
+          >
+            {item.image_url ? (
+              <>
+                <img
+                  src={item.image_url}
+                  alt={item.name}
+                  className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                  loading="lazy"
+                  draggable={false}
+                />
+                <div className="absolute inset-0 bg-black/40" />
+              </>
+            ) : null}
+            {!item.active && (
+              <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+                <span
+                  className="text-white font-black uppercase tracking-widest"
+                  style={{ fontSize: Math.max(8, nameSize - 2) }}
+                >
+                  inactive
+                </span>
+              </div>
+            )}
+            {item.type === 'sauce' && item.color && (
+              <div
+                className="absolute inset-0"
+                style={{ backgroundColor: item.color, opacity: 0.3 }}
               />
-              <div className="absolute inset-0 bg-black/40" />
-            </>
-          ) : null}
-          {!item.active && (
-            <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
-              <span
-                className="text-white font-black uppercase tracking-widest"
-                style={{ fontSize: Math.max(8, nameSize - 2) }}
-              >
-                inactive
-              </span>
-            </div>
-          )}
-          {item.type === 'sauce' && item.color && (
-            <div
-              className="absolute inset-0"
-              style={{ backgroundColor: item.color, opacity: 0.3 }}
-            />
-          )}
+            )}
+          </div>
+          <div
+            className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+            style={{ fontSize: nameSize }}
+            title={item.name}
+          >
+            {item.short_name || item.name}
+          </div>
+          <div
+            className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+            style={{ fontSize: priceSize }}
+          >
+            {item.free ? '' : formatYen(item.price)}
+          </div>
         </div>
-        <div
-          className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
-          style={{ fontSize: nameSize }}
-          title={item.name}
-        >
-          {item.short_name || item.name}
-        </div>
-        <div
-          className="text-center font-black text-orange-600 w-full px-0.5"
-          style={{ fontSize: priceSize }}
-        >
-          {item.free ? '' : formatYen(item.price)}
-        </div>
+        {leftBtn}
+        {rightBtn}
       </div>
     );
   }
 
   // ============ GROUP ============
-  const headerH = nameSize + 12;
+  const headerH = nameSize + 8;
 
   return (
-    <div
-      draggable
-      data-card-id={item.id}
-      onDragStart={() => onDragStart(item.id)}
-      onDragEnd={onDragEnd}
-      style={{ width: '100%', minHeight: headerH + size + nameSize * 2 + 8 }}
-      className="rounded-xl border-2 border-gray-400 bg-white transition-all select-none cursor-grab active:cursor-grabbing hover:border-orange-400 flex flex-col overflow-hidden"
-    >
-      <button
-        onClick={() => onEdit(item)}
-        className="flex items-center justify-between w-full px-2 py-1 border-b border-gray-200 bg-gray-50 hover:bg-orange-50 transition-colors shrink-0"
-      >
-        <span
-          className="font-black text-gray-900 uppercase tracking-wide truncate text-left"
-          style={{ fontSize: nameSize }}
-        >
-          {item.name}
-        </span>
-        {item.type === 'set' && (
-          <span
-            className="font-black bg-orange-500 text-white px-1.5 py-0.5 rounded-full shrink-0 ml-1"
-            style={{ fontSize: Math.max(7, nameSize - 3) }}
-          >
-            SET
-          </span>
-        )}
-      </button>
-
+    <div className="relative group" style={{ width: '100%' }}>
       <div
-        className="flex items-stretch flex-1"
-        style={{ gap: GRID_GAP, padding: 4 }}
+        draggable
+        data-card-id={item.id}
+        onDragStart={() => onDragStart(item.id)}
+        onDragEnd={onDragEnd}
+        style={{
+          width: '100%',
+          minHeight: headerH + size + nameSize * 2 + 4,
+        }}
+        className="rounded-xl bg-white transition-all select-none cursor-grab active:cursor-grabbing ring-2 ring-gray-400 hover:ring-orange-400 flex flex-col overflow-hidden"
       >
-        {variants!.map((v) => (
-          <div
-            key={v.id}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (onVariantClick) onVariantClick(v);
-              else onEdit(v);
-            }}
-            style={{ flex: '1 1 0', minWidth: 0 }}
-            className="flex flex-col items-center cursor-pointer active:scale-95 transition-transform"
+        <button
+          onClick={() => onEdit(item)}
+          className="flex items-center justify-between w-full px-2 py-0.5 border-b border-gray-200 bg-gray-50 hover:bg-orange-50 transition-colors shrink-0 leading-none"
+        >
+          <span
+            className="font-black text-gray-900 uppercase tracking-wide truncate text-left leading-none"
+            style={{ fontSize: nameSize }}
           >
-            <div
-              className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 bg-gradient-to-br from-orange-500 to-red-500 transition-all w-full"
-              style={{ aspectRatio: '1 / 1' }}
+            {item.name}
+          </span>
+          {item.type === 'set' && (
+            <span
+              className="font-black bg-orange-500 text-white px-1.5 rounded-full shrink-0 ml-1 leading-none py-0.5"
+              style={{ fontSize: Math.max(7, nameSize - 3) }}
             >
-              {(v.image_url || item.image_url) && (
-                <>
-                  <img
-                    src={v.image_url || item.image_url || ''}
-                    alt={v.name}
-                    className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                    loading="lazy"
-                    draggable={false}
-                  />
-                  <div className="absolute inset-0 bg-black/40" />
-                </>
-              )}
-            </div>
+              SET
+            </span>
+          )}
+        </button>
+
+        <div className="flex items-stretch" style={{ gap: GRID_GAP }}>
+          {variants!.map((v) => (
             <div
-              className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
-              style={{ fontSize: nameSize }}
+              key={v.id}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onVariantClick) onVariantClick(v);
+                else onEdit(v);
+              }}
+              style={{ width: size, flex: '0 0 auto' }}
+              className="flex flex-col items-center cursor-pointer active:scale-95 transition-transform"
             >
-              {v.name}
+              <div
+                className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 bg-gradient-to-br from-orange-500 to-red-500 transition-all"
+                style={{ width: size, height: size }}
+              >
+                {(v.image_url || item.image_url) && (
+                  <>
+                    <img
+                      src={v.image_url || item.image_url || ''}
+                      alt={v.name}
+                      className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                      loading="lazy"
+                      draggable={false}
+                    />
+                    <div className="absolute inset-0 bg-black/40" />
+                  </>
+                )}
+              </div>
+              <div
+                className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+                style={{ fontSize: nameSize }}
+              >
+                {v.name}
+              </div>
+              <div
+                className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+                style={{ fontSize: priceSize }}
+              >
+                {v.free ? '' : formatYen(v.price)}
+              </div>
             </div>
-            <div
-              className="text-center font-black text-orange-600 w-full px-0.5"
-              style={{ fontSize: priceSize }}
-            >
-              {v.free ? '' : formatYen(v.price)}
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
+      {leftBtn}
+      {rightBtn}
     </div>
   );
 });
@@ -1548,7 +1692,6 @@ function ItemFormModal({
             </div>
           )}
 
-          {/* ============ TOPPING ============ */}
           {type === 'topping' && (
             <>
               <NameAndShort
@@ -1604,7 +1747,6 @@ function ItemFormModal({
             </>
           )}
 
-          {/* ============ SAUCE ============ */}
           {type === 'sauce' && (
             <>
               <NameAndShort
@@ -1636,7 +1778,6 @@ function ItemFormModal({
             </>
           )}
 
-          {/* ============ DRINK ============ */}
           {type === 'drink' && (
             <>
               <NameAndShort
@@ -1665,7 +1806,6 @@ function ItemFormModal({
             </>
           )}
 
-          {/* ============ DISH ============ */}
           {type === 'dish' && (
             <>
               <NameAndShort
@@ -1975,7 +2115,6 @@ function ItemFormModal({
             </>
           )}
 
-          {/* ============ SET ============ */}
           {type === 'set' && (
             <>
               <NameAndShort

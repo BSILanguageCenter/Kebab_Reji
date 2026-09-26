@@ -48,6 +48,33 @@ import {
   Save,
 } from 'lucide-react';
 
+// ============================================================
+// Категории (пространства) — dish и set вместе
+// ============================================================
+type CategorySpace = 'dishset' | 'drink' | 'sauce' | 'topping';
+
+function getSpaceItems(items: MenuItem[], space: CategorySpace): MenuItem[] {
+  if (space === 'dishset') {
+    return items.filter((i) => i.type === 'dish' || i.type === 'set');
+  }
+  return items.filter((i) => i.type === space);
+}
+
+// ============================================================
+// Ширина карточки в ячейках
+// ============================================================
+function getItemWidth(item: MenuItem): number {
+  if (item.type === 'dish' && item.dish_kind === 'group') {
+    return Math.max(1, item.variants?.length ?? 1);
+  }
+  if (item.type === 'set' && item.set_main?.dish_kind === 'group') {
+    return Math.max(1, item.set_main.variants?.length ?? 1);
+  }
+  return 1;
+}
+
+const GRID_GAP = 12;
+
 export default function CashierPage() {
   const { t, lang } = useI18n();
 
@@ -73,7 +100,7 @@ export default function CashierPage() {
 
   const undoStack = useUndoStack('cashier');
   const [layout, setLayout] = useLayoutSettings();
-  const cartWrapRef = useRef<HTMLDivElement>(null);
+  const drinksWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
@@ -93,10 +120,9 @@ export default function CashierPage() {
     };
   }, [sending]);
 
-  // Все товары вперемешку, сортировка по sort_order
-  const sortedItems = useMemo(
+  const tops = useMemo(
     () =>
-      [...menuItems]
+      menuItems
         .filter((i) => i.active && !i.parent_id)
         .sort((a, b) => a.sort_order - b.sort_order),
     [menuItems]
@@ -184,7 +210,6 @@ export default function CashierPage() {
   };
 
   const handleItemClick = (item: MenuItem) => {
-    // topping / drink / sauce — сразу
     if (
       item.type === 'topping' ||
       item.type === 'drink' ||
@@ -493,9 +518,21 @@ export default function CashierPage() {
         'ordersWidth',
         snapValue(prev.ordersWidth, [208, 260, 320], 12)
       ),
+      menuRightWidth: clampLayout(
+        'menuRightWidth',
+        snapValue(prev.menuRightWidth, [160, 200, 240, 300], 12)
+      ),
       cartWidth: clampLayout(
         'cartWidth',
         snapValue(prev.cartWidth, [280, 320, 400, 480], 16)
+      ),
+      toppingsHeight: clampLayout(
+        'toppingsHeight',
+        snapValue(prev.toppingsHeight, [120, 180, 260, 360], 20)
+      ),
+      drinksShare: clampLayout(
+        'drinksShare',
+        snapValue(prev.drinksShare, [30, 50, 70], 8)
       ),
     }));
     startLayoutRef.current = null;
@@ -509,6 +546,14 @@ export default function CashierPage() {
     }));
   };
 
+  const handleResizeMenuRight = (d: number) => {
+    const base = startLayoutRef.current ?? layout;
+    setLayout((prev) => ({
+      ...prev,
+      menuRightWidth: clampLayout('menuRightWidth', base.menuRightWidth - d),
+    }));
+  };
+
   const handleResizeCart = (d: number) => {
     const base = startLayoutRef.current ?? layout;
     setLayout((prev) => ({
@@ -517,12 +562,95 @@ export default function CashierPage() {
     }));
   };
 
+  const handleResizeToppings = (d: number) => {
+    const base = startLayoutRef.current ?? layout;
+    setLayout((prev) => ({
+      ...prev,
+      toppingsHeight: clampLayout('toppingsHeight', base.toppingsHeight - d),
+    }));
+  };
+
+  const handleResizeDrinks = (d: number) => {
+    const base = startLayoutRef.current ?? layout;
+    const containerH = drinksWrapRef.current?.clientHeight ?? 400;
+    const pctDelta = (d / containerH) * 100;
+    setLayout((prev) => ({
+      ...prev,
+      drinksShare: clampLayout('drinksShare', base.drinksShare + pctDelta),
+    }));
+  };
+
   // ============================================================
-  // Единая сетка: все товары вперемешку
-  // Группа с N вариантами занимает N ячеек
+  // GRID RENDER — без пустых ячеек, только карточки
   // ============================================================
-  const cellSize = layout.dishCardSize;
-  const gap = 8;
+  const renderGrid = (
+    space: CategorySpace,
+    size: number,
+    compact: boolean
+  ) => {
+    const spaceItems = getSpaceItems(tops, space);
+    const sorted = [...spaceItems].sort(
+      (a, b) => a.sort_order - b.sort_order
+    );
+    const cellH = compact ? size + 32 : size + 50;
+
+    return (
+      <div
+        className="grid gap-3"
+        style={{
+          gridTemplateColumns: `repeat(auto-fill, ${size}px)`,
+          gridAutoRows: `${cellH}px`,
+        }}
+      >
+        {sorted.map((card) => {
+          const w = getItemWidth(card);
+
+          let variants: MenuItem[] | undefined;
+          if (card.type === 'dish' && card.dish_kind === 'group') {
+            variants = card.variants;
+          } else if (
+            card.type === 'set' &&
+            card.set_main?.dish_kind === 'group'
+          ) {
+            variants = card.set_main.variants;
+          }
+
+          return (
+            <div
+              key={card.id}
+              style={{
+                gridColumn: `span ${w}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <ProductCard
+                item={card}
+                variants={variants}
+                onClick={handleItemClick}
+                onVariantClick={(setItem, v) => {
+                  if (setItem.type === 'set') {
+                    handleSetVariantClick(setItem, v);
+                  } else {
+                    handleItemClick(v);
+                  }
+                }}
+                size={size}
+                textSize={layout.itemTextSize}
+                compact={compact}
+              />
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const hasDishSet = getSpaceItems(tops, 'dishset').length > 0;
+  const hasTopping = getSpaceItems(tops, 'topping').length > 0;
+  const hasDrink = getSpaceItems(tops, 'drink').length > 0;
+  const hasSauce = getSpaceItems(tops, 'sauce').length > 0;
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
@@ -550,11 +678,11 @@ export default function CashierPage() {
           className="shrink-0 bg-white border-r-2 border-gray-300 flex flex-col min-h-0"
           style={{ width: layout.ordersWidth }}
         >
-          <div className="px-3 py-2 border-b border-gray-200 shrink-0">
-            <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
+          <div className="px-2 py-1 border-b-2 border-gray-300 shrink-0 bg-gray-50">
+            <h2 className="text-[9px] font-black text-gray-700 uppercase tracking-wider border-l-2 border-gray-500 pl-1.5 leading-none">
               {t('activeOrders')}
             </h2>
-            <span className="text-xl font-bold text-orange-600">
+            <span className="text-base font-black text-orange-600 leading-none mt-1 block pl-1.5">
               {activeOrders.filter((o) => o.status !== 'CANCELLED').length}
             </span>
           </div>
@@ -638,8 +766,8 @@ export default function CashierPage() {
           onEnd={endResize}
         />
 
-        {/* ---- CENTER: ONE GRID (ALL ITEMS MIXED) ---- */}
-        <div className="flex-1 min-w-0 bg-slate-50 flex flex-col min-h-0">
+        {/* ---- CENTER: БЛЮДА И СЕТЫ + ТОППИНГИ ---- */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-50">
           <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
             <div className="flex rounded-xl overflow-hidden border-2 border-gray-300 shadow-sm">
               <button
@@ -668,75 +796,102 @@ export default function CashierPage() {
           </div>
 
           {error && (
-            <div className="m-2 p-2 bg-red-50 border border-red-300 rounded-xl text-red-700 text-xs">
+            <div className="mx-2 mt-2 p-2 bg-red-50 border border-red-300 rounded-xl text-red-700 text-xs">
               {error}
             </div>
           )}
 
-          <div className="flex-1 min-h-0 overflow-y-auto p-3">
-            {sortedItems.length === 0 ? (
-              <div className="text-center text-gray-400 text-sm mt-12">
-                {t('noMenuItems')}
+          {/* Центральная область — скролл только если есть товары */}
+          {hasDishSet ? (
+            <div className="flex-1 min-h-0 overflow-y-auto p-3">
+              <div className="mb-2 px-2 py-1 rounded-md bg-orange-100 border-l-2 border-orange-500">
+                <h3 className="text-[9px] font-black text-orange-800 uppercase tracking-wider truncate leading-none">
+                  {t('bludiAndSet')}
+                </h3>
+              </div>
+              {renderGrid('dishset', layout.dishCardSize, false)}
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0 flex items-center justify-center text-gray-400 text-sm">
+              {t('noMenuItems')}
+            </div>
+          )}
+
+          {hasTopping && (
+            <>
+              <Resizer
+                direction="horizontal"
+                onStart={beginResize}
+                onResize={handleResizeToppings}
+                onEnd={endResize}
+              />
+              <div
+                className="shrink-0 bg-white px-2 py-1 overflow-hidden border-t-2 border-purple-300"
+                style={{ height: layout.toppingsHeight }}
+              >
+                <h3 className="text-[9px] font-black text-purple-800 uppercase tracking-wider mb-1 border-l-2 border-purple-500 pl-1.5 leading-none">
+                  {t('type_topping')}
+                </h3>
+                <div className="overflow-y-auto h-[calc(100%-16px)]">
+                  {renderGrid('topping', layout.toppingCardSize, true)}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeMenuRight}
+          onEnd={endResize}
+        />
+
+        {/* ---- RIGHT: НАПИТКИ + СОУСЫ ---- */}
+        <div
+          ref={drinksWrapRef}
+          className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
+          style={{ width: layout.menuRightWidth }}
+        >
+          <div
+            className="flex flex-col border-b-2 border-cyan-300"
+            style={{ height: `${layout.drinksShare}%` }}
+          >
+            <div className="px-2 py-1 border-b border-cyan-300 shrink-0 bg-cyan-50">
+              <h3 className="text-[9px] font-black text-cyan-800 uppercase tracking-wider border-l-2 border-cyan-500 pl-1.5 leading-none">
+                {t('type_drink')}
+              </h3>
+            </div>
+            {hasDrink ? (
+              <div className="flex-1 min-h-0 overflow-y-auto p-2">
+                {renderGrid('drink', layout.drinkCardSize, true)}
               </div>
             ) : (
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: `repeat(auto-fill, ${cellSize}px)`,
-                  gap: `${gap}px`,
-                }}
-              >
-                {sortedItems.map((item) => {
-                  // Групповые (dish-group или set с main-group)
-                  let variants: MenuItem[] | undefined;
-                  if (item.type === 'dish' && item.dish_kind === 'group') {
-                    variants = item.variants;
-                  } else if (
-                    item.type === 'set' &&
-                    item.set_main?.dish_kind === 'group'
-                  ) {
-                    variants = item.set_main.variants;
-                  }
+              <div className="flex-1 min-h-0 flex items-center justify-center text-[10px] text-gray-400">
+                —
+              </div>
+            )}
+          </div>
 
-                  const span = variants && variants.length > 0
-                    ? variants.length
-                    : 1;
+          <Resizer
+            direction="horizontal"
+            onStart={beginResize}
+            onResize={handleResizeDrinks}
+            onEnd={endResize}
+          />
 
-                  // Групповой блок — ширина = span ячеек + (span-1) * gap
-                  const groupW = span * cellSize + (span - 1) * gap;
-
-                  return (
-                    <div
-                      key={item.id}
-                      style={{ gridColumn: `span ${span}`, width: groupW }}
-                    >
-                      {variants && variants.length > 0 ? (
-                        <GroupCard
-                          item={item}
-                          variants={variants}
-                          onClick={handleItemClick}
-                          onVariantClick={(setItem, v) => {
-                            if (setItem.type === 'set') {
-                              handleSetVariantClick(setItem, v);
-                            } else {
-                              handleItemClick(v);
-                            }
-                          }}
-                          cellSize={cellSize}
-                          gap={gap}
-                          textSize={layout.itemTextSize}
-                        />
-                      ) : (
-                        <SimpleCard
-                          item={item}
-                          onClick={handleItemClick}
-                          size={cellSize}
-                          textSize={layout.itemTextSize}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="px-2 py-1 border-b border-red-300 shrink-0 bg-red-50">
+              <h3 className="text-[9px] font-black text-red-800 uppercase tracking-wider border-l-2 border-red-500 pl-1.5 leading-none">
+                {t('type_sauce')}
+              </h3>
+            </div>
+            {hasSauce ? (
+              <div className="flex-1 min-h-0 overflow-y-auto p-2">
+                {renderGrid('sauce', layout.sauceCardSize, true)}
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 flex items-center justify-center text-[10px] text-gray-400">
+                —
               </div>
             )}
           </div>
@@ -748,9 +903,8 @@ export default function CashierPage() {
           onEnd={endResize}
         />
 
-        {/* ---- RIGHT: CART ---- */}
+        {/* ---- FAR RIGHT: CART ---- */}
         <div
-          ref={cartWrapRef}
           className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
           style={{ width: layout.cartWidth }}
         >
@@ -1022,139 +1176,141 @@ export default function CashierPage() {
 }
 
 // ============================================================
-// SIMPLE CARD
+// PRODUCT CARD — визуал 1:1 с MenuProduct,
+// но БЕЗ drag, без стрелок, только клик
 // ============================================================
-const SimpleCard = memo(function SimpleCard({
-  item,
-  onClick,
-  size,
-  textSize,
-}: {
-  item: MenuItem;
-  onClick: (i: MenuItem) => void;
-  size: number;
-  textSize: number;
-}) {
-  const isSauce = item.type === 'sauce';
-
-  return (
-    <button
-      onClick={() => onClick(item)}
-      style={{ width: size }}
-      className="flex flex-col items-center select-none active:scale-95 transition-transform"
-    >
-      <div
-        className="relative rounded-xl overflow-hidden transition-all"
-        style={{
-          width: size,
-          height: size,
-          borderWidth: isSauce ? 4 : 2,
-          borderStyle: 'solid',
-          borderColor: isSauce ? item.color ?? '#e5e7eb' : '#d1d5db',
-          background: isSauce
-            ? '#ffffff'
-            : 'linear-gradient(to bottom right, #f97316, #dc2626)',
-        }}
-      >
-        {item.image_url ? (
-          <>
-            <img
-              src={item.image_url}
-              alt={item.name}
-              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-              loading="lazy"
-              draggable={false}
-            />
-            {!isSauce && <div className="absolute inset-0 bg-black/40" />}
-          </>
-        ) : isSauce ? (
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundColor: item.color ?? '#e5e7eb',
-              opacity: 0.25,
-            }}
-          />
-        ) : null}
-      </div>
-      <div
-        className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
-        style={{ fontSize: textSize }}
-        title={item.name}
-      >
-        {item.short_name || item.name}
-      </div>
-      <div
-        className="text-center font-black text-orange-600 w-full px-0.5"
-        style={{ fontSize: textSize }}
-      >
-        {item.free ? '' : formatYen(item.price)}
-      </div>
-    </button>
-  );
-});
-
-// ============================================================
-// GROUP CARD — занимает N ячеек
-// ============================================================
-const GroupCard = memo(function GroupCard({
+const ProductCard = memo(function ProductCard({
   item,
   variants,
   onClick,
   onVariantClick,
-  cellSize,
-  gap,
+  size,
   textSize,
+  compact,
 }: {
   item: MenuItem;
-  variants: MenuItem[];
+  variants?: MenuItem[];
   onClick: (i: MenuItem) => void;
-  onVariantClick: (item: MenuItem, v: MenuItem) => void;
-  cellSize: number;
-  gap: number;
+  onVariantClick?: (setItem: MenuItem, v: MenuItem) => void;
+  size: number;
   textSize: number;
+  compact?: boolean;
 }) {
-  return (
-    <div
-      className="rounded-xl border-2 border-gray-400 bg-white overflow-hidden flex flex-col"
-      style={{ minHeight: cellSize + textSize * 2 + 30 }}
-    >
-      {/* Header */}
+  const isGroup = (variants?.length ?? 0) > 0;
+  const nameSize = compact ? Math.max(8, textSize - 2) : textSize;
+  const priceSize = compact ? Math.max(8, textSize - 2) : textSize;
+
+  // ============ SINGLE ============
+  if (!isGroup) {
+    return (
       <button
         onClick={() => onClick(item)}
-        className="flex items-center justify-between w-full px-2 py-1 border-b border-gray-200 bg-gray-50 hover:bg-orange-50 transition-colors shrink-0"
+        style={{ width: size }}
+        className="flex flex-col items-center select-none active:scale-95 transition-transform"
+      >
+        <div
+          className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 transition-all"
+          style={{
+            width: size,
+            height: size,
+            background:
+              item.type === 'sauce'
+                ? '#ffffff'
+                : 'linear-gradient(to bottom right, #f97316, #dc2626)',
+            borderColor:
+              item.type === 'sauce'
+                ? item.color ?? '#e5e7eb'
+                : undefined,
+            borderWidth: item.type === 'sauce' ? 4 : 2,
+          }}
+        >
+          {item.image_url ? (
+            <>
+              <img
+                src={item.image_url}
+                alt={item.name}
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                loading="lazy"
+                draggable={false}
+              />
+              {item.type !== 'sauce' && (
+                <div className="absolute inset-0 bg-black/40" />
+              )}
+            </>
+          ) : item.type === 'sauce' ? (
+            <div
+              className="absolute inset-0"
+              style={{
+                backgroundColor: item.color ?? '#e5e7eb',
+                opacity: 0.25,
+              }}
+            />
+          ) : null}
+        </div>
+        <div
+          className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+          style={{ fontSize: nameSize }}
+          title={item.name}
+        >
+          {item.short_name || item.name}
+        </div>
+        <div
+          className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+          style={{ fontSize: priceSize }}
+        >
+          {item.free ? '' : formatYen(item.price)}
+        </div>
+      </button>
+    );
+  }
+
+  // ============ GROUP ============
+  const headerH = nameSize + 8;
+
+  return (
+    <div
+      style={{ width: '100%', minHeight: headerH + size + nameSize * 2 + 4 }}
+      className="rounded-xl bg-white ring-2 ring-gray-400 hover:ring-orange-400 flex flex-col overflow-hidden transition-all"
+    >
+      <button
+        onClick={() => onClick(item)}
+        className="flex items-center justify-between w-full px-2 py-0.5 border-b border-gray-200 bg-gray-50 hover:bg-orange-50 transition-colors shrink-0 leading-none"
       >
         <span
-          className="font-black text-gray-900 uppercase tracking-wide truncate text-left"
-          style={{ fontSize: textSize }}
+          className="font-black text-gray-900 uppercase tracking-wide truncate text-left leading-none"
+          style={{ fontSize: nameSize }}
         >
           {item.name}
         </span>
         {item.type === 'set' && (
           <span
-            className="font-black bg-orange-500 text-white px-1.5 py-0.5 rounded-full shrink-0 ml-1"
-            style={{ fontSize: Math.max(7, textSize - 3) }}
+            className="font-black bg-orange-500 text-white px-1.5 rounded-full shrink-0 ml-1 leading-none py-0.5"
+            style={{ fontSize: Math.max(7, nameSize - 3) }}
           >
             SET
           </span>
         )}
       </button>
 
-      {/* Variants row */}
-      <div
-        className="flex items-start flex-1"
-        style={{ gap, padding: 8 }}
-      >
-        {variants.map((v) => (
+      <div className="flex items-stretch" style={{ gap: GRID_GAP }}>
+        {variants!.map((v) => (
           <button
             key={v.id}
-            onClick={() => onVariantClick(item, v)}
-            style={{ width: cellSize }}
+            onClick={() => {
+              if (onVariantClick) onVariantClick(item, v);
+              else onClick(v);
+            }}
+            style={{ width: size, flex: '0 0 auto' }}
             className="flex flex-col items-center active:scale-95 transition-transform"
           >
             <div
-              className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 active:border-orange-500 bg-gradient-to-br from-orange-500 to-red-500 transition-all"
-              style={{ width: cellSize, height: cellSize }}
+              className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 transition-all"
+              style={{
+                width: size,
+                height: size,
+                background:
+                  'linear-gradient(to bottom right, #f97316, #dc2626)',
+              }}
             >
               {(v.image_url || item.image_url) && (
                 <>
@@ -1170,14 +1326,14 @@ const GroupCard = memo(function GroupCard({
               )}
             </div>
             <div
-              className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
-              style={{ fontSize: textSize }}
+              className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+              style={{ fontSize: nameSize }}
             >
               {v.name}
             </div>
             <div
-              className="text-center font-black text-orange-600 w-full px-0.5"
-              style={{ fontSize: textSize }}
+              className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+              style={{ fontSize: priceSize }}
             >
               {v.free ? '' : formatYen(v.price)}
             </div>
