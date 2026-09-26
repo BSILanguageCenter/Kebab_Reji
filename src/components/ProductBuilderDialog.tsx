@@ -10,10 +10,7 @@ import type {
   CartItemOption,
 } from '@/types/database';
 
-// ============================================================
-// Types
-// ============================================================
-type Ctx = 'main' | { extra: string }; // extra: groupId
+type Ctx = 'main' | { extra: string };
 
 type Step =
   | { kind: 'variant'; variants: MenuItem[] }
@@ -40,20 +37,19 @@ export interface BuilderResult {
   options: CartItemOption[];
 }
 
-// ============================================================
-// Build steps dynamically from current selections
-// ============================================================
-function buildSteps(
-  item: MenuItem,
-  selections: Selections
-): Step[] {
+// ---------- Steps ----------
+function buildSteps(item: MenuItem, selections: Selections): Step[] {
   const steps: Step[] = [];
   const mainItem = item.type === 'set' ? item.set_main : item;
   if (!mainItem) return steps;
 
-  // 1. Variant if group
   let resolvedMain: MenuItem | null = mainItem;
-  if (mainItem.dish_kind === 'group' && mainItem.variants && mainItem.variants.length > 0) {
+
+  if (
+    mainItem.dish_kind === 'group' &&
+    mainItem.variants &&
+    mainItem.variants.length > 0
+  ) {
     steps.push({ kind: 'variant', variants: mainItem.variants });
     const v = selections.variantId
       ? mainItem.variants.find((x) => x.id === selections.variantId)
@@ -62,7 +58,6 @@ function buildSteps(
     resolvedMain = v;
   }
 
-  // 2. Sauce
   if (
     resolvedMain.sauce_mode === 'with' &&
     (resolvedMain.allowed_sauces?.length ?? 0) > 0
@@ -74,7 +69,6 @@ function buildSteps(
     });
   }
 
-  // 3. Properties
   if ((resolvedMain.properties?.length ?? 0) > 0) {
     steps.push({
       kind: 'properties',
@@ -83,14 +77,14 @@ function buildSteps(
     });
   }
 
-  // 4. Extras
   if (item.type === 'set' && item.set_extra_groups) {
     for (const group of item.set_extra_groups) {
       steps.push({ kind: 'extra-option', group });
       const ex = selections.extras[group.id];
       if (!ex?.optionId) continue;
-
-      const optItem = group.options.find((o) => o.item.id === ex.optionId)?.item;
+      const optItem = group.options.find(
+        (o) => o.item.id === ex.optionId
+      )?.item;
       if (!optItem) continue;
 
       if (
@@ -116,29 +110,23 @@ function buildSteps(
   return steps;
 }
 
-// ============================================================
-// Helper: get price for current selection
-// ============================================================
-function computePrice(
-  item: MenuItem,
-  selections: Selections
-): number {
+// ---------- Цена Set: ТОЛЬКО override варианта main ----------
+function computePrice(item: MenuItem, selections: Selections): number {
   if (item.type === 'set') {
-    // base price or override from main variant
     const mainItem = item.set_main;
-    if (
-      mainItem &&
-      mainItem.dish_kind === 'group' &&
-      selections.variantId
-    ) {
-      // In our hydrated model, overridden price is already applied to the variant
-      const v = mainItem.variants?.find((x) => x.id === selections.variantId);
-      if (v) return v.price; // variant's price already = set's price for this variant
+    if (!mainItem) return 0;
+
+    if (mainItem.dish_kind === 'group') {
+      if (!selections.variantId) return 0;
+      const v = mainItem.variants?.find(
+        (x) => x.id === selections.variantId
+      );
+      return v ? v.price : 0;
     }
-    return item.price;
+
+    return mainItem.price;
   }
 
-  // dish
   if (item.dish_kind === 'group' && selections.variantId && item.variants) {
     const v = item.variants.find((x) => x.id === selections.variantId);
     if (v) return v.price;
@@ -146,19 +134,17 @@ function computePrice(
   return item.price;
 }
 
-// ============================================================
-// Main component
-// ============================================================
+// ---------- Компонент ----------
 export function ProductBuilderDialog({
   open,
   item,
-  allItems,
+  initialVariantId,
   onConfirm,
   onCancel,
 }: {
   open: boolean;
   item: MenuItem | null;
-  allItems: MenuItem[];
+  initialVariantId?: string;
   onConfirm: (r: BuilderResult) => void;
   onCancel: () => void;
 }) {
@@ -173,29 +159,25 @@ export function ProductBuilderDialog({
   });
   const [error, setError] = useState<string | null>(null);
 
-  // Reset on open
   const itemId = item?.id;
+
   useEffect(() => {
     if (!open || !itemId) return;
-    setStepIndex(0);
     setError(null);
-
-    // Pre-fill default properties (there are none in v3, but keep structure)
     setSelections({
-      variantId: null,
+      variantId: initialVariantId ?? null,
       mainSauceId: null,
       mainProps: new Set(),
       extras: {},
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, itemId]);
+    setStepIndex(initialVariantId ? 1 : 0);
+  }, [open, itemId, initialVariantId]);
 
   const steps = useMemo<Step[]>(() => {
     if (!item) return [];
     return buildSteps(item, selections);
   }, [item, selections]);
 
-  // Clamp stepIndex if steps array changed
   useEffect(() => {
     if (stepIndex > steps.length - 1) {
       setStepIndex(Math.max(0, steps.length - 1));
@@ -207,22 +189,15 @@ export function ProductBuilderDialog({
   const currentStep: Step | undefined = steps[stepIndex];
   const currentPrice = computePrice(item, selections);
 
-  // ---- Step validation ----
   const canProceed = (): boolean => {
     if (!currentStep) return true;
-
-    if (currentStep.kind === 'variant') {
-      return selections.variantId !== null;
-    }
+    if (currentStep.kind === 'variant') return selections.variantId !== null;
     if (currentStep.kind === 'sauce') {
       if (currentStep.ctx === 'main') return selections.mainSauceId !== null;
       const ex = selections.extras[currentStep.ctx.extra];
       return ex?.sauceId != null;
     }
-    if (currentStep.kind === 'properties') {
-      // properties are optional — can always proceed
-      return true;
-    }
+    if (currentStep.kind === 'properties') return true;
     if (currentStep.kind === 'extra-option') {
       const ex = selections.extras[currentStep.group.id];
       if (!currentStep.group.required) return true;
@@ -237,16 +212,10 @@ export function ProductBuilderDialog({
       return;
     }
     setError(null);
-
-    // Compute updated selections synchronously
-    const updated = { ...selections };
-
-    // If we've answered the LAST step, finish
     if (stepIndex >= steps.length - 1) {
-      finish(updated);
+      finish();
       return;
     }
-
     setStepIndex(stepIndex + 1);
   };
 
@@ -256,12 +225,10 @@ export function ProductBuilderDialog({
     else onCancel();
   };
 
-  // ---- Setters ----
   const setVariant = (v: MenuItem) => {
     setSelections((s) => ({
       ...s,
       variantId: v.id,
-      // reset downstream main selections when variant changes
       mainSauceId: null,
       mainProps: new Set(),
     }));
@@ -271,7 +238,6 @@ export function ProductBuilderDialog({
   const setMainSauce = (sauceId: string) => {
     setSelections((s) => ({ ...s, mainSauceId: sauceId }));
     setError(null);
-    // auto-advance
     setTimeout(() => {
       setStepIndex((idx) => Math.min(idx + 1, steps.length));
     }, 100);
@@ -291,11 +257,7 @@ export function ProductBuilderDialog({
       ...s,
       extras: {
         ...s.extras,
-        [groupId]: {
-          optionId,
-          sauceId: null,
-          props: new Set(),
-        },
+        [groupId]: { optionId, sauceId: null, props: new Set() },
       },
     }));
     setError(null);
@@ -307,10 +269,7 @@ export function ProductBuilderDialog({
       extras: {
         ...s.extras,
         [groupId]: {
-          ...(s.extras[groupId] ?? {
-            optionId: null,
-            props: new Set(),
-          }),
+          ...(s.extras[groupId] ?? { optionId: null, props: new Set() }),
           sauceId,
         },
       },
@@ -338,15 +297,13 @@ export function ProductBuilderDialog({
     });
   };
 
-  // ---- Finish ----
-  const finish = (_updated: Selections) => {
+  const finish = () => {
     if (!item) return;
     const options: CartItemOption[] = [];
     let variantName = '';
 
     const mainItem = item.type === 'set' ? item.set_main : item;
 
-    // Variant
     if (mainItem?.dish_kind === 'group' && selections.variantId) {
       const v = mainItem.variants?.find(
         (x) => x.id === selections.variantId
@@ -362,7 +319,6 @@ export function ProductBuilderDialog({
       }
     }
 
-    // Main sauce
     if (selections.mainSauceId) {
       const s = mainItem?.allowed_sauces?.find(
         (x) => x.id === selections.mainSauceId
@@ -377,7 +333,6 @@ export function ProductBuilderDialog({
       }
     }
 
-    // Main props
     const resolvedMain =
       mainItem?.dish_kind === 'group' && selections.variantId
         ? mainItem.variants?.find((x) => x.id === selections.variantId)
@@ -394,7 +349,6 @@ export function ProductBuilderDialog({
       }
     }
 
-    // Extras
     if (item.type === 'set' && item.set_extra_groups) {
       for (const group of item.set_extra_groups) {
         const ex = selections.extras[group.id];
@@ -437,14 +391,9 @@ export function ProductBuilderDialog({
       }
     }
 
-    onConfirm({
-      variant: variantName,
-      price: currentPrice,
-      options,
-    });
+    onConfirm({ variant: variantName, price: currentPrice, options });
   };
 
-  // ---- Render current step ----
   const stepLabel = (() => {
     if (!currentStep) return '';
     if (currentStep.kind === 'variant') return t('chooseVariant');
@@ -515,15 +464,16 @@ export function ProductBuilderDialog({
                         : 'text-orange-600'
                     }`}
                   >
-                    {v.free ? t('free') : formatYen(v.price)}
+                    {v.free ? '' : formatYen(v.price)}
                   </div>
                 </button>
               ))}
             </div>
           )}
 
+          {/* ============ SAUCE — маленькие квадратики, 3 в ряд ============ */}
           {currentStep?.kind === 'sauce' && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-3">
               {currentStep.sauces.map((s) => {
                 const selected =
                   currentStep.ctx === 'main'
@@ -537,20 +487,48 @@ export function ProductBuilderDialog({
                       if (currentStep.ctx === 'main') setMainSauce(s.id);
                       else setExtraSauce(currentStep.ctx.extra, s.id);
                     }}
-                    className={`flex items-center gap-3 p-3 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${
+                    className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-[0.97] ${
                       selected
-                        ? 'bg-orange-500 border-orange-500 text-white shadow-md'
-                        : 'bg-white border-gray-200 hover:border-orange-300'
+                        ? 'bg-orange-50 ring-4 ring-orange-300'
+                        : 'bg-white hover:bg-gray-50'
                     }`}
                   >
+                    {/* Маленький квадрат с цветной рамкой */}
                     <div
-                      className="w-8 h-8 rounded-full border border-gray-200 shrink-0"
-                      style={{ backgroundColor: s.color ?? '#e5e7eb' }}
-                    />
-                    <span className="text-sm font-bold flex-1 truncate">
+                      className="relative rounded-lg overflow-hidden w-full max-w-[88px] aspect-square"
+                      style={{
+                        borderWidth: 3,
+                        borderStyle: 'solid',
+                        borderColor: s.color ?? '#e5e7eb',
+                        background: '#ffffff',
+                      }}
+                    >
+                      {s.image_url ? (
+                        <img
+                          src={s.image_url}
+                          alt={s.name}
+                          className="absolute inset-0 w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div
+                          className="absolute inset-0"
+                          style={{
+                            backgroundColor: s.color ?? '#e5e7eb',
+                            opacity: 0.25,
+                          }}
+                        />
+                      )}
+                      {selected && (
+                        <div className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-orange-500 text-white flex items-center justify-center shadow-md">
+                          <Check className="w-2.5 h-2.5" />
+                        </div>
+                      )}
+                    </div>
+
+                    <span className="text-[11px] font-black text-gray-900 truncate w-full text-center leading-tight">
                       {s.name}
                     </span>
-                    {selected && <Check className="w-4 h-4 shrink-0" />}
                   </button>
                 );
               })}
@@ -661,7 +639,6 @@ export function ProductBuilderDialog({
               {!currentStep.group.required && (
                 <button
                   onClick={() => {
-                    // clear selection
                     setSelections((s) => {
                       const cp = { ...s.extras };
                       delete cp[currentStep.group.id];
@@ -699,7 +676,7 @@ export function ProductBuilderDialog({
           >
             {stepIndex >= steps.length - 1 ? (
               <>
-                {t('addToCartBtn')} • {formatYen(currentPrice)}
+                {t('addToCartBtn')} · {currentPrice > 0 ? formatYen(currentPrice) : ''}
               </>
             ) : (
               <>
@@ -714,5 +691,4 @@ export function ProductBuilderDialog({
   );
 }
 
-// Silence unused variable warning
 export type { TranslationKey };

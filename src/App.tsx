@@ -4,8 +4,15 @@ import KitchenPage from '@/pages/KitchenPage';
 import ManagerPage from '@/pages/ManagerPage';
 import QueuePage from '@/pages/QueuePage';
 import { useI18n, languages, type Lang, type TranslationKey } from '@/locale';
-import { PageActionsContext, ActiveRoleContext, type PageRole } from '@/components/PageActions';
-import { getSocket, subscribeClientsCount } from '@/lib/socket';
+import {
+  PageActionsContext,
+  ActiveRoleContext,
+  type PageRole,
+} from '@/components/PageActions';
+import {
+  getSocket,
+  subscribeClientsCount,
+} from '@/lib/socket';
 import {
   UtensilsCrossed,
   ChefHat,
@@ -21,6 +28,7 @@ import {
   Copy,
   Check,
   CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 
 type Role = 'cashier' | 'queue' | 'kitchen' | 'manager';
@@ -68,7 +76,7 @@ async function waitForServer(
   while (Date.now() - start < timeoutMs) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 500);
+      const timeoutId = setTimeout(() => controller.abort(), 700);
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
       if (res.ok) return true;
@@ -94,64 +102,98 @@ export default function App() {
 
   const [visited, setVisited] = useState<Set<Role>>(() => new Set());
 
+  // Bootstrap-состояния
+  const [serverReady, setServerReady] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+
   // ============================================================
   // Подписка на количество подключённых устройств
+  // Инициализируем socket ТОЛЬКО после serverReady
   // ============================================================
   useEffect(() => {
+    if (!serverReady) return;
     const unsubscribe = subscribeClientsCount(setClientsCount);
     getSocket();
     return unsubscribe;
-  }, []);
+  }, [serverReady]);
 
   // ============================================================
-  // Автозапуск сервера и запрос IP при старте в режиме host
+  // Bootstrap: проверить режим → запустить сервер (если host) →
+  // дождаться /health → установить serverReady
   // ============================================================
   useEffect(() => {
-    if (mode !== 'host') return;
+    if (!mode) return;
 
     let cancelled = false;
 
     (async () => {
-      console.log('[app] Режим host — проверяю сервер...');
+      setServerError(null);
 
       try {
-        const statusRes = await fetch('/api/server/status');
-        const status = await statusRes.json();
-        console.log('[app] Текущий статус:', status);
+        if (mode === 'host') {
+          console.log('[app] Режим host — проверяю сервер...');
 
-        if (!status.running && !status.starting && !cancelled) {
-          console.log('[app] Сервер не запущен — запускаю...');
-          const startRes = await fetch('/api/server/start', {
-            method: 'POST',
-          });
-          const startData = await startRes.json();
-          console.log('[app] Результат запуска:', startData);
+          // 1. Пробуем /health напрямую — может быть, уже запущен
+          const alreadyUp = await waitForServer('localhost', 3001, 1500);
 
-          if (!startData.ok) {
-            console.error('[app] Ошибка запуска:', startData.error);
-          } else {
-            const ready = await waitForServer('localhost', 3001, 15000);
-            console.log('[app] Сервер готов:', ready);
+          if (!alreadyUp) {
+            // 2. Прибиваем возможный зависший процесс
+            try {
+              await fetch('/api/server/stop', { method: 'POST' });
+            } catch {
+              /* ignore */
+            }
+
+            // 3. Запускаем
+            const startRes = await fetch('/api/server/start', {
+              method: 'POST',
+            });
+            const startData = await startRes.json();
+            if (!startData.ok) {
+              throw new Error(startData.error || 'Server start failed');
+            }
+
+            // 4. Ждём готовности до 30 сек
+            const ready = await waitForServer('localhost', 3001, 30000);
+            if (!ready) throw new Error('Сервер не отвечает (/health)');
           }
-        } else if (status.running) {
-          console.log('[app] Сервер уже запущен');
-        } else if (status.starting) {
-          console.log('[app] Сервер уже запускается — жду...');
-          await waitForServer('localhost', 3001, 15000);
-        }
-      } catch (e) {
-        console.error('[app] Не удалось запустить сервер:', e);
-      }
 
-      try {
-        const ipRes = await fetch('/api/server/ip');
-        const ipData = await ipRes.json();
-        if (ipData.ip && !cancelled) {
-          window.localStorage.setItem(LOCAL_IP_KEY, ipData.ip);
-          console.log('[app] Локальный IP:', ipData.ip);
+          if (cancelled) return;
+
+          // 5. Забираем локальный IP
+          try {
+            const ipRes = await fetch('/api/server/ip');
+            const ipData = await ipRes.json();
+            if (ipData.ip) {
+              window.localStorage.setItem(LOCAL_IP_KEY, ipData.ip);
+              console.log('[app] Локальный IP:', ipData.ip);
+            }
+          } catch (e) {
+            console.warn('[app] Не удалось получить IP:', e);
+          }
+
+          if (!cancelled) setServerReady(true);
+        } else {
+          // ---------- CLIENT ----------
+          const hostIp = window.localStorage.getItem(HOST_IP_KEY);
+          if (!hostIp || !hostIp.trim()) {
+            throw new Error('Не указан IP хоста. Смените режим.');
+          }
+
+          console.log('[app] Режим client — проверяю хост', hostIp);
+
+          const ready = await waitForServer(hostIp.trim(), 3001, 20000);
+          if (!ready) {
+            throw new Error(`Хост ${hostIp}:3001 недоступен`);
+          }
+
+          if (!cancelled) setServerReady(true);
         }
       } catch (e) {
-        console.warn('[app] Не удалось получить IP:', e);
+        if (!cancelled) {
+          console.error('[app] Bootstrap failed:', e);
+          setServerError(e instanceof Error ? e.message : String(e));
+        }
       }
     })();
 
@@ -160,6 +202,9 @@ export default function App() {
     };
   }, [mode]);
 
+  // ============================================================
+  // Посещённые роли (для кеширования страниц)
+  // ============================================================
   useEffect(() => {
     if (role) {
       setVisited((prev) => {
@@ -171,6 +216,9 @@ export default function App() {
     }
   }, [role]);
 
+  // ============================================================
+  // Онлайн/офлайн
+  // ============================================================
   useEffect(() => {
     const onOnline = () => setIsOnline(true);
     const onOffline = () => setIsOnline(false);
@@ -209,6 +257,32 @@ export default function App() {
 
   const hostIp = window.localStorage.getItem(HOST_IP_KEY) ?? '';
   const localIp = window.localStorage.getItem(LOCAL_IP_KEY) ?? '';
+
+  // ============================================================
+  // ЭКРАН 1.5: СПЛЕШ — пока сервер не готов
+  // ============================================================
+  if (!serverReady) {
+    return (
+      <BootstrapScreen
+        mode={mode}
+        error={serverError}
+        isOnline={isOnline}
+        clientsCount={clientsCount}
+        lang={lang}
+        setLang={setLang}
+        onRetry={() => {
+          setServerError(null);
+          setServerReady(false);
+          window.location.reload();
+        }}
+        onChangeMode={() => {
+          window.localStorage.removeItem(MODE_KEY);
+          window.localStorage.removeItem(HOST_IP_KEY);
+          window.location.reload();
+        }}
+      />
+    );
+  }
 
   // ============================================================
   // ЭКРАН 2: ВЫБОР РОЛИ
@@ -362,6 +436,14 @@ function ModeSelectionScreen({
     setError(null);
 
     try {
+      // 1. Прибиваем возможный старый процесс
+      try {
+        await fetch('/api/server/stop', { method: 'POST' });
+      } catch {
+        /* ignore */
+      }
+
+      // 2. Запускаем
       const res = await fetch('/api/server/start', { method: 'POST' });
       const data = await res.json();
 
@@ -371,13 +453,15 @@ function ModeSelectionScreen({
         return;
       }
 
-      const ready = await waitForServer('localhost', 3001, 10000);
+      // 3. Ждём готовности
+      const ready = await waitForServer('localhost', 3001, 30000);
       if (!ready) {
         setError(t('serverStartTimeout'));
         setStarting(false);
         return;
       }
 
+      // 4. IP
       try {
         const ipRes = await fetch('/api/server/ip');
         const ipData = await ipRes.json();
@@ -628,6 +712,122 @@ function ModeSelectionScreen({
               >
                 {t('continueBtn')}
               </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <footer className="flex items-center justify-between gap-3 px-4 py-2.5 bg-white border-t border-gray-200 shrink-0 shadow-sm">
+        <div className="flex items-center gap-3">
+          <ClientsBadge count={clientsCount} isOnline={isOnline} />
+          <DateLabel lang={lang} />
+        </div>
+        <div className="flex items-center gap-2">
+          {languages.length > 1 && (
+            <LanguageSwitcher lang={lang} setLang={setLang} />
+          )}
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+// ============================================================
+// СПЛЕШ: запуск сервера
+// ============================================================
+function BootstrapScreen({
+  mode,
+  error,
+  isOnline,
+  clientsCount,
+  lang,
+  setLang,
+  onRetry,
+  onChangeMode,
+}: {
+  mode: Mode;
+  error: string | null;
+  isOnline: boolean;
+  clientsCount: number;
+  lang: Lang;
+  setLang: (l: Lang) => void;
+  onRetry: () => void;
+  onChangeMode: () => void;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <div className="h-dvh bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200 flex flex-col">
+      <div className="flex-1 flex flex-col items-center justify-center p-6">
+        <div className="flex items-center gap-4 mb-10">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-lg shadow-orange-500/30">
+            <UtensilsCrossed className="w-9 h-9 text-white" />
+          </div>
+          <div>
+            <h1 className="text-3xl font-black tracking-tight text-gray-900">
+              {t('appName')}
+            </h1>
+            <p className="text-sm text-gray-500 font-medium mt-0.5">
+              {mode === 'host'
+                ? t('startingServer')
+                : t('connectingToHost')}
+            </p>
+          </div>
+        </div>
+
+        {!error && (
+          <div className="flex flex-col items-center gap-4">
+            <div className="w-12 h-12 border-4 border-orange-500/30 border-t-orange-500 rounded-full animate-spin" />
+            <p className="text-sm text-gray-500 font-medium text-center max-w-sm">
+              {mode === 'host'
+                ? t('serverBootHint')
+                : t('clientBootHint')}
+            </p>
+          </div>
+        )}
+
+        {error && (
+          <div className="w-full max-w-md">
+            <div className="p-5 bg-red-50 border-2 border-red-300 rounded-2xl text-left">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                </div>
+                <div className="flex-1">
+                  <div className="text-base font-black text-red-800 mb-1">
+                    {t('serverStartFailed')}
+                  </div>
+                  <p className="text-xs text-red-700 leading-snug break-all">
+                    {error}
+                  </p>
+                </div>
+              </div>
+
+              {mode === 'host' && (
+                <div className="mt-3 p-3 bg-white rounded-lg text-[11px] text-gray-600 leading-snug">
+                  <div className="font-bold text-gray-700 mb-1">
+                    {t('checkInTerminal')}:
+                  </div>
+                  <div className="font-mono text-[10px] text-gray-500">
+                    [pos-server] ...
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 mt-4">
+                <button
+                  onClick={onChangeMode}
+                  className="flex-1 py-2.5 rounded-xl bg-white border border-red-300 hover:bg-red-100 text-red-700 text-sm font-bold"
+                >
+                  {t('changeMode')}
+                </button>
+                <button
+                  onClick={onRetry}
+                  className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold shadow-md shadow-orange-500/30"
+                >
+                  {t('retry')}
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, memo } from 'react';
 import {
   fetchAllMenuItems,
   createItem,
@@ -12,6 +12,14 @@ import {
 } from '@/services/menu';
 import { formatYen } from '@/locale/format';
 import { useI18n, type TranslationKey } from '@/locale';
+import { Resizer } from '@/components/Resizer';
+import { PanelSettings } from '@/components/PanelSettings';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import {
+  useLayoutSettings,
+  clampLayout,
+  snapValue,
+} from '@/lib/layoutSettings';
 import type {
   MenuItem,
   MenuItemType,
@@ -30,8 +38,6 @@ import {
   CupSoda,
   Droplet,
   Sparkles,
-  GripVertical,
-  Search,
 } from 'lucide-react';
 
 export function MenuProduct() {
@@ -42,10 +48,18 @@ export function MenuProduct() {
   const [pickingType, setPickingType] = useState(false);
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [formType, setFormType] = useState<MenuItemType | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+
+  const [pendingDelete, setPendingDelete] = useState<MenuItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const dragId = useRef<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dragOverSlot, setDragOverSlot] = useState<{
+    type: MenuItemType;
+    slot: number;
+  } | null>(null);
+
+  const [layout, setLayout] = useLayoutSettings();
+  const drinksWrapRef = useRef<HTMLDivElement>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -79,40 +93,14 @@ export function MenuProduct() {
     dragId.current = id;
   };
 
-  const handleDragOver = (id: string, e: React.DragEvent) => {
-    e.preventDefault();
-    if (dragId.current && dragId.current !== id) {
-      setDragOverId(id);
-    }
-  };
-
-  const handleDragLeave = () => {
-    setDragOverId(null);
-  };
-
-  const handleDrop = async (targetId: string, type: MenuItemType) => {
-    const fromId = dragId.current;
+  const handleDragEnd = () => {
     dragId.current = null;
-    setDragOverId(null);
-    if (!fromId || fromId === targetId) return;
+    setDragOverSlot(null);
+  };
 
-    const sameType = items
-      .filter((i) => i.type === type && !i.parent_id)
-      .sort((a, b) => a.sort_order - b.sort_order);
-
-    const fromIdx = sameType.findIndex((i) => i.id === fromId);
-    const toIdx = sameType.findIndex((i) => i.id === targetId);
-    if (fromIdx === -1 || toIdx === -1) return;
-
-    const reordered = [...sameType];
-    const [moved] = reordered.splice(fromIdx, 1);
-    reordered.splice(toIdx, 0, moved);
-
-    const updates = reordered.map((it, i) => ({
-      id: it.id,
-      sort_order: i,
-    }));
-
+  const applyReorder = async (
+    updates: { id: string; sort_order: number }[]
+  ) => {
     const updateMap = new Map(updates.map((u) => [u.id, u.sort_order]));
     setItems((prev) =>
       prev.map((it) => {
@@ -123,9 +111,79 @@ export function MenuProduct() {
 
     try {
       await reorderItems(updates);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'reorder failed');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'reorder failed');
       loadData();
+    }
+  };
+
+  /**
+   * Windows-desktop-style drop.
+   *   - Пустая ячейка → карточка просто переезжает, старая ячейка становится пустой
+   *   - Занятая ячейка → карточка вставляется, все карточки в диапазоне (from..to)
+   *     сдвигаются на одну позицию
+   */
+  const handleSlotDrop = async (type: MenuItemType, targetSlot: number) => {
+    const fromId = dragId.current;
+    dragId.current = null;
+    setDragOverSlot(null);
+    if (!fromId) return;
+
+    const fromItem = items.find((i) => i.id === fromId);
+    if (!fromItem) return;
+    if (fromItem.type !== type) return;
+    if (fromItem.sort_order === targetSlot) return;
+
+    const fromSlot = fromItem.sort_order;
+
+    const targetCard = items.find(
+      (i) =>
+        i.type === type &&
+        !i.parent_id &&
+        i.sort_order === targetSlot &&
+        i.id !== fromId
+    );
+
+    if (!targetCard) {
+      await applyReorder([{ id: fromItem.id, sort_order: targetSlot }]);
+      return;
+    }
+
+    const sameType = items.filter((i) => i.type === type && !i.parent_id);
+
+    const updates: { id: string; sort_order: number }[] = [];
+
+    if (fromSlot < targetSlot) {
+      for (const it of sameType) {
+        if (it.id === fromItem.id) continue;
+        if (it.sort_order > fromSlot && it.sort_order <= targetSlot) {
+          updates.push({ id: it.id, sort_order: it.sort_order - 1 });
+        }
+      }
+    } else {
+      for (const it of sameType) {
+        if (it.id === fromItem.id) continue;
+        if (it.sort_order >= targetSlot && it.sort_order < fromSlot) {
+          updates.push({ id: it.id, sort_order: it.sort_order + 1 });
+        }
+      }
+    }
+
+    updates.push({ id: fromItem.id, sort_order: targetSlot });
+    await applyReorder(updates);
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    try {
+      await deleteItem(pendingDelete.id);
+      setPendingDelete(null);
+      loadData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('failedToDeleteItem'));
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -147,14 +205,205 @@ export function MenuProduct() {
       .sort((a, b) => a.sort_order - b.sort_order),
   };
 
-  const filterBySearch = (arr: MenuItem[]) =>
-    searchQuery
-      ? arr.filter(
-          (i) =>
-            i.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            i.short_name.toLowerCase().includes(searchQuery.toLowerCase())
-        )
-      : arr;
+  // ============================================================
+  // RESIZE HANDLERS
+  // ============================================================
+  const startLayoutRef = useRef<typeof layout | null>(null);
+
+  const beginResize = () => {
+    startLayoutRef.current = { ...layout };
+  };
+
+  const endResize = () => {
+    setLayout((prev) => ({
+      ...prev,
+      ordersWidth: clampLayout(
+        'ordersWidth',
+        snapValue(prev.ordersWidth, [208, 260, 320], 12)
+      ),
+      menuRightWidth: clampLayout(
+        'menuRightWidth',
+        snapValue(prev.menuRightWidth, [160, 200, 240, 300], 12)
+      ),
+      cartWidth: clampLayout(
+        'cartWidth',
+        snapValue(prev.cartWidth, [280, 320, 400, 480], 16)
+      ),
+      toppingsHeight: clampLayout(
+        'toppingsHeight',
+        snapValue(prev.toppingsHeight, [120, 180, 260, 360], 20)
+      ),
+      drinksShare: clampLayout(
+        'drinksShare',
+        snapValue(prev.drinksShare, [30, 50, 70], 8)
+      ),
+    }));
+    startLayoutRef.current = null;
+  };
+
+  const handleResizeOrders = (totalDelta: number) => {
+    const base = startLayoutRef.current ?? layout;
+    setLayout((prev) => ({
+      ...prev,
+      ordersWidth: clampLayout('ordersWidth', base.ordersWidth + totalDelta),
+    }));
+  };
+
+  const handleResizeMenuRight = (totalDelta: number) => {
+    const base = startLayoutRef.current ?? layout;
+    setLayout((prev) => ({
+      ...prev,
+      menuRightWidth: clampLayout(
+        'menuRightWidth',
+        base.menuRightWidth - totalDelta
+      ),
+    }));
+  };
+
+  const handleResizeCart = (totalDelta: number) => {
+    const base = startLayoutRef.current ?? layout;
+    setLayout((prev) => ({
+      ...prev,
+      cartWidth: clampLayout('cartWidth', base.cartWidth - totalDelta),
+    }));
+  };
+
+  const handleResizeToppings = (totalDelta: number) => {
+    const base = startLayoutRef.current ?? layout;
+    setLayout((prev) => ({
+      ...prev,
+      toppingsHeight: clampLayout(
+        'toppingsHeight',
+        base.toppingsHeight - totalDelta
+      ),
+    }));
+  };
+
+  const handleResizeDrinks = (totalDelta: number) => {
+    const base = startLayoutRef.current ?? layout;
+    const containerH = drinksWrapRef.current?.clientHeight ?? 400;
+    const pctDelta = (totalDelta / containerH) * 100;
+    setLayout((prev) => ({
+      ...prev,
+      drinksShare: clampLayout('drinksShare', base.drinksShare + pctDelta),
+    }));
+  };
+
+  // ============================================================
+  // GRID RENDER
+  // ============================================================
+  const renderGrid = (type: MenuItemType, size: number, compact: boolean) => {
+    const typeItems = grouped[type];
+    const maxSlot =
+      typeItems.length > 0 ? Math.max(...typeItems.map((i) => i.sort_order)) : -1;
+    const totalSlots = Math.max(12, maxSlot + 4);
+
+    const bySlot = new Map<number, MenuItem>();
+    for (const it of typeItems) bySlot.set(it.sort_order, it);
+
+    const slots: { slot: number; card: MenuItem | null }[] = [];
+    for (let i = 0; i < totalSlots; i++) {
+      slots.push({ slot: i, card: bySlot.get(i) ?? null });
+    }
+
+    // Ширина ячейки = максимальная ширина среди карточек + отступы
+    let maxW = size + 20;
+    for (const it of typeItems) {
+      let variants: MenuItem[] | undefined;
+      if (it.type === 'dish' && it.dish_kind === 'group') {
+        variants = it.variants;
+      } else if (it.type === 'set' && it.set_main?.dish_kind === 'group') {
+        variants = it.set_main.variants;
+      }
+      if (variants && variants.length > 0) {
+        const gW = 8 * 2 + size * variants.length + 6 * (variants.length - 1);
+        maxW = Math.max(maxW, gW);
+      }
+    }
+    const cellW = maxW + 20;
+    const cellH = compact ? size + 50 : size + 90;
+
+    return (
+      <div
+        className="grid gap-3"
+        style={{
+          gridTemplateColumns: `repeat(auto-fill, ${cellW}px)`,
+          gridAutoRows: `${cellH}px`,
+        }}
+      >
+        {slots.map(({ slot, card }) => {
+          const isDragOver =
+            dragOverSlot?.type === type && dragOverSlot?.slot === slot;
+
+          let variants: MenuItem[] | undefined;
+          if (card) {
+            if (card.type === 'dish' && card.dish_kind === 'group') {
+              variants = card.variants;
+            } else if (
+              card.type === 'set' &&
+              card.set_main?.dish_kind === 'group'
+            ) {
+              variants = card.set_main.variants;
+            }
+          }
+
+          return (
+            <div
+              key={slot}
+              data-slot={slot}
+              onDragOver={(e) => {
+                if (!dragId.current) return;
+                e.preventDefault();
+                if (
+                  dragOverSlot?.type !== type ||
+                  dragOverSlot?.slot !== slot
+                ) {
+                  setDragOverSlot({ type, slot });
+                }
+              }}
+              onDragLeave={() => {
+                if (
+                  dragOverSlot?.type === type &&
+                  dragOverSlot?.slot === slot
+                ) {
+                  setDragOverSlot(null);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleSlotDrop(type, slot);
+              }}
+              className={`flex items-center justify-center rounded-xl transition-all ${
+                isDragOver
+                  ? 'ring-4 ring-orange-400 ring-offset-2 bg-orange-50'
+                  : ''
+              }`}
+            >
+              {card ? (
+                <DraggableCard
+                  item={card}
+                  variants={variants}
+                  onEdit={startEdit}
+                  onVariantClick={(v) => {
+                    if (card.type === 'dish') startEdit(v);
+                    else startEdit(card);
+                  }}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
+                  size={size}
+                  textSize={layout.itemTextSize}
+                  compact={compact}
+                />
+              ) : (
+                <div className="w-full h-full border-2 border-dashed border-gray-200 rounded-xl pointer-events-none" />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
 
   if (loading) {
     return (
@@ -164,22 +413,9 @@ export function MenuProduct() {
     );
   }
 
-  // Список для левой панели: dish + set
   const leftList: { item: MenuItem; kind: 'dish' | 'set' }[] = [
-    ...filterBySearch(grouped.dish).map((i) => ({
-      item: i,
-      kind: 'dish' as const,
-    })),
-    ...filterBySearch(grouped.set).map((i) => ({
-      item: i,
-      kind: 'set' as const,
-    })),
-  ];
-
-  // Список для центра: dish + set
-  const bludiAndSet: MenuItem[] = [
-    ...filterBySearch(grouped.dish),
-    ...filterBySearch(grouped.set),
+    ...grouped.dish.map((i) => ({ item: i, kind: 'dish' as const })),
+    ...grouped.set.map((i) => ({ item: i, kind: 'set' as const })),
   ];
 
   return (
@@ -194,10 +430,13 @@ export function MenuProduct() {
       )}
 
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* ============ COLUMN 1: PRODUCTS LIST ============ */}
-        <div className="w-56 lg:w-64 xl:w-72 shrink-0 bg-white border-r border-gray-200 flex flex-col min-h-0">
-          <div className="px-3 py-2 border-b border-gray-200 shrink-0">
-            <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">
+        {/* ---- COLUMN 1: PRODUCTS LIST ---- */}
+        <div
+          className="shrink-0 bg-white border-r-2 border-gray-300 flex flex-col min-h-0"
+          style={{ width: layout.ordersWidth }}
+        >
+          <div className="px-3 py-2 border-b-2 border-blue-300 shrink-0 bg-blue-50">
+            <h2 className="text-[11px] font-bold text-blue-800 uppercase tracking-wider border-l-4 border-blue-500 pl-2">
               {t('productsByCategory')}
             </h2>
           </div>
@@ -228,158 +467,142 @@ export function MenuProduct() {
                   </span>
                 </div>
                 <div className="text-[10px] text-gray-500 mt-0.5">
-                  {item.free ? t('free') : formatYen(item.price)}
+                  {item.free ? '' : formatYen(item.price)}
                 </div>
               </button>
             ))}
           </div>
         </div>
 
-        {/* ============ COLUMN 2: BLUDI + SET + TOPPINGS ============ */}
-        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-50">
-          {/* Search */}
-          <div className="px-3 py-2 bg-white border-b border-gray-200 shrink-0">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t('searchMenu')}
-                className="w-full bg-white border-2 border-gray-300 rounded-xl pl-9 pr-9 py-1.5 text-xs text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg active:bg-gray-100"
-                >
-                  <X className="w-3.5 h-3.5 text-gray-400" />
-                </button>
-              )}
-            </div>
-          </div>
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeOrders}
+          onEnd={endResize}
+        />
 
+        {/* ---- COLUMN 2: BLUDI + SET + TOPPINGS ---- */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-50">
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
-            <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2">
-              {t('bludiAndSet')} · {t('dragHintShort')}
-            </h3>
-            {bludiAndSet.length === 0 ? (
+            <div className="mb-2 px-2 py-1 rounded-md bg-orange-100 border-l-4 border-orange-500">
+              <h3 className="text-[10px] font-black text-orange-800 uppercase tracking-widest">
+                {t('bludiAndSet')} · {t('dragHintShort')}
+              </h3>
+            </div>
+            {items.filter(
+              (i) =>
+                (i.type === 'dish' || i.type === 'set') && !i.parent_id
+            ).length === 0 ? (
               <div className="text-center text-gray-400 text-sm mt-12">
-                {searchQuery ? t('noResults') : t('noMenuItems')}
+                {t('noMenuItems')}
               </div>
             ) : (
-              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2.5">
-                {bludiAndSet.map((item) => (
-                  <DraggableCard
-                    key={item.id}
-                    item={item}
-                    onEdit={startEdit}
-                    onDragStart={handleDragStart}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(id) => handleDrop(id, item.type)}
-                    isDragOver={dragOverId === item.id}
-                  />
-                ))}
-              </div>
+              <>
+                {grouped.dish.length > 0 && (
+                  <div className="mb-4">
+                    {renderGrid('dish', layout.dishCardSize, false)}
+                  </div>
+                )}
+                {grouped.set.length > 0 && (
+                  <div className="mb-3">
+                    {renderGrid('set', layout.dishCardSize, false)}
+                  </div>
+                )}
+              </>
             )}
           </div>
 
-          {/* Toppings */}
           {grouped.topping.length > 0 && (
-            <div className="shrink-0 border-t border-gray-200 bg-white px-3 py-2">
-              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5">
-                {t('type_topping')}
-              </h3>
-              <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
-                {grouped.topping.map((tp) => (
-                  <DraggableCard
-                    key={tp.id}
-                    item={tp}
-                    onEdit={startEdit}
-                    onDragStart={handleDragStart}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(id) => handleDrop(id, 'topping')}
-                    isDragOver={dragOverId === tp.id}
-                    compact
-                  />
-                ))}
+            <>
+              <Resizer
+                direction="horizontal"
+                onStart={beginResize}
+                onResize={handleResizeToppings}
+                onEnd={endResize}
+              />
+              <div
+                className="shrink-0 bg-white px-3 py-2 overflow-hidden border-t-2 border-purple-300"
+                style={{ height: layout.toppingsHeight }}
+              >
+                <h3 className="text-[10px] font-black text-purple-800 uppercase tracking-widest mb-1.5 border-l-4 border-purple-500 pl-2">
+                  {t('type_topping')}
+                </h3>
+                <div className="overflow-y-auto h-[calc(100%-20px)]">
+                  {renderGrid('topping', layout.toppingCardSize, true)}
+                </div>
               </div>
-            </div>
+            </>
           )}
         </div>
 
-        {/* ============ COLUMN 3: DRINKS + SAUCES ============ */}
-        <div className="w-40 lg:w-48 xl:w-56 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
-          {/* Drinks */}
-          <div className="flex-1 min-h-0 flex flex-col border-b border-gray-200">
-            <div className="px-3 py-2 border-b border-gray-100 shrink-0">
-              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeMenuRight}
+          onEnd={endResize}
+        />
+
+        {/* ---- COLUMN 3: DRINKS + SAUCES ---- */}
+        <div
+          ref={drinksWrapRef}
+          className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
+          style={{ width: layout.menuRightWidth }}
+        >
+          <div
+            className="flex flex-col border-b-2 border-cyan-300"
+            style={{ height: `${layout.drinksShare}%` }}
+          >
+            <div className="px-3 py-2 border-b-2 border-cyan-300 shrink-0 bg-cyan-50">
+              <h3 className="text-[10px] font-black text-cyan-800 uppercase tracking-widest border-l-4 border-cyan-500 pl-2">
                 {t('type_drink')}
               </h3>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
               {grouped.drink.length === 0 ? (
-                <p className="text-[10px] text-gray-400 text-center py-3">
+                <p className="text-[10px] text-gray-400 text-center w-full py-3">
                   —
                 </p>
               ) : (
-                <div className="grid grid-cols-2 gap-1.5">
-                  {grouped.drink.map((d) => (
-                    <DraggableCard
-                      key={d.id}
-                      item={d}
-                      onEdit={startEdit}
-                      onDragStart={handleDragStart}
-                      onDragOver={handleDragOver}
-                      onDragLeave={handleDragLeave}
-                      onDrop={(id) => handleDrop(id, 'drink')}
-                      isDragOver={dragOverId === d.id}
-                      compact
-                    />
-                  ))}
-                </div>
+                renderGrid('drink', layout.drinkCardSize, true)
               )}
             </div>
           </div>
 
-          {/* Sauces */}
+          <Resizer
+            direction="horizontal"
+            onStart={beginResize}
+            onResize={handleResizeDrinks}
+            onEnd={endResize}
+          />
+
           <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-3 py-2 border-b border-gray-100 shrink-0">
-              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
+            <div className="px-3 py-2 border-b-2 border-red-300 shrink-0 bg-red-50">
+              <h3 className="text-[10px] font-black text-red-800 uppercase tracking-widest border-l-4 border-red-500 pl-2">
                 {t('type_sauce')}
               </h3>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
               {grouped.sauce.length === 0 ? (
-                <p className="text-[10px] text-gray-400 text-center py-3">
+                <p className="text-[10px] text-gray-400 text-center w-full py-3">
                   —
                 </p>
               ) : (
-                <div className="grid grid-cols-2 gap-1.5">
-                  {grouped.sauce.map((s) => (
-                    <DraggableCard
-                      key={s.id}
-                      item={s}
-                      onEdit={startEdit}
-                      onDragStart={handleDragStart}
-                      onDragOver={handleDragOver}
-                      onDragLeave={handleDragLeave}
-                      onDrop={(id) => handleDrop(id, 'sauce')}
-                      isDragOver={dragOverId === s.id}
-                      compact
-                    />
-                  ))}
-                </div>
+                renderGrid('sauce', layout.sauceCardSize, true)
               )}
             </div>
           </div>
         </div>
 
-        {/* ============ COLUMN 4: ADD BUTTON + EMPTY ============ */}
-        <div className="w-44 lg:w-52 xl:w-60 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
-          <div className="p-3 shrink-0 border-b border-gray-200">
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeCart}
+          onEnd={endResize}
+        />
+
+        {/* ---- COLUMN 4: ADD BUTTON + PANEL SETTINGS ---- */}
+        <div
+          className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
+          style={{ width: layout.cartWidth }}
+        >
+          <div className="p-3 border-b-2 border-gray-300 shrink-0 bg-gray-50">
             <button
               onClick={() => setPickingType(true)}
               className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-xs font-black shadow-md shadow-orange-500/20 active:scale-[0.97] transition-all"
@@ -388,7 +611,9 @@ export function MenuProduct() {
               {t('addProduct')}
             </button>
           </div>
-          <div className="flex-1 min-h-0" />
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <PanelSettings />
+          </div>
         </div>
       </div>
 
@@ -415,23 +640,33 @@ export function MenuProduct() {
           }}
           onDelete={
             editingItem
-              ? async () => {
-                  if (!confirm(t('deleteItemConfirm'))) return;
-                  try {
-                    await deleteItem(editingItem.id);
-                    setFormType(null);
-                    setEditingItem(null);
-                    loadData();
-                  } catch (e) {
-                    setError(
-                      e instanceof Error ? e.message : t('failedToDeleteItem')
-                    );
-                  }
+              ? () => {
+                  setPendingDelete(editingItem);
+                  setFormType(null);
+                  setEditingItem(null);
                 }
               : undefined
           }
         />
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={t('deleteItemConfirm')}
+        message={
+          pendingDelete
+            ? `${t('deleteProductMessage')}: "${pendingDelete.name}"?`
+            : ''
+        }
+        confirmLabel={deleting ? t('deleting') : t('delete')}
+        cancelLabel={t('cancel')}
+        variant="red"
+        onConfirm={confirmDelete}
+        onCancel={() => {
+          if (deleting) return;
+          setPendingDelete(null);
+        }}
+      />
     </div>
   );
 }
@@ -439,103 +674,187 @@ export function MenuProduct() {
 // ============================================================
 // DRAGGABLE CARD
 // ============================================================
-function DraggableCard({
+const DraggableCard = memo(function DraggableCard({
   item,
+  variants,
   onEdit,
+  onVariantClick,
   onDragStart,
-  onDragOver,
-  onDragLeave,
-  onDrop,
-  isDragOver,
+  onDragEnd,
+  size,
+  textSize,
   compact,
 }: {
   item: MenuItem;
+  variants?: MenuItem[];
   onEdit: (i: MenuItem) => void;
+  onVariantClick?: (v: MenuItem) => void;
   onDragStart: (id: string) => void;
-  onDragOver: (id: string, e: React.DragEvent) => void;
-  onDragLeave: () => void;
-  onDrop: (id: string) => void;
-  isDragOver: boolean;
+  onDragEnd: () => void;
+  size: number;
+  textSize: number;
   compact?: boolean;
 }) {
-  const isGroup =
-    item.dish_kind === 'group' && (item.variants?.length ?? 0) > 0;
-  const displayImage =
-    item.image_url ??
-    (isGroup ? item.variants?.[0]?.image_url ?? null : null);
-  const displayPrice = isGroup
-    ? item.variants?.[0]?.price ?? 0
-    : item.price;
+  const isGroup = (variants?.length ?? 0) > 0;
+  const nameSize = compact ? Math.max(8, textSize - 2) : textSize;
+  const priceSize = compact ? Math.max(8, textSize - 2) : textSize;
 
-  const textSize = compact ? 'text-[10px]' : 'text-xs';
-
-  return (
-    <div
-      draggable
-      onDragStart={() => onDragStart(item.id)}
-      onDragOver={(e) => onDragOver(item.id, e)}
-      onDragLeave={onDragLeave}
-      onDrop={() => onDrop(item.id)}
-      onClick={() => onEdit(item)}
-      className={`group relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 transition-all cursor-pointer select-none active:scale-95 ${
-        isDragOver
-          ? 'border-purple-500 ring-4 ring-purple-300 scale-105'
-          : 'border-gray-200 hover:border-orange-400'
-      }`}
-    >
-      {displayImage && (
-        <>
-          <img
-            src={displayImage}
-            alt={item.name}
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-            loading="lazy"
-            draggable={false}
-          />
-          <div className="absolute inset-0 bg-black/45" />
-        </>
-      )}
-      {!item.active && (
-        <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-          <span className="text-white text-[10px] font-black uppercase tracking-widest">
-            inactive
-          </span>
-        </div>
-      )}
-      {item.type === 'set' && (
-        <div className="absolute top-1 left-1 bg-orange-600 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full shadow">
-          SET
-        </div>
-      )}
-      {isGroup && (
-        <div className="absolute top-1 left-1 bg-purple-600 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full shadow">
-          {item.variants!.length}
-        </div>
-      )}
-      {item.type === 'sauce' && item.color && (
+  // ============ SINGLE ============
+  if (!isGroup) {
+    const nameAndPrice = (
+      <>
         <div
-          className="absolute top-1 right-1 w-4 h-4 rounded-full border border-white shadow"
-          style={{ backgroundColor: item.color }}
-        />
-      )}
-      <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-white/90 text-gray-700 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow">
-        <GripVertical className="w-3 h-3" />
-      </div>
-      <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1 pointer-events-none">
-        <div
-          className={`${textSize} font-black text-white leading-tight drop-shadow line-clamp-2`}
+          className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
+          style={{ fontSize: nameSize }}
+          title={item.name}
         >
           {item.short_name || item.name}
         </div>
         <div
-          className={`${textSize} font-black text-yellow-300 mt-1 drop-shadow`}
+          className="text-center font-black text-orange-600 w-full px-0.5"
+          style={{ fontSize: priceSize }}
         >
-          {item.free ? '0' : formatYen(displayPrice)}
+          {item.free ? '' : formatYen(item.price)}
         </div>
+      </>
+    );
+
+    const square = (
+      <div
+        className="relative rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 border-gray-300 hover:border-orange-400 transition-all"
+        style={{ width: size, height: size }}
+      >
+        {item.image_url ? (
+          <>
+            <img
+              src={item.image_url}
+              alt={item.name}
+              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+              loading="lazy"
+              draggable={false}
+            />
+            <div className="absolute inset-0 bg-black/40" />
+          </>
+        ) : null}
+        {!item.active && (
+          <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+            <span
+              className="text-white font-black uppercase tracking-widest"
+              style={{ fontSize: Math.max(8, nameSize - 2) }}
+            >
+              inactive
+            </span>
+          </div>
+        )}
+        {item.type === 'sauce' && item.color && (
+          <div
+            className="absolute inset-0"
+            style={{ backgroundColor: item.color, opacity: 0.3 }}
+          />
+        )}
+      </div>
+    );
+
+    return (
+      <div
+        draggable
+        data-card-id={item.id}
+        onDragStart={() => onDragStart(item.id)}
+        onDragEnd={onDragEnd}
+        onClick={() => onEdit(item)}
+        style={{ width: size }}
+        className="flex flex-col items-center select-none cursor-grab active:cursor-grabbing"
+      >
+        {square}
+        {nameAndPrice}
+      </div>
+    );
+  }
+
+  // ============ GROUP ============
+  const gap = 6;
+  const pad = 8;
+  const headerH = nameSize + 12;
+  const cardH = size + nameSize * 2 + 8;
+  const groupW =
+    pad * 2 + size * variants!.length + gap * (variants!.length - 1);
+
+  return (
+    <div
+      draggable
+      data-card-id={item.id}
+      onDragStart={() => onDragStart(item.id)}
+      onDragEnd={onDragEnd}
+      style={{ width: groupW, minHeight: headerH + cardH + pad * 2 }}
+      className="rounded-xl border-2 border-gray-400 bg-white transition-all select-none cursor-grab active:cursor-grabbing hover:border-orange-400"
+    >
+      <button
+        onClick={() => onEdit(item)}
+        className="flex items-center justify-between w-full px-2 py-1 border-b border-gray-200 bg-gray-50 rounded-t-lg hover:bg-orange-50 transition-colors"
+      >
+        <span
+          className="font-black text-gray-900 uppercase tracking-wide truncate text-left"
+          style={{ fontSize: nameSize }}
+        >
+          {item.name}
+        </span>
+        {item.type === 'set' && (
+          <span
+            className="font-black bg-orange-500 text-white px-1.5 py-0.5 rounded-full shrink-0 ml-1"
+            style={{ fontSize: Math.max(7, nameSize - 3) }}
+          >
+            SET
+          </span>
+        )}
+      </button>
+
+      <div className="flex items-start" style={{ gap, padding: pad }}>
+        {variants!.map((v) => (
+          <div
+            key={v.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onVariantClick) onVariantClick(v);
+              else onEdit(v);
+            }}
+            style={{ width: size }}
+            className="flex flex-col items-center cursor-pointer active:scale-95 transition-transform"
+          >
+            <div
+              className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 bg-gradient-to-br from-orange-500 to-red-500 transition-all"
+              style={{ width: size, height: size }}
+            >
+              {(v.image_url || item.image_url) && (
+                <>
+                  <img
+                    src={v.image_url || item.image_url || ''}
+                    alt={v.name}
+                    className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                    loading="lazy"
+                    draggable={false}
+                  />
+                  <div className="absolute inset-0 bg-black/40" />
+                </>
+              )}
+            </div>
+            <div
+              className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
+              style={{ fontSize: nameSize }}
+            >
+              {v.name}
+            </div>
+            <div
+              className="text-center font-black text-orange-600 w-full px-0.5"
+              style={{ fontSize: priceSize }}
+            >
+              {v.free ? '' : formatYen(v.price)}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
-}
+});
 
 // ============================================================
 // TYPE PICKER
@@ -549,34 +868,33 @@ function TypePicker({
 }) {
   const { t } = useI18n();
 
-  const types: { key: MenuItemType; label: string; icon: React.ReactNode }[] =
-    [
-      {
-        key: 'dish',
-        label: t('type_dish'),
-        icon: <UtensilsCrossed className="w-6 h-6" />,
-      },
-      {
-        key: 'set',
-        label: t('type_set'),
-        icon: <Package className="w-6 h-6" />,
-      },
-      {
-        key: 'drink',
-        label: t('type_drink'),
-        icon: <CupSoda className="w-6 h-6" />,
-      },
-      {
-        key: 'sauce',
-        label: t('type_sauce'),
-        icon: <Droplet className="w-6 h-6" />,
-      },
-      {
-        key: 'topping',
-        label: t('type_topping'),
-        icon: <Sparkles className="w-6 h-6" />,
-      },
-    ];
+  const types: { key: MenuItemType; label: string; icon: React.ReactNode }[] = [
+    {
+      key: 'dish',
+      label: t('type_dish'),
+      icon: <UtensilsCrossed className="w-6 h-6" />,
+    },
+    {
+      key: 'set',
+      label: t('type_set'),
+      icon: <Package className="w-6 h-6" />,
+    },
+    {
+      key: 'drink',
+      label: t('type_drink'),
+      icon: <CupSoda className="w-6 h-6" />,
+    },
+    {
+      key: 'sauce',
+      label: t('type_sauce'),
+      icon: <Droplet className="w-6 h-6" />,
+    },
+    {
+      key: 'topping',
+      label: t('type_topping'),
+      icon: <Sparkles className="w-6 h-6" />,
+    },
+  ];
 
   return (
     <div
@@ -707,12 +1025,25 @@ function ItemFormModal({
   );
 
   const [setMainId, setSetMainId] = useState<string>(item?.set_main?.id ?? '');
+
   const [mainOverrides, setMainOverrides] = useState<
     Record<
       string,
       { price_override: number | null; image_override: string | null }
     >
-  >({});
+  >(() => {
+    const out: Record<
+      string,
+      { price_override: number | null; image_override: string | null }
+    > = {};
+    if (item?.set_main?.variants) {
+      for (const v of item.set_main.variants) {
+        out[v.id] = { price_override: v.price, image_override: null };
+      }
+    }
+    return out;
+  });
+
   const [extraGroups, setExtraGroups] = useState<ExtraGroupForm[]>(
     (item?.set_extra_groups ?? []).map((g) => ({
       label: g.label,
@@ -905,8 +1236,8 @@ function ItemFormModal({
         name,
         short_name: shortName,
         image_url: imageUrl || null,
-        price: free ? 0 : price,
-        free,
+        price: type === 'set' ? 0 : free ? 0 : price,
+        free: type === 'set' ? false : free,
         active,
         sort_order: item?.sort_order ?? 0,
         station: null,
@@ -944,8 +1275,7 @@ function ItemFormModal({
             price: v.free ? 0 : v.price,
             free: v.free,
             station: v.station,
-            cook_time_min:
-              v.station === 'kitchen' ? v.cook_time_min : null,
+            cook_time_min: v.station === 'kitchen' ? v.cook_time_min : null,
             sauce_mode: v.sauce_mode,
             properties: v.properties
               .filter((p) => p.name.trim())
@@ -1304,11 +1634,7 @@ function ItemFormModal({
                             type="number"
                             value={v.price}
                             onChange={(e) =>
-                              updateVariant(
-                                i,
-                                'price',
-                                Number(e.target.value)
-                              )
+                              updateVariant(i, 'price', Number(e.target.value))
                             }
                             className="form-input flex-1"
                             disabled={v.free}
@@ -1430,7 +1756,9 @@ function ItemFormModal({
                             >
                               <span className="text-sm text-gray-700">
                                 {v.allowed_sauce_ids.length > 0
-                                  ? `${v.allowed_sauce_ids.length} ${t('saucesShort')}`
+                                  ? `${v.allowed_sauce_ids.length} ${t(
+                                      'saucesShort'
+                                    )}`
                                   : t('pickSauces')}
                               </span>
                               <span className="text-xs text-orange-600 font-bold shrink-0 ml-2">
@@ -1464,6 +1792,10 @@ function ItemFormModal({
                 setShortName={setShortName}
                 t={t}
               />
+              <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-800 font-medium leading-snug">
+                Цена сета определяется по выбранному варианту основного блюда
+                (переопределения ниже). Своей цены у сета нет.
+              </div>
               <Field label={t('image')}>
                 <ImageUploader
                   imageUrl={imageUrl}
@@ -1473,21 +1805,31 @@ function ItemFormModal({
                   t={t}
                 />
               </Field>
-              <Field label={t('price')}>
-                <input
-                  type="number"
-                  value={price}
-                  onChange={(e) => setPrice(Number(e.target.value))}
-                  className="form-input"
-                  placeholder={t('price')}
-                />
-              </Field>
               <Field label={t('mainProduct')}>
                 <select
                   value={setMainId}
                   onChange={(e) => {
-                    setSetMainId(e.target.value);
-                    setMainOverrides({});
+                    const newMainId = e.target.value;
+                    setSetMainId(newMainId);
+                    const newMain = allItems.find((i) => i.id === newMainId);
+                    if (newMain?.dish_kind === 'group' && newMain.variants) {
+                      const auto: Record<
+                        string,
+                        {
+                          price_override: number | null;
+                          image_override: string | null;
+                        }
+                      > = {};
+                      for (const v of newMain.variants) {
+                        auto[v.id] = {
+                          price_override: v.price,
+                          image_override: null,
+                        };
+                      }
+                      setMainOverrides(auto);
+                    } else {
+                      setMainOverrides({});
+                    }
                   }}
                   className="form-input"
                 >
@@ -1509,7 +1851,7 @@ function ItemFormModal({
                   return null;
                 }
                 return (
-                  <Field label={t('mainOverrides')}>
+                  <Field label="Цена сета для каждого варианта">
                     <div className="space-y-2">
                       {main.variants.map((v) => {
                         const ov = mainOverrides[v.id] ?? {
@@ -1523,6 +1865,9 @@ function ItemFormModal({
                           >
                             <span className="col-span-5 text-xs font-bold text-gray-800 truncate">
                               {v.name}
+                              <span className="ml-1 text-[10px] text-gray-400 font-normal">
+                                (база {formatYen(v.price)})
+                              </span>
                             </span>
                             <input
                               type="number"
