@@ -38,7 +38,115 @@ import {
   CupSoda,
   Droplet,
   Sparkles,
+  LayoutGrid,
 } from 'lucide-react';
+
+// ============================================================
+// ПРОСТРАНСТВО КАТЕГОРИЙ
+//
+//   dish + set  →  'dishset'  (одна общая сетка)
+//   drink       →  'drink'    (своя сетка)
+//   sauce       →  'sauce'    (своя сетка)
+//   topping     →  'topping'  (своя сетка)
+//
+// У каждого пространства независимый sort_order.
+// ============================================================
+type CategorySpace = 'dishset' | 'drink' | 'sauce' | 'topping';
+
+function getSpaceOfType(type: MenuItemType): CategorySpace {
+  if (type === 'dish' || type === 'set') return 'dishset';
+  return type as CategorySpace;
+}
+
+function getSpaceItems(tops: MenuItem[], space: CategorySpace): MenuItem[] {
+  if (space === 'dishset') {
+    return tops.filter((i) => i.type === 'dish' || i.type === 'set');
+  }
+  return tops.filter((i) => i.type === space);
+}
+
+// ============================================================
+// ШИРИНА КАРТОЧКИ В ЯЧЕЙКАХ
+// ============================================================
+function getItemWidth(item: MenuItem): number {
+  if (item.type === 'dish' && item.dish_kind === 'group') {
+    return Math.max(1, item.variants?.length ?? 1);
+  }
+  if (item.type === 'set' && item.set_main?.dish_kind === 'group') {
+    return Math.max(1, item.set_main.variants?.length ?? 1);
+  }
+  return 1;
+}
+
+const GRID_GAP = 12;
+
+// ============================================================
+// Порядок при «Сбросе»
+// ============================================================
+const TYPE_ORDER: Record<MenuItemType, number> = {
+  dish: 0,
+  set: 1,
+  drink: 2,
+  sauce: 3,
+  topping: 4,
+};
+
+// ============================================================
+// Конфликты sort_order внутри каждого пространства.
+// (т.е. два блюда/сета с одинаковым sort_order → надо мигрировать)
+// ============================================================
+function hasSortConflicts(tops: MenuItem[]): boolean {
+  const spaces: CategorySpace[] = ['dishset', 'drink', 'sauce', 'topping'];
+  for (const sp of spaces) {
+    const seen = new Set<number>();
+    for (const it of tops) {
+      if (getSpaceOfType(it.type) !== sp) continue;
+      if (seen.has(it.sort_order)) return true;
+      seen.add(it.sort_order);
+    }
+  }
+  return false;
+}
+
+// ============================================================
+// Разложить по категориям:
+//   dishset: сначала dish (по sort_order), потом set (по sort_order)
+//   drink / sauce / topping: по sort_order
+// sort_order в каждой категории пересчитывается с 0 и с учётом ширины.
+// ============================================================
+function buildCategorizedOrder(
+  tops: MenuItem[]
+): { id: string; sort_order: number }[] {
+  const updates: { id: string; sort_order: number }[] = [];
+
+  // ---- dishset: dish сначала, затем set ----
+  const dsItems = tops
+    .filter((it) => it.type === 'dish' || it.type === 'set')
+    .sort((a, b) => {
+      const t = TYPE_ORDER[a.type] - TYPE_ORDER[b.type];
+      if (t !== 0) return t;
+      return a.sort_order - b.sort_order;
+    });
+  let cursor = 0;
+  for (const it of dsItems) {
+    updates.push({ id: it.id, sort_order: cursor });
+    cursor += getItemWidth(it);
+  }
+
+  // ---- остальные категории: каждая с нуля ----
+  for (const sp of ['drink', 'sauce', 'topping'] as CategorySpace[]) {
+    const arr = tops
+      .filter((it) => getSpaceOfType(it.type) === sp)
+      .sort((a, b) => a.sort_order - b.sort_order);
+    let c = 0;
+    for (const it of arr) {
+      updates.push({ id: it.id, sort_order: c });
+      c += getItemWidth(it);
+    }
+  }
+
+  return updates;
+}
 
 export function MenuProduct() {
   const { t } = useI18n();
@@ -54,7 +162,7 @@ export function MenuProduct() {
 
   const dragId = useRef<string | null>(null);
   const [dragOverSlot, setDragOverSlot] = useState<{
-    type: MenuItemType;
+    space: CategorySpace;
     slot: number;
   } | null>(null);
 
@@ -65,7 +173,15 @@ export function MenuProduct() {
     setLoading(true);
     setError(null);
     try {
-      const list = await fetchAllMenuItems();
+      let list = await fetchAllMenuItems();
+
+      const tops = list.filter((i) => !i.parent_id);
+      if (hasSortConflicts(tops)) {
+        const updates = buildCategorizedOrder(tops);
+        await reorderItems(updates);
+        list = await fetchAllMenuItems();
+      }
+
       setItems(list);
     } catch (e) {
       setError(e instanceof Error ? e.message : t('failedToLoadMenu'));
@@ -117,13 +233,29 @@ export function MenuProduct() {
     }
   };
 
-  /**
-   * Windows-desktop-style drop.
-   *   - Пустая ячейка → карточка просто переезжает, старая ячейка становится пустой
-   *   - Занятая ячейка → карточка вставляется, все карточки в диапазоне (from..to)
-   *     сдвигаются на одну позицию
-   */
-  const handleSlotDrop = async (type: MenuItemType, targetSlot: number) => {
+  // Все верхнеуровневые
+  const allTops = items.filter((i) => !i.parent_id);
+
+  // Найти карточку в её пространстве, в чьём диапазоне находится slot
+  const findCardAtSlot = useCallback(
+    (space: CategorySpace, slot: number): MenuItem | null => {
+      const spaceItems = getSpaceItems(allTops, space);
+      for (const it of spaceItems) {
+        const w = getItemWidth(it);
+        if (slot >= it.sort_order && slot < it.sort_order + w) return it;
+      }
+      return null;
+    },
+    [allTops]
+  );
+
+  // ============================================================
+  // DROP — только внутри категории
+  // ============================================================
+  const handleSlotDrop = async (
+    space: CategorySpace,
+    targetSlot: number
+  ) => {
     const fromId = dragId.current;
     dragId.current = null;
     setDragOverSlot(null);
@@ -131,45 +263,59 @@ export function MenuProduct() {
 
     const fromItem = items.find((i) => i.id === fromId);
     if (!fromItem) return;
-    if (fromItem.type !== type) return;
-    if (fromItem.sort_order === targetSlot) return;
+    if (fromItem.parent_id) return;
+    if (getSpaceOfType(fromItem.type) !== space) return;
 
-    const fromSlot = fromItem.sort_order;
+    const fromStart = fromItem.sort_order;
+    const fromWidth = getItemWidth(fromItem);
 
-    const targetCard = items.find(
-      (i) =>
-        i.type === type &&
-        !i.parent_id &&
-        i.sort_order === targetSlot &&
-        i.id !== fromId
-    );
+    const targetCard = findCardAtSlot(space, targetSlot);
+    if (targetCard && targetCard.id === fromItem.id) return;
 
+    // пустая ячейка
     if (!targetCard) {
+      if (targetSlot === fromStart) return;
       await applyReorder([{ id: fromItem.id, sort_order: targetSlot }]);
       return;
     }
 
-    const sameType = items.filter((i) => i.type === type && !i.parent_id);
+    const targetStart = targetCard.sort_order;
+    if (targetStart === fromStart) return;
+
+    const others = getSpaceItems(allTops, space).filter(
+      (i) => i.id !== fromItem.id
+    );
 
     const updates: { id: string; sort_order: number }[] = [];
 
-    if (fromSlot < targetSlot) {
-      for (const it of sameType) {
-        if (it.id === fromItem.id) continue;
-        if (it.sort_order > fromSlot && it.sort_order <= targetSlot) {
-          updates.push({ id: it.id, sort_order: it.sort_order - 1 });
+    if (fromStart > targetStart) {
+      // тащим влево
+      for (const it of others) {
+        if (it.sort_order >= targetStart && it.sort_order < fromStart) {
+          updates.push({ id: it.id, sort_order: it.sort_order + fromWidth });
         }
       }
+      updates.push({ id: fromItem.id, sort_order: targetStart });
     } else {
-      for (const it of sameType) {
-        if (it.id === fromItem.id) continue;
-        if (it.sort_order >= targetSlot && it.sort_order < fromSlot) {
-          updates.push({ id: it.id, sort_order: it.sort_order + 1 });
+      // тащим вправо
+      for (const it of others) {
+        if (it.sort_order > fromStart && it.sort_order <= targetStart) {
+          updates.push({ id: it.id, sort_order: it.sort_order - fromWidth });
         }
       }
+      updates.push({ id: fromItem.id, sort_order: targetStart });
     }
 
-    updates.push({ id: fromItem.id, sort_order: targetSlot });
+    if (updates.length === 0) return;
+    await applyReorder(updates);
+  };
+
+  // ============================================================
+  // КНОПКА «СБРОС»
+  // ============================================================
+  const handleResetOrder = async () => {
+    const updates = buildCategorizedOrder(allTops);
+    if (updates.length === 0) return;
     await applyReorder(updates);
   };
 
@@ -187,23 +333,16 @@ export function MenuProduct() {
     }
   };
 
-  const grouped: Record<MenuItemType, MenuItem[]> = {
-    dish: items
-      .filter((i) => i.type === 'dish' && !i.parent_id)
-      .sort((a, b) => a.sort_order - b.sort_order),
-    set: items
-      .filter((i) => i.type === 'set' && !i.parent_id)
-      .sort((a, b) => a.sort_order - b.sort_order),
-    drink: items
-      .filter((i) => i.type === 'drink' && !i.parent_id)
-      .sort((a, b) => a.sort_order - b.sort_order),
-    sauce: items
-      .filter((i) => i.type === 'sauce' && !i.parent_id)
-      .sort((a, b) => a.sort_order - b.sort_order),
-    topping: items
-      .filter((i) => i.type === 'topping' && !i.parent_id)
-      .sort((a, b) => a.sort_order - b.sort_order),
-  };
+  const leftList: { item: MenuItem; kind: 'dish' | 'set' }[] = [
+    ...allTops
+      .filter((i) => i.type === 'dish')
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((i) => ({ item: i, kind: 'dish' as const })),
+    ...allTops
+      .filter((i) => i.type === 'set')
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((i) => ({ item: i, kind: 'set' as const })),
+  ];
 
   // ============================================================
   // RESIZE HANDLERS
@@ -290,117 +429,185 @@ export function MenuProduct() {
   };
 
   // ============================================================
-  // GRID RENDER
+  // GRID RENDER для одного пространства
   // ============================================================
-  const renderGrid = (type: MenuItemType, size: number, compact: boolean) => {
-    const typeItems = grouped[type];
-    const maxSlot =
-      typeItems.length > 0 ? Math.max(...typeItems.map((i) => i.sort_order)) : -1;
-    const totalSlots = Math.max(12, maxSlot + 4);
+  const renderGrid = (
+    space: CategorySpace,
+    size: number,
+    compact: boolean
+  ) => {
+    const spaceItems = getSpaceItems(allTops, space);
 
     const bySlot = new Map<number, MenuItem>();
-    for (const it of typeItems) bySlot.set(it.sort_order, it);
-
-    const slots: { slot: number; card: MenuItem | null }[] = [];
-    for (let i = 0; i < totalSlots; i++) {
-      slots.push({ slot: i, card: bySlot.get(i) ?? null });
+    let maxEnd = -1;
+    for (const it of spaceItems) {
+      bySlot.set(it.sort_order, it);
+      const w = getItemWidth(it);
+      maxEnd = Math.max(maxEnd, it.sort_order + w - 1);
     }
-
-    // Ширина ячейки = максимальная ширина среди карточек + отступы
-    let maxW = size + 20;
-    for (const it of typeItems) {
-      let variants: MenuItem[] | undefined;
-      if (it.type === 'dish' && it.dish_kind === 'group') {
-        variants = it.variants;
-      } else if (it.type === 'set' && it.set_main?.dish_kind === 'group') {
-        variants = it.set_main.variants;
-      }
-      if (variants && variants.length > 0) {
-        const gW = 8 * 2 + size * variants.length + 6 * (variants.length - 1);
-        maxW = Math.max(maxW, gW);
-      }
-    }
-    const cellW = maxW + 20;
+    const totalSlots = Math.max(12, maxEnd + 4);
     const cellH = compact ? size + 50 : size + 90;
+
+    // ---- вычисляем drop-диапазон только для этой категории ----
+    const draggedItem = dragId.current
+      ? items.find((i) => i.id === dragId.current) ?? null
+      : null;
+    const dragInThisSpace =
+      draggedItem != null &&
+      !draggedItem.parent_id &&
+      getSpaceOfType(draggedItem.type) === space;
+
+    const dragWidth = dragInThisSpace
+      ? getItemWidth(draggedItem as MenuItem)
+      : 1;
+
+    let dropStart: number | null = null;
+    if (dragInThisSpace && dragOverSlot?.space === space) {
+      const targetCard = findCardAtSlot(space, dragOverSlot.slot);
+      dropStart = targetCard ? targetCard.sort_order : dragOverSlot.slot;
+    }
+    const dropEnd = dropStart != null ? dropStart + dragWidth - 1 : null;
+
+    const cells: React.ReactNode[] = [];
+    let slot = 0;
+    while (slot < totalSlots) {
+      // фиксируем currentSlot — иначе замыкания onDrop увидят последнее значение
+      const currentSlot = slot;
+      const card = bySlot.get(currentSlot);
+
+      // ---------------- пустая ячейка ----------------
+      if (!card) {
+        const inDropRange =
+          dropStart != null &&
+          dropEnd != null &&
+          currentSlot >= dropStart &&
+          currentSlot <= dropEnd;
+
+        cells.push(
+          <div
+            key={`empty-${space}-${currentSlot}`}
+            onDragOver={(e) => {
+              if (!dragId.current) return;
+              e.preventDefault();
+              if (
+                dragOverSlot?.space !== space ||
+                dragOverSlot?.slot !== currentSlot
+              ) {
+                setDragOverSlot({ space, slot: currentSlot });
+              }
+            }}
+            onDragLeave={() => {
+              if (
+                dragOverSlot?.space === space &&
+                dragOverSlot?.slot === currentSlot
+              ) {
+                setDragOverSlot(null);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleSlotDrop(space, currentSlot);
+            }}
+            style={{ width: size, height: cellH - 4 }}
+            className={`rounded-xl border-2 border-dashed transition-all ${
+              inDropRange
+                ? 'border-orange-400 bg-orange-100'
+                : 'border-gray-200'
+            }`}
+          />
+        );
+        slot = currentSlot + 1;
+        continue;
+      }
+
+      // ---------------- карточка ----------------
+      const w = getItemWidth(card);
+      const cardStart = currentSlot;
+      const cardEnd = currentSlot + w - 1;
+
+      const inDropRange =
+        dropStart != null &&
+        dropEnd != null &&
+        cardEnd >= dropStart &&
+        cardStart <= dropEnd;
+
+      let variants: MenuItem[] | undefined;
+      if (card.type === 'dish' && card.dish_kind === 'group') {
+        variants = card.variants;
+      } else if (
+        card.type === 'set' &&
+        card.set_main?.dish_kind === 'group'
+      ) {
+        variants = card.set_main.variants;
+      }
+
+      cells.push(
+        <div
+          key={card.id}
+          onDragOver={(e) => {
+            if (!dragId.current) return;
+            e.preventDefault();
+            if (
+              dragOverSlot?.space !== space ||
+              dragOverSlot?.slot !== currentSlot
+            ) {
+              setDragOverSlot({ space, slot: currentSlot });
+            }
+          }}
+          onDragLeave={() => {
+            if (
+              dragOverSlot?.space === space &&
+              dragOverSlot?.slot === currentSlot
+            ) {
+              setDragOverSlot(null);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleSlotDrop(space, currentSlot);
+          }}
+          style={{
+            gridColumn: `span ${w}`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          className={`rounded-xl transition-all ${
+            inDropRange
+              ? 'ring-4 ring-orange-400 ring-offset-2 bg-orange-50/60'
+              : ''
+          }`}
+        >
+          <DraggableCard
+            item={card}
+            variants={variants}
+            onEdit={startEdit}
+            onVariantClick={(v) => {
+              if (card.type === 'dish') startEdit(v);
+              else startEdit(card);
+            }}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            size={size}
+            textSize={layout.itemTextSize}
+            compact={compact}
+          />
+        </div>
+      );
+      slot = currentSlot + w;
+    }
 
     return (
       <div
         className="grid gap-3"
         style={{
-          gridTemplateColumns: `repeat(auto-fill, ${cellW}px)`,
+          gridTemplateColumns: `repeat(auto-fill, ${size}px)`,
           gridAutoRows: `${cellH}px`,
         }}
       >
-        {slots.map(({ slot, card }) => {
-          const isDragOver =
-            dragOverSlot?.type === type && dragOverSlot?.slot === slot;
-
-          let variants: MenuItem[] | undefined;
-          if (card) {
-            if (card.type === 'dish' && card.dish_kind === 'group') {
-              variants = card.variants;
-            } else if (
-              card.type === 'set' &&
-              card.set_main?.dish_kind === 'group'
-            ) {
-              variants = card.set_main.variants;
-            }
-          }
-
-          return (
-            <div
-              key={slot}
-              data-slot={slot}
-              onDragOver={(e) => {
-                if (!dragId.current) return;
-                e.preventDefault();
-                if (
-                  dragOverSlot?.type !== type ||
-                  dragOverSlot?.slot !== slot
-                ) {
-                  setDragOverSlot({ type, slot });
-                }
-              }}
-              onDragLeave={() => {
-                if (
-                  dragOverSlot?.type === type &&
-                  dragOverSlot?.slot === slot
-                ) {
-                  setDragOverSlot(null);
-                }
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                handleSlotDrop(type, slot);
-              }}
-              className={`flex items-center justify-center rounded-xl transition-all ${
-                isDragOver
-                  ? 'ring-4 ring-orange-400 ring-offset-2 bg-orange-50'
-                  : ''
-              }`}
-            >
-              {card ? (
-                <DraggableCard
-                  item={card}
-                  variants={variants}
-                  onEdit={startEdit}
-                  onVariantClick={(v) => {
-                    if (card.type === 'dish') startEdit(v);
-                    else startEdit(card);
-                  }}
-                  onDragStart={handleDragStart}
-                  onDragEnd={handleDragEnd}
-                  size={size}
-                  textSize={layout.itemTextSize}
-                  compact={compact}
-                />
-              ) : (
-                <div className="w-full h-full border-2 border-dashed border-gray-200 rounded-xl pointer-events-none" />
-              )}
-            </div>
-          );
-        })}
+        {cells}
       </div>
     );
   };
@@ -413,10 +620,11 @@ export function MenuProduct() {
     );
   }
 
-  const leftList: { item: MenuItem; kind: 'dish' | 'set' }[] = [
-    ...grouped.dish.map((i) => ({ item: i, kind: 'dish' as const })),
-    ...grouped.set.map((i) => ({ item: i, kind: 'set' as const })),
-  ];
+  const hasDishSet = getSpaceItems(allTops, 'dishset').length > 0;
+  const hasTopping = getSpaceItems(allTops, 'topping').length > 0;
+  const hasDrink = getSpaceItems(allTops, 'drink').length > 0;
+  const hasSauce = getSpaceItems(allTops, 'sauce').length > 0;
+  const hasAny = allTops.length > 0;
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
@@ -480,38 +688,35 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* ---- COLUMN 2: BLUDI + SET + TOPPINGS ---- */}
+        {/* ---- COLUMN 2: БЛЮДА И СЕТЫ + ТОППИНГИ ---- */}
         <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-50">
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
-            <div className="mb-2 px-2 py-1 rounded-md bg-orange-100 border-l-4 border-orange-500">
-              <h3 className="text-[10px] font-black text-orange-800 uppercase tracking-widest">
-                {t('bludiAndSet')} · {t('dragHintShort')}
-              </h3>
+            <div className="flex items-center gap-2 mb-2">
+              <div className="flex-1 min-w-0 px-2 py-1 rounded-md bg-orange-100 border-l-4 border-orange-500">
+                <h3 className="text-[10px] font-black text-orange-800 uppercase tracking-widest truncate">
+                  {t('bludiAndSet')} · {t('dragHintShort')}
+                </h3>
+              </div>
+              <button
+                onClick={handleResetOrder}
+                disabled={!hasAny}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold active:scale-[0.97] transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Разложить по категориям"
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                Сброс
+              </button>
             </div>
-            {items.filter(
-              (i) =>
-                (i.type === 'dish' || i.type === 'set') && !i.parent_id
-            ).length === 0 ? (
+            {!hasDishSet ? (
               <div className="text-center text-gray-400 text-sm mt-12">
                 {t('noMenuItems')}
               </div>
             ) : (
-              <>
-                {grouped.dish.length > 0 && (
-                  <div className="mb-4">
-                    {renderGrid('dish', layout.dishCardSize, false)}
-                  </div>
-                )}
-                {grouped.set.length > 0 && (
-                  <div className="mb-3">
-                    {renderGrid('set', layout.dishCardSize, false)}
-                  </div>
-                )}
-              </>
+              renderGrid('dishset', layout.dishCardSize, false)
             )}
           </div>
 
-          {grouped.topping.length > 0 && (
+          {hasTopping && (
             <>
               <Resizer
                 direction="horizontal"
@@ -540,7 +745,7 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* ---- COLUMN 3: DRINKS + SAUCES ---- */}
+        {/* ---- COLUMN 3: НАПИТКИ + СОУСЫ ---- */}
         <div
           ref={drinksWrapRef}
           className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
@@ -556,7 +761,7 @@ export function MenuProduct() {
               </h3>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {grouped.drink.length === 0 ? (
+              {!hasDrink ? (
                 <p className="text-[10px] text-gray-400 text-center w-full py-3">
                   —
                 </p>
@@ -580,7 +785,7 @@ export function MenuProduct() {
               </h3>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {grouped.sauce.length === 0 ? (
+              {!hasSauce ? (
                 <p className="text-[10px] text-gray-400 text-center w-full py-3">
                   —
                 </p>
@@ -701,8 +906,49 @@ const DraggableCard = memo(function DraggableCard({
 
   // ============ SINGLE ============
   if (!isGroup) {
-    const nameAndPrice = (
-      <>
+    return (
+      <div
+        draggable
+        data-card-id={item.id}
+        onDragStart={() => onDragStart(item.id)}
+        onDragEnd={onDragEnd}
+        onClick={() => onEdit(item)}
+        style={{ width: size }}
+        className="flex flex-col items-center select-none cursor-grab active:cursor-grabbing"
+      >
+        <div
+          className="relative rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 border-gray-300 hover:border-orange-400 transition-all"
+          style={{ width: size, height: size }}
+        >
+          {item.image_url ? (
+            <>
+              <img
+                src={item.image_url}
+                alt={item.name}
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                loading="lazy"
+                draggable={false}
+              />
+              <div className="absolute inset-0 bg-black/40" />
+            </>
+          ) : null}
+          {!item.active && (
+            <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+              <span
+                className="text-white font-black uppercase tracking-widest"
+                style={{ fontSize: Math.max(8, nameSize - 2) }}
+              >
+                inactive
+              </span>
+            </div>
+          )}
+          {item.type === 'sauce' && item.color && (
+            <div
+              className="absolute inset-0"
+              style={{ backgroundColor: item.color, opacity: 0.3 }}
+            />
+          )}
+        </div>
         <div
           className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
           style={{ fontSize: nameSize }}
@@ -716,68 +962,12 @@ const DraggableCard = memo(function DraggableCard({
         >
           {item.free ? '' : formatYen(item.price)}
         </div>
-      </>
-    );
-
-    const square = (
-      <div
-        className="relative rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 border-gray-300 hover:border-orange-400 transition-all"
-        style={{ width: size, height: size }}
-      >
-        {item.image_url ? (
-          <>
-            <img
-              src={item.image_url}
-              alt={item.name}
-              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-              loading="lazy"
-              draggable={false}
-            />
-            <div className="absolute inset-0 bg-black/40" />
-          </>
-        ) : null}
-        {!item.active && (
-          <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
-            <span
-              className="text-white font-black uppercase tracking-widest"
-              style={{ fontSize: Math.max(8, nameSize - 2) }}
-            >
-              inactive
-            </span>
-          </div>
-        )}
-        {item.type === 'sauce' && item.color && (
-          <div
-            className="absolute inset-0"
-            style={{ backgroundColor: item.color, opacity: 0.3 }}
-          />
-        )}
-      </div>
-    );
-
-    return (
-      <div
-        draggable
-        data-card-id={item.id}
-        onDragStart={() => onDragStart(item.id)}
-        onDragEnd={onDragEnd}
-        onClick={() => onEdit(item)}
-        style={{ width: size }}
-        className="flex flex-col items-center select-none cursor-grab active:cursor-grabbing"
-      >
-        {square}
-        {nameAndPrice}
       </div>
     );
   }
 
   // ============ GROUP ============
-  const gap = 6;
-  const pad = 8;
   const headerH = nameSize + 12;
-  const cardH = size + nameSize * 2 + 8;
-  const groupW =
-    pad * 2 + size * variants!.length + gap * (variants!.length - 1);
 
   return (
     <div
@@ -785,12 +975,12 @@ const DraggableCard = memo(function DraggableCard({
       data-card-id={item.id}
       onDragStart={() => onDragStart(item.id)}
       onDragEnd={onDragEnd}
-      style={{ width: groupW, minHeight: headerH + cardH + pad * 2 }}
-      className="rounded-xl border-2 border-gray-400 bg-white transition-all select-none cursor-grab active:cursor-grabbing hover:border-orange-400"
+      style={{ width: '100%', minHeight: headerH + size + nameSize * 2 + 8 }}
+      className="rounded-xl border-2 border-gray-400 bg-white transition-all select-none cursor-grab active:cursor-grabbing hover:border-orange-400 flex flex-col overflow-hidden"
     >
       <button
         onClick={() => onEdit(item)}
-        className="flex items-center justify-between w-full px-2 py-1 border-b border-gray-200 bg-gray-50 rounded-t-lg hover:bg-orange-50 transition-colors"
+        className="flex items-center justify-between w-full px-2 py-1 border-b border-gray-200 bg-gray-50 hover:bg-orange-50 transition-colors shrink-0"
       >
         <span
           className="font-black text-gray-900 uppercase tracking-wide truncate text-left"
@@ -808,7 +998,10 @@ const DraggableCard = memo(function DraggableCard({
         )}
       </button>
 
-      <div className="flex items-start" style={{ gap, padding: pad }}>
+      <div
+        className="flex items-stretch flex-1"
+        style={{ gap: GRID_GAP, padding: 4 }}
+      >
         {variants!.map((v) => (
           <div
             key={v.id}
@@ -817,12 +1010,12 @@ const DraggableCard = memo(function DraggableCard({
               if (onVariantClick) onVariantClick(v);
               else onEdit(v);
             }}
-            style={{ width: size }}
+            style={{ flex: '1 1 0', minWidth: 0 }}
             className="flex flex-col items-center cursor-pointer active:scale-95 transition-transform"
           >
             <div
-              className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 bg-gradient-to-br from-orange-500 to-red-500 transition-all"
-              style={{ width: size, height: size }}
+              className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 bg-gradient-to-br from-orange-500 to-red-500 transition-all w-full"
+              style={{ aspectRatio: '1 / 1' }}
             >
               {(v.image_url || item.image_url) && (
                 <>
