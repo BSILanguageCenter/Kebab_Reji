@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { formatYen, formatTimeAgo } from '@/locale/format';
 import { useI18n } from '@/locale';
 import {
@@ -14,6 +14,7 @@ import { ClearCartDialog } from '@/components/ClearCartDialog';
 import { ProductBuilderDialog } from '@/components/ProductBuilderDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageActions';
+import { Resizer } from '@/components/Resizer';
 import { printCustomerTicket } from '@/services/printer';
 import {
   pushUndo,
@@ -21,6 +22,11 @@ import {
   useUndoStack,
   type UndoRecord,
 } from '@/services/undo';
+import {
+  useLayoutSettings,
+  clampLayout,
+  snapValue,
+} from '@/lib/layoutSettings';
 import type {
   MenuItem,
   CartItem,
@@ -35,13 +41,11 @@ import {
   Send,
   ShoppingBag,
   Store,
-  X,
-  Search,
-  Pencil,
-  FilePlus2,
-  Save,
   RotateCcw,
   Undo2,
+  FilePlus2,
+  Pencil,
+  Save,
 } from 'lucide-react';
 
 export default function CashierPage() {
@@ -53,17 +57,23 @@ export default function CashierPage() {
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [comment, setComment] = useState('');
   const [sending, setSending] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [printError, setPrintError] = useState<string | null>(null);
   const [lastOrderNumber, setLastOrderNumber] = useState<number | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
-  const [builderItem, setBuilderItem] = useState<MenuItem | null>(null);
+
+  const [builder, setBuilder] = useState<{
+    item: MenuItem;
+    variantId?: string;
+  } | null>(null);
+
   const [pendingUndo, setPendingUndo] = useState<UndoRecord | null>(null);
   const cartIdCounter = useRef(0);
 
   const undoStack = useUndoStack('cashier');
+  const [layout, setLayout] = useLayoutSettings();
+  const cartWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
@@ -75,9 +85,7 @@ export default function CashierPage() {
       setActiveOrders(orders);
     });
     const unsubMenu = subscribeMenu((m) => setMenuItems(m.items));
-
     getSocket();
-
     return () => {
       unsubInit();
       unsubOrders();
@@ -85,62 +93,15 @@ export default function CashierPage() {
     };
   }, [sending]);
 
-  // ---------- Группировка по типам ----------
-  const dishes = useMemo(
+  // Все товары вперемешку, сортировка по sort_order
+  const sortedItems = useMemo(
     () =>
-      menuItems
-        .filter((i) => i.type === 'dish' && i.active)
-        .sort((a, b) => a.sort_order - b.sort_order),
-    [menuItems]
-  );
-  const sets = useMemo(
-    () =>
-      menuItems
-        .filter((i) => i.type === 'set' && i.active)
-        .sort((a, b) => a.sort_order - b.sort_order),
-    [menuItems]
-  );
-  const toppings = useMemo(
-    () =>
-      menuItems
-        .filter((i) => i.type === 'topping' && i.active)
-        .sort((a, b) => a.sort_order - b.sort_order),
-    [menuItems]
-  );
-  const drinks = useMemo(
-    () =>
-      menuItems
-        .filter((i) => i.type === 'drink' && i.active)
-        .sort((a, b) => a.sort_order - b.sort_order),
-    [menuItems]
-  );
-  const sauces = useMemo(
-    () =>
-      menuItems
-        .filter((i) => i.type === 'sauce' && i.active)
+      [...menuItems]
+        .filter((i) => i.active && !i.parent_id)
         .sort((a, b) => a.sort_order - b.sort_order),
     [menuItems]
   );
 
-  const filterBySearch = (arr: MenuItem[]) =>
-    searchQuery
-      ? arr.filter(
-          (i) =>
-            i.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            i.short_name.toLowerCase().includes(searchQuery.toLowerCase())
-        )
-      : arr;
-
-  const filteredDishes = useMemo(
-    () => filterBySearch(dishes),
-    [dishes, searchQuery]
-  );
-  const filteredSets = useMemo(
-    () => filterBySearch(sets),
-    [sets, searchQuery]
-  );
-
-  // ---------- Корзина ----------
   const cartTotal = useMemo(
     () =>
       cart
@@ -223,22 +184,34 @@ export default function CashierPage() {
   };
 
   const handleItemClick = (item: MenuItem) => {
-    const hasVariants = (item.variants?.length ?? 0) > 0;
+    // topping / drink / sauce — сразу
+    if (
+      item.type === 'topping' ||
+      item.type === 'drink' ||
+      item.type === 'sauce'
+    ) {
+      addToCart(item);
+      return;
+    }
+
     const hasProps = (item.properties?.length ?? 0) > 0;
     const hasSauces =
       item.sauce_mode === 'with' && (item.allowed_sauces?.length ?? 0) > 0;
-    const hasExtras = (item.set_extra_groups?.length ?? 0) > 0;
+    if (
+      item.type === 'dish' &&
+      item.dish_kind === 'single' &&
+      !hasProps &&
+      !hasSauces
+    ) {
+      addToCart(item);
+      return;
+    }
 
-    const needsBuilder =
-      item.type === 'set' ||
-      (item.type === 'dish' && item.dish_kind === 'group') ||
-      hasVariants ||
-      hasProps ||
-      hasSauces ||
-      hasExtras;
+    setBuilder({ item });
+  };
 
-    if (needsBuilder) setBuilderItem(item);
-    else addToCart(item);
+  const handleSetVariantClick = (setItem: MenuItem, variant: MenuItem) => {
+    setBuilder({ item: setItem, variantId: variant.id });
   };
 
   const incrementItem = (cartId: string) => {
@@ -270,7 +243,6 @@ export default function CashierPage() {
     });
   };
 
-  // ---------- Отправка ----------
   const handleSendToKitchen = async () => {
     if (!hasActiveItems) return;
     setSending(true);
@@ -449,7 +421,6 @@ export default function CashierPage() {
         db_id: item.id,
       };
     });
-
     setCart(restored);
     setOrderType(order.order_type);
     setComment(order.comment ?? '');
@@ -508,12 +479,53 @@ export default function CashierPage() {
     }
   };
 
+  // ---------- Resize ----------
+  const startLayoutRef = useRef<typeof layout | null>(null);
+
+  const beginResize = () => {
+    startLayoutRef.current = { ...layout };
+  };
+
+  const endResize = () => {
+    setLayout((prev) => ({
+      ...prev,
+      ordersWidth: clampLayout(
+        'ordersWidth',
+        snapValue(prev.ordersWidth, [208, 260, 320], 12)
+      ),
+      cartWidth: clampLayout(
+        'cartWidth',
+        snapValue(prev.cartWidth, [280, 320, 400, 480], 16)
+      ),
+    }));
+    startLayoutRef.current = null;
+  };
+
+  const handleResizeOrders = (d: number) => {
+    const base = startLayoutRef.current ?? layout;
+    setLayout((prev) => ({
+      ...prev,
+      ordersWidth: clampLayout('ordersWidth', base.ordersWidth + d),
+    }));
+  };
+
+  const handleResizeCart = (d: number) => {
+    const base = startLayoutRef.current ?? layout;
+    setLayout((prev) => ({
+      ...prev,
+      cartWidth: clampLayout('cartWidth', base.cartWidth - d),
+    }));
+  };
+
   // ============================================================
-  // RENDER
+  // Единая сетка: все товары вперемешку
+  // Группа с N вариантами занимает N ячеек
   // ============================================================
+  const cellSize = layout.dishCardSize;
+  const gap = 8;
+
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
-      {/* ============ HEADER ============ */}
       <div className="flex items-center gap-3 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
         <PageActions forRole="cashier">
           <button
@@ -532,10 +544,12 @@ export default function CashierPage() {
         </PageActions>
       </div>
 
-      {/* ============ MAIN 4-COLUMN LAYOUT ============ */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* -------- COLUMN 1: ORDERS -------- */}
-        <div className="w-44 lg:w-52 xl:w-56 shrink-0 bg-white border-r border-gray-200 flex flex-col min-h-0">
+        {/* ---- LEFT: ORDERS ---- */}
+        <div
+          className="shrink-0 bg-white border-r-2 border-gray-300 flex flex-col min-h-0"
+          style={{ width: layout.ordersWidth }}
+        >
           <div className="px-3 py-2 border-b border-gray-200 shrink-0">
             <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
               {t('activeOrders')}
@@ -554,7 +568,7 @@ export default function CashierPage() {
             {activeOrders.map((order) => {
               const isCancelled = order.status === 'CANCELLED';
               const isEditing = editingOrder?.id === order.id;
-              const baseClasses = isCancelled
+              const cls = isCancelled
                 ? 'bg-red-50 border-red-300 opacity-60'
                 : isEditing
                 ? 'bg-orange-100 border-orange-500 ring-2 ring-orange-300'
@@ -568,7 +582,7 @@ export default function CashierPage() {
                   key={order.id}
                   onClick={() => handleEditOrder(order)}
                   disabled={isCancelled}
-                  className={`w-full text-left p-2.5 rounded-xl border-2 transition-all ${baseClasses} ${
+                  className={`w-full text-left p-2.5 rounded-xl border-2 transition-all ${cls} ${
                     isCancelled
                       ? 'cursor-not-allowed'
                       : 'cursor-pointer active:scale-[0.97]'
@@ -618,9 +632,14 @@ export default function CashierPage() {
           </div>
         </div>
 
-        {/* -------- COLUMN 2: DISHES + SETS + TOPPINGS -------- */}
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeOrders}
+          onEnd={endResize}
+        />
+
+        {/* ---- CENTER: ONE GRID (ALL ITEMS MIXED) ---- */}
         <div className="flex-1 min-w-0 bg-slate-50 flex flex-col min-h-0">
-          {/* Order type + search */}
           <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
             <div className="flex rounded-xl overflow-hidden border-2 border-gray-300 shadow-sm">
               <button
@@ -646,24 +665,6 @@ export default function CashierPage() {
                 {t('orderTypeInside')}
               </button>
             </div>
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t('searchMenu')}
-                className="w-full bg-white border-2 border-gray-300 rounded-xl pl-9 pr-9 py-1.5 text-xs text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg active:bg-gray-100"
-                >
-                  <X className="w-3.5 h-3.5 text-gray-400" />
-                </button>
-              )}
-            </div>
           </div>
 
           {error && (
@@ -672,136 +673,87 @@ export default function CashierPage() {
             </div>
           )}
 
-          {/* Bludi i Set */}
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
-            {(filteredDishes.length > 0 || filteredSets.length > 0) && (
-              <div className="mb-2">
-                <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
-                  {t('bludiAndSet')}
-                </h3>
-              </div>
-            )}
-
-            {/* Dishes */}
-            {filteredDishes.length > 0 && (
-              <div className="mb-3">
-                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
-                  {filteredDishes.map((dish) => (
-                    <DishCard key={dish.id} item={dish} onClick={handleItemClick} />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Sets */}
-            {filteredSets.length > 0 && (
-              <div className="mb-3">
-                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
-                  {filteredSets.map((s) => (
-                    <SimpleCard
-                      key={s.id}
-                      item={s}
-                      onClick={handleItemClick}
-                      badge="SET"
-                      badgeColor="bg-orange-600"
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {filteredDishes.length === 0 && filteredSets.length === 0 && (
+            {sortedItems.length === 0 ? (
               <div className="text-center text-gray-400 text-sm mt-12">
-                {searchQuery ? t('noResults') : t('noMenuItems')}
+                {t('noMenuItems')}
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(auto-fill, ${cellSize}px)`,
+                  gap: `${gap}px`,
+                }}
+              >
+                {sortedItems.map((item) => {
+                  // Групповые (dish-group или set с main-group)
+                  let variants: MenuItem[] | undefined;
+                  if (item.type === 'dish' && item.dish_kind === 'group') {
+                    variants = item.variants;
+                  } else if (
+                    item.type === 'set' &&
+                    item.set_main?.dish_kind === 'group'
+                  ) {
+                    variants = item.set_main.variants;
+                  }
+
+                  const span = variants && variants.length > 0
+                    ? variants.length
+                    : 1;
+
+                  // Групповой блок — ширина = span ячеек + (span-1) * gap
+                  const groupW = span * cellSize + (span - 1) * gap;
+
+                  return (
+                    <div
+                      key={item.id}
+                      style={{ gridColumn: `span ${span}`, width: groupW }}
+                    >
+                      {variants && variants.length > 0 ? (
+                        <GroupCard
+                          item={item}
+                          variants={variants}
+                          onClick={handleItemClick}
+                          onVariantClick={(setItem, v) => {
+                            if (setItem.type === 'set') {
+                              handleSetVariantClick(setItem, v);
+                            } else {
+                              handleItemClick(v);
+                            }
+                          }}
+                          cellSize={cellSize}
+                          gap={gap}
+                          textSize={layout.itemTextSize}
+                        />
+                      ) : (
+                        <SimpleCard
+                          item={item}
+                          onClick={handleItemClick}
+                          size={cellSize}
+                          textSize={layout.itemTextSize}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
-
-          {/* Toppings */}
-          {toppings.length > 0 && (
-            <div className="shrink-0 border-t border-gray-200 bg-white px-3 py-2">
-              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5">
-                {t('type_topping')}
-              </h3>
-              <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
-                {toppings.map((tp) => (
-                  <SimpleCard
-                    key={tp.id}
-                    item={tp}
-                    onClick={handleItemClick}
-                    compact
-                  />
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* -------- COLUMN 3: DRINKS + SAUCES -------- */}
-        <div className="w-40 lg:w-48 xl:w-56 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
-          {/* Drinks */}
-          <div className="flex-1 min-h-0 flex flex-col border-b border-gray-200">
-            <div className="px-3 py-2 border-b border-gray-100 shrink-0">
-              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
-                {t('type_drink')}
-              </h3>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {drinks.length === 0 ? (
-                <p className="text-[10px] text-gray-400 text-center py-3">—</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-1.5">
-                  {drinks.map((d) => (
-                    <SimpleCard
-                      key={d.id}
-                      item={d}
-                      onClick={handleItemClick}
-                      compact
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeCart}
+          onEnd={endResize}
+        />
 
-          {/* Sauces */}
-          <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-3 py-2 border-b border-gray-100 shrink-0">
-              <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
-                {t('type_sauce')}
-              </h3>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {sauces.length === 0 ? (
-                <p className="text-[10px] text-gray-400 text-center py-3">—</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-1.5">
-                  {sauces.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => handleItemClick(s)}
-                      className="flex flex-col items-center gap-1 p-1.5 rounded-xl border-2 border-gray-200 hover:border-orange-400 bg-white active:scale-95 transition-all"
-                    >
-                      <div
-                        className="w-8 h-8 rounded-full border-2 border-white shadow"
-                        style={{ backgroundColor: s.color ?? '#e5e7eb' }}
-                      />
-                      <span className="text-[10px] font-bold text-gray-700 truncate w-full text-center">
-                        {s.short_name || s.name}
-                      </span>
-                      <span className="text-[10px] font-black text-orange-600">
-                        {s.free ? t('free') : formatYen(s.price)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* -------- COLUMN 4: CART -------- */}
-        <div className="w-72 lg:w-80 xl:w-96 shrink-0 bg-white border-l border-gray-200 flex flex-col min-h-0">
+        {/* ---- RIGHT: CART ---- */}
+        <div
+          ref={cartWrapRef}
+          className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
+          style={{ width: layout.cartWidth }}
+        >
           <div
             className={`px-3 py-2 border-b shrink-0 ${
               editingOrder
@@ -930,7 +882,9 @@ export default function CashierPage() {
                     </div>
                     <span
                       className={`text-sm font-black ${
-                        removed ? 'text-gray-400 line-through' : 'text-orange-600'
+                        removed
+                          ? 'text-gray-400 line-through'
+                          : 'text-orange-600'
                       }`}
                     >
                       {removed ? formatYen(0) : formatYen(lineTotal)}
@@ -1020,17 +974,16 @@ export default function CashierPage() {
         </div>
       </div>
 
-      {/* ============ DIALOGS ============ */}
       <ProductBuilderDialog
-        open={builderItem !== null}
-        item={builderItem}
-        allItems={menuItems}
+        open={builder !== null}
+        item={builder?.item ?? null}
+        initialVariantId={builder?.variantId}
         onConfirm={({ variant, price, options }) => {
-          if (builderItem)
-            addToCartFromBuilder(builderItem, variant, price, options);
-          setBuilderItem(null);
+          if (builder)
+            addToCartFromBuilder(builder.item, variant, price, options);
+          setBuilder(null);
         }}
-        onCancel={() => setBuilderItem(null)}
+        onCancel={() => setBuilder(null)}
       />
 
       <ClearCartDialog
@@ -1069,129 +1022,168 @@ export default function CashierPage() {
 }
 
 // ============================================================
-// CARD COMPONENTS
+// SIMPLE CARD
 // ============================================================
-function DishCard({
+const SimpleCard = memo(function SimpleCard({
   item,
   onClick,
+  size,
+  textSize,
 }: {
   item: MenuItem;
   onClick: (i: MenuItem) => void;
+  size: number;
+  textSize: number;
 }) {
-  const isGroup = item.dish_kind === 'group' && (item.variants?.length ?? 0) > 0;
+  const isSauce = item.type === 'sauce';
 
-  if (isGroup) {
-    return (
-      <div className="rounded-xl border-2 border-gray-200 bg-white p-2 shadow-sm">
-        <div className="flex items-center justify-between mb-1.5 px-0.5">
-          <span className="text-xs font-black text-gray-900 truncate">
-            {item.name}
+  return (
+    <button
+      onClick={() => onClick(item)}
+      style={{ width: size }}
+      className="flex flex-col items-center select-none active:scale-95 transition-transform"
+    >
+      <div
+        className="relative rounded-xl overflow-hidden transition-all"
+        style={{
+          width: size,
+          height: size,
+          borderWidth: isSauce ? 4 : 2,
+          borderStyle: 'solid',
+          borderColor: isSauce ? item.color ?? '#e5e7eb' : '#d1d5db',
+          background: isSauce
+            ? '#ffffff'
+            : 'linear-gradient(to bottom right, #f97316, #dc2626)',
+        }}
+      >
+        {item.image_url ? (
+          <>
+            <img
+              src={item.image_url}
+              alt={item.name}
+              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+              loading="lazy"
+              draggable={false}
+            />
+            {!isSauce && <div className="absolute inset-0 bg-black/40" />}
+          </>
+        ) : isSauce ? (
+          <div
+            className="absolute inset-0"
+            style={{
+              backgroundColor: item.color ?? '#e5e7eb',
+              opacity: 0.25,
+            }}
+          />
+        ) : null}
+      </div>
+      <div
+        className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
+        style={{ fontSize: textSize }}
+        title={item.name}
+      >
+        {item.short_name || item.name}
+      </div>
+      <div
+        className="text-center font-black text-orange-600 w-full px-0.5"
+        style={{ fontSize: textSize }}
+      >
+        {item.free ? '' : formatYen(item.price)}
+      </div>
+    </button>
+  );
+});
+
+// ============================================================
+// GROUP CARD — занимает N ячеек
+// ============================================================
+const GroupCard = memo(function GroupCard({
+  item,
+  variants,
+  onClick,
+  onVariantClick,
+  cellSize,
+  gap,
+  textSize,
+}: {
+  item: MenuItem;
+  variants: MenuItem[];
+  onClick: (i: MenuItem) => void;
+  onVariantClick: (item: MenuItem, v: MenuItem) => void;
+  cellSize: number;
+  gap: number;
+  textSize: number;
+}) {
+  return (
+    <div
+      className="rounded-xl border-2 border-gray-400 bg-white overflow-hidden flex flex-col"
+      style={{ minHeight: cellSize + textSize * 2 + 30 }}
+    >
+      {/* Header */}
+      <button
+        onClick={() => onClick(item)}
+        className="flex items-center justify-between w-full px-2 py-1 border-b border-gray-200 bg-gray-50 hover:bg-orange-50 transition-colors shrink-0"
+      >
+        <span
+          className="font-black text-gray-900 uppercase tracking-wide truncate text-left"
+          style={{ fontSize: textSize }}
+        >
+          {item.name}
+        </span>
+        {item.type === 'set' && (
+          <span
+            className="font-black bg-orange-500 text-white px-1.5 py-0.5 rounded-full shrink-0 ml-1"
+            style={{ fontSize: Math.max(7, textSize - 3) }}
+          >
+            SET
           </span>
-          <span className="text-[9px] font-bold bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full shrink-0 ml-1">
-            {item.variants!.length}
-          </span>
-        </div>
-        <div className="grid grid-cols-3 gap-1">
-          {item.variants!.map((v) => (
-            <button
-              key={v.id}
-              onClick={() => onClick(v)}
-              className="relative aspect-square rounded-lg overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border border-white active:scale-95 transition-transform"
+        )}
+      </button>
+
+      {/* Variants row */}
+      <div
+        className="flex items-start flex-1"
+        style={{ gap, padding: 8 }}
+      >
+        {variants.map((v) => (
+          <button
+            key={v.id}
+            onClick={() => onVariantClick(item, v)}
+            style={{ width: cellSize }}
+            className="flex flex-col items-center active:scale-95 transition-transform"
+          >
+            <div
+              className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 active:border-orange-500 bg-gradient-to-br from-orange-500 to-red-500 transition-all"
+              style={{ width: cellSize, height: cellSize }}
             >
               {(v.image_url || item.image_url) && (
                 <>
                   <img
                     src={v.image_url || item.image_url || ''}
                     alt={v.name}
-                    className="absolute inset-0 w-full h-full object-cover"
+                    className="absolute inset-0 w-full h-full object-cover pointer-events-none"
                     loading="lazy"
+                    draggable={false}
                   />
                   <div className="absolute inset-0 bg-black/40" />
                 </>
               )}
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-white text-center px-0.5">
-                <div className="text-[9px] font-black leading-tight drop-shadow">
-                  {v.name}
-                </div>
-                <div className="text-[9px] font-black text-yellow-300 mt-0.5 drop-shadow">
-                  {v.free ? '0' : formatYen(v.price)}
-                </div>
-              </div>
-            </button>
-          ))}
-        </div>
+            </div>
+            <div
+              className="mt-1 text-center font-black text-gray-900 truncate w-full px-0.5"
+              style={{ fontSize: textSize }}
+            >
+              {v.name}
+            </div>
+            <div
+              className="text-center font-black text-orange-600 w-full px-0.5"
+              style={{ fontSize: textSize }}
+            >
+              {v.free ? '' : formatYen(v.price)}
+            </div>
+          </button>
+        ))}
       </div>
-    );
-  }
-
-  return <SimpleCard item={item} onClick={onClick} />;
-}
-
-function SimpleCard({
-  item,
-  onClick,
-  badge,
-  badgeColor,
-  compact,
-}: {
-  item: MenuItem;
-  onClick: (i: MenuItem) => void;
-  badge?: string;
-  badgeColor?: string;
-  compact?: boolean;
-}) {
-  const hasBuilder =
-    item.type === 'set' ||
-    (item.dish_kind === 'group' && (item.variants?.length ?? 0) > 0) ||
-    (item.properties?.length ?? 0) > 0 ||
-    (item.sauce_mode === 'with' && (item.allowed_sauces?.length ?? 0) > 0);
-
-  return (
-    <button
-      onClick={() => onClick(item)}
-      className="group relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 border-gray-200 active:border-orange-400 active:scale-95 transition-all"
-    >
-      {item.image_url && (
-        <>
-          <img
-            src={item.image_url}
-            alt={item.name}
-            className="absolute inset-0 w-full h-full object-cover"
-            loading="lazy"
-          />
-          <div className="absolute inset-0 bg-black/40" />
-        </>
-      )}
-      {badge && (
-        <div
-          className={`absolute top-1 left-1 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full ${
-            badgeColor ?? 'bg-orange-600'
-          }`}
-        >
-          {badge}
-        </div>
-      )}
-      {hasBuilder && (
-        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-600 text-white text-[10px] font-black flex items-center justify-center shadow">
-          ⋯
-        </div>
-      )}
-      <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
-        <div
-          className={`${
-            compact ? 'text-[10px]' : 'text-xs'
-          } font-black text-white leading-tight drop-shadow line-clamp-2`}
-        >
-          {item.short_name || item.name}
-        </div>
-        <div
-          className={`${
-            compact ? 'text-[10px]' : 'text-xs'
-          } font-black mt-1 text-yellow-300 drop-shadow`}
-        >
-          {item.free ? '0' : formatYen(item.price)}
-        </div>
-      </div>
-    </button>
+    </div>
   );
-}
+});

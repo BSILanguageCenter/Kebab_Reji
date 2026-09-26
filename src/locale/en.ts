@@ -41,6 +41,13 @@ export const en: Record<TranslationKey, string> = {
   hostIpNote:
     'This IP is used for client connections. Make sure all devices are on the same WiFi network.',
 
+  // ---------- Bootstrap ----------
+  connectingToHost: 'Connecting to host...',
+  serverBootHint: 'Starting local server. This takes a few seconds.',
+  clientBootHint: 'Looking for host server. Make sure host is running.',
+  checkInTerminal: 'What to look for in Vite terminal',
+  retry: 'Retry',
+
   // ---------- Server panel ----------
   selectServer: 'Server',
   activeMode: 'active',
@@ -237,6 +244,29 @@ export const en: Record<TranslationKey, string> = {
   saucesShort: 'sauces',
   noSauces: 'No sauces',
 
+  // ---------- Layout v3 ----------
+  bludiAndSet: 'Dishes & Sets',
+  productsByCategory: 'Products by category',
+  dragHintShort: 'drag to reorder',
+  noResults: 'Nothing found',
+  noMenuItems: 'Menu is empty',
+
+  // ---------- Layout v4 ----------
+  layoutSettings: 'Layout settings',
+  reset: 'Reset',
+  dishCardSize: 'Dish card size',
+  toppingCardSize: 'Topping card size',
+  drinkCardSize: 'Drink card size',
+  sauceCardSize: 'Sauce card size',
+  itemTextSize: 'Text size',
+  toppingsHeight: 'Toppings height',
+  drinksShare: 'Drinks / sauces',
+
+  // ---------- v3.1 ----------
+  dragHint: 'Drag cards to change their order in the POS',
+  delete: 'Delete',
+  edit: 'Edit',
+
   // ---------- Errors ----------
   failedToLoadMenu: 'Failed to load menu',
   failedToLoadStats: 'Failed to load statistics',
@@ -276,14 +306,18 @@ export const en: Record<TranslationKey, string> = {
   undoCreateOrder: 'Cancel just-created order #{n}?',
   undoEditOrder: 'Revert order #{n} to previous version?',
   devicesOnline: 'online',
-
-  dragHint: 'Drag cards to change their order in the POS',
-  delete: 'Delete',
-  edit: 'Edit',
-  
-  bludiAndSet: 'Dishes & Sets',
-  productsByCategory: 'Products by category',
-  dragHintShort: 'drag to reorder',
-  noResults: 'Nothing found',
-  noMenuItems: 'Menu is empty',
+    // ---------- PanelSettings v2 ----------
+  preset: 'Preset',
+  presetCompact: 'Compact',
+  presetNormal: 'Normal',
+  presetLarge: 'Large',
+  sectionColumns: 'Column widths',
+  sectionCards: 'Card sizes',
+  sectionText: 'Text',
+  sectionProportions: 'Panel proportions',
+  colOrders: 'Orders / list',
+  colMenuRight: 'Drinks / sauces',
+  colCart: 'Cart / settings',
+    deleteProductMessage: 'Delete product',
+  deleting: 'Deleting...',
 };

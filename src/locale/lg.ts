@@ -1,9 +1,5 @@
 // ============================================================
 // СПИСОК КЛЮЧЕЙ ПЕРЕВОДА
-//
-// Единственное место, где определены ключи.
-// Каждый языковой файл (ru.ts, en.ts) импортирует
-// отсюда тип TranslationKey и обязан перевести ВСЕ ключи.
 // ============================================================
 
 export const translationKeys = [
@@ -44,6 +40,13 @@ export const translationKeys = [
   'continueBtn',
   'loading',
   'hostIpNote',
+
+  // ---------- Bootstrap ----------
+  'connectingToHost',
+  'serverBootHint',
+  'clientBootHint',
+  'checkInTerminal',
+  'retry',
 
   // ---------- Server panel ----------
   'selectServer',
@@ -180,7 +183,7 @@ export const translationKeys = [
   'dishVariantsHint',
   'setVariantsHint',
 
-  // ---------- Set (legacy, kept for safety) ----------
+  // ---------- Set (legacy) ----------
   'setSlots',
   'slotDrink',
   'slotSauce',
@@ -238,6 +241,29 @@ export const translationKeys = [
   'saucesShort',
   'noSauces',
 
+  // ---------- Layout v3 ----------
+  'bludiAndSet',
+  'productsByCategory',
+  'dragHintShort',
+  'noResults',
+  'noMenuItems',
+
+  // ---------- Layout v4 ----------
+  'layoutSettings',
+  'reset',
+  'dishCardSize',
+  'toppingCardSize',
+  'drinkCardSize',
+  'sauceCardSize',
+  'itemTextSize',
+  'toppingsHeight',
+  'drinksShare',
+
+  // ---------- v3.1 ----------
+  'dragHint',
+  'delete',
+  'edit',
+
   // ---------- Errors ----------
   'failedToLoadMenu',
   'failedToLoadStats',
@@ -277,16 +303,20 @@ export const translationKeys = [
   'undoCreateOrder',
   'undoEditOrder',
   'devicesOnline',
-  
-  'dragHint',
-  'delete',
-  'edit',
-  
-  'bludiAndSet',
-  'productsByCategory',
-  'dragHintShort',
-  'noResults',
-  'noMenuItems',
+    // ---------- PanelSettings v2 ----------
+  'preset',
+  'presetCompact',
+  'presetNormal',
+  'presetLarge',
+  'sectionColumns',
+  'sectionCards',
+  'sectionText',
+  'sectionProportions',
+  'colOrders',
+  'colMenuRight',
+  'colCart',
+  'deleteProductMessage',
+  'deleting',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];

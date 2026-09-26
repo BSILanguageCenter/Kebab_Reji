@@ -41,6 +41,13 @@ export const ru: Record<TranslationKey, string> = {
   hostIpNote:
     'Этот IP используется для подключения клиентов. Убедитесь, что все устройства в одной сети WiFi.',
 
+  // ---------- Bootstrap ----------
+  connectingToHost: 'Подключение к хосту...',
+  serverBootHint: 'Запускаю локальный сервер. Это займёт несколько секунд.',
+  clientBootHint: 'Ищу хост-сервер в сети. Убедитесь, что host запущен.',
+  checkInTerminal: 'Что искать в терминале Vite',
+  retry: 'Повторить',
+
   // ---------- Server panel ----------
   selectServer: 'Сервер',
   activeMode: 'активен',
@@ -237,6 +244,29 @@ export const ru: Record<TranslationKey, string> = {
   saucesShort: 'соусов',
   noSauces: 'Нет соусов',
 
+  // ---------- Layout v3 ----------
+  bludiAndSet: 'Блюда и Сеты',
+  productsByCategory: 'Продукты по категориям',
+  dragHintShort: 'перетащите, чтобы изменить порядок',
+  noResults: 'Ничего не найдено',
+  noMenuItems: 'Меню пустое',
+
+  // ---------- Layout v4 ----------
+  layoutSettings: 'Настройки вида',
+  reset: 'Сброс',
+  dishCardSize: 'Размер блюд',
+  toppingCardSize: 'Размер топпингов',
+  drinkCardSize: 'Размер напитков',
+  sauceCardSize: 'Размер соусов',
+  itemTextSize: 'Размер текста',
+  toppingsHeight: 'Высота топпингов',
+  drinksShare: 'Напитки / соусы',
+
+  // ---------- v3.1 ----------
+  dragHint: 'Перетаскивайте карточки, чтобы изменить порядок в кассе',
+  delete: 'Удалить',
+  edit: 'Изменить',
+
   // ---------- Errors ----------
   failedToLoadMenu: 'Не удалось загрузить меню',
   failedToLoadStats: 'Не удалось загрузить статистику',
@@ -276,14 +306,18 @@ export const ru: Record<TranslationKey, string> = {
   undoCreateOrder: 'Отменить только что созданный заказ #{n}?',
   undoEditOrder: 'Вернуть заказ #{n} к предыдущей версии?',
   devicesOnline: 'в сети',
-
-  dragHint: 'Перетаскивайте карточки, чтобы изменить порядок в кассе',
-  delete: 'Удалить',
-  edit: 'Изменить',
-
-  bludiAndSet: 'Блюда и Сеты',
-  productsByCategory: 'Продукты по категориям',
-  dragHintShort: 'перетащите, чтобы изменить порядок',
-  noResults: 'Ничего не найдено',
-  noMenuItems: 'Меню пустое',
+    // ---------- PanelSettings v2 ----------
+  preset: 'Пресет',
+  presetCompact: 'Компакт',
+  presetNormal: 'Обычный',
+  presetLarge: 'Крупный',
+  sectionColumns: 'Ширина колонок',
+  sectionCards: 'Размер карточек',
+  sectionText: 'Текст',
+  sectionProportions: 'Пропорции панелей',
+  colOrders: 'Заказы / список',
+  colMenuRight: 'Напитки / соусы',
+  colCart: 'Корзина / настройки',
+    deleteProductMessage: 'Удалить продукт',
+  deleting: 'Удаление...',
 };
