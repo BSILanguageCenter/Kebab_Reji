@@ -1,5 +1,9 @@
 import { io, type Socket } from 'socket.io-client';
 import type { Order, MenuItem } from '@/types/database';
+import {
+  applyExternalLayout,
+  type LayoutSettings,
+} from './layoutSettings';
 
 export interface ServerMenu {
   items: MenuItem[];
@@ -181,6 +185,13 @@ export function getSocket(): Socket {
       console.log('[ws] clients-count:', count);
       notifyClientsCount(count);
     });
+
+    // Layout от сервера (broadcast от другого клиента) →
+    // записываем в localStorage + уведомляем локальные хуки
+    socket.on('layout-settings', (settings: LayoutSettings) => {
+      console.log('[ws] layout-settings из сети');
+      applyExternalLayout(settings);
+    });
   }
   return socket;
 }
@@ -284,4 +295,13 @@ export function emitForceSync(): Promise<SyncStats> {
       resolve(stats);
     });
   });
+}
+
+// ============================================================
+// Layout: отправить на сервер
+// ============================================================
+export function emitLayoutSettings(settings: LayoutSettings): void {
+  const s = getSocket();
+  if (!s.connected) return;
+  s.emit('layout-settings', settings);
 }
