@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { useI18n } from '@/locale';
 
@@ -10,6 +11,7 @@ export function ConfirmDialog({
   confirmLabel,
   cancelLabel,
   variant = 'gray',
+  disabledSeconds = 0,
   onConfirm,
   onCancel,
 }: {
@@ -19,11 +21,36 @@ export function ConfirmDialog({
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: Variant;
+  /** Сколько секунд держать кнопку «OK» выключенной после открытия. */
+  disabledSeconds?: number;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
+  const [cooldown, setCooldown] = useState(0);
+
+  // Обратный отсчёт, запускается при open=true и сбрасывается при закрытии
+  useEffect(() => {
+    if (!open || disabledSeconds <= 0) {
+      setCooldown(0);
+      return;
+    }
+    setCooldown(disabledSeconds);
+    const id = window.setInterval(() => {
+      setCooldown((prev) => {
+        if (prev <= 1) {
+          window.clearInterval(id);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [open, disabledSeconds]);
+
   if (!open) return null;
+
+  const isBlocked = cooldown > 0;
 
   const colors: Record<Variant, string> = {
     yellow: 'bg-yellow-500 hover:bg-yellow-400',
@@ -73,9 +100,15 @@ export function ConfirmDialog({
           </button>
           <button
             onClick={onConfirm}
-            className={`flex-1 py-2.5 rounded-xl text-white text-sm font-bold transition-colors active:scale-[0.98] ${colors[variant]}`}
+            disabled={isBlocked}
+            className={`flex-1 py-2.5 rounded-xl text-white text-sm font-bold transition-colors ${colors[variant]} ${
+              isBlocked
+                ? 'opacity-50 cursor-not-allowed'
+                : 'active:scale-[0.98]'
+            }`}
           >
             {confirmLabel ?? t('yes')}
+            {isBlocked ? ` (${cooldown})` : ''}
           </button>
         </div>
       </div>

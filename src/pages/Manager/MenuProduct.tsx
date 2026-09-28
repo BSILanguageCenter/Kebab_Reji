@@ -1,4 +1,12 @@
-import { useState, useEffect, useCallback, useRef, memo } from 'react';
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+  useLayoutEffect,
+  memo,
+} from 'react';
 import {
   fetchAllMenuItems,
   createItem,
@@ -74,24 +82,11 @@ function getItemWidth(item: MenuItem): number {
 }
 
 const GRID_GAP = 12;
-
-// ============================================================
-// СКОЛЬКО ПУСТЫХ ЯЧЕЕК ПОКАЗЫВАТЬ
-// ============================================================
-const EMPTY_SLOTS_AFTER_END = 12;
-const EMPTY_SLOTS_WHILE_DRAG = 36;
-const MIN_TOTAL_SLOTS = 24;
+const EMPTY_ROWS_AFTER = 3;
 
 // ============================================================
 // Порядок при «Сбросе»
 // ============================================================
-const TYPE_ORDER: Record<MenuItemType, number> = {
-  dish: 0,
-  set: 1,
-  drink: 2,
-  sauce: 3,
-  topping: 4,
-};
 
 function hasSortConflicts(tops: MenuItem[]): boolean {
   const spaces: CategorySpace[] = ['dishset', 'drink', 'sauce', 'topping'];
@@ -106,40 +101,58 @@ function hasSortConflicts(tops: MenuItem[]): boolean {
   return false;
 }
 
+// ---------- Сброс: раскладка с учётом ширины строки ----------
 function buildCategorizedOrder(
-  tops: MenuItem[]
+  tops: MenuItem[],
+  colsBySpace: Partial<Record<CategorySpace, number>> = {}
 ): { id: string; sort_order: number }[] {
   const updates: { id: string; sort_order: number }[] = [];
+
+  const pack = (arr: MenuItem[], cols?: number) => {
+    let cursor = 0;
+    for (const it of arr) {
+      const w = getItemWidth(it);
+      // группа не должна пересекать границу строки
+      if (cols && w <= cols && (cursor % cols) + w > cols) {
+        cursor = Math.ceil(cursor / cols) * cols;
+      }
+      updates.push({ id: it.id, sort_order: cursor });
+      cursor += w;
+    }
+  };
+
+    // Сортируем dish и set:
+  //   1) dish без вариантов (dish_kind !== 'group')  → 0
+  //   2) dish с вариантами (dish_kind === 'group')   → 1
+  //   3) set                                          → 2
+  // Внутри каждой группы — по старому sort_order.
+  const sortKeyOf = (it: MenuItem): number => {
+    if (it.type === 'dish') return it.dish_kind === 'group' ? 1 : 0;
+    return 2; // set
+  };
 
   const dsItems = tops
     .filter((it) => it.type === 'dish' || it.type === 'set')
     .sort((a, b) => {
-      const t = TYPE_ORDER[a.type] - TYPE_ORDER[b.type];
-      if (t !== 0) return t;
+      const ka = sortKeyOf(a);
+      const kb = sortKeyOf(b);
+      if (ka !== kb) return ka - kb;
       return a.sort_order - b.sort_order;
     });
-  let cursor = 0;
-  for (const it of dsItems) {
-    updates.push({ id: it.id, sort_order: cursor });
-    cursor += getItemWidth(it);
-  }
+  pack(dsItems, colsBySpace.dishset);
 
   for (const sp of ['drink', 'sauce', 'topping'] as CategorySpace[]) {
     const arr = tops
       .filter((it) => getSpaceOfType(it.type) === sp)
       .sort((a, b) => a.sort_order - b.sort_order);
-    let c = 0;
-    for (const it of arr) {
-      updates.push({ id: it.id, sort_order: c });
-      c += getItemWidth(it);
-    }
+    pack(arr, colsBySpace[sp]);
   }
 
   return updates;
 }
 
 // ============================================================
-// Проверка: свободны ли ячейки [start, start + width - 1]
+// Проверка диапазона
 // ============================================================
 function isRangeFree(
   spaceItems: MenuItem[],
@@ -159,22 +172,349 @@ function isRangeFree(
   return true;
 }
 
-// ============================================================
-// Карта: какая карточка занимает какую ячейку
-// ============================================================
-function getOccupiedSlots(
-  spaceItems: MenuItem[]
-): Map<number, MenuItem> {
-  const map = new Map<number, MenuItem>();
-  for (const it of spaceItems) {
-    const w = getItemWidth(it);
-    for (let i = 0; i < w; i++) {
-      map.set(it.sort_order + i, it);
-    }
-  }
-  return map;
+// ---------- Влезает ли карточка в строку ----------
+function fitsInRow(start: number, width: number, cols: number): boolean {
+  if (start < 0) return false;
+  if (width >= cols) return start % cols === 0;
+  return (start % cols) + width <= cols;
 }
 
+function isPlaceable(
+  spaceItems: MenuItem[],
+  start: number,
+  width: number,
+  excludeId: string,
+  cols: number
+): boolean {
+  return (
+    fitsInRow(start, width, cols) &&
+    isRangeFree(spaceItems, start, width, excludeId)
+  );
+}
+
+// ---------- Ближайшее свободное место (как на рабочем столе) ----------
+function findNearestFreeSlot(
+  spaceItems: MenuItem[],
+  target: number,
+  width: number,
+  excludeId: string,
+  cols: number
+): number {
+  const tr = Math.floor(target / cols);
+  const tc = target % cols;
+
+  let maxSlot = 0;
+  for (const it of spaceItems) {
+    maxSlot = Math.max(maxSlot, it.sort_order + getItemWidth(it));
+  }
+  const limit = maxSlot + width + cols * 2;
+
+  let best = -1;
+  let bestD = Infinity;
+  for (let s = 0; s <= limit; s++) {
+    if (!isPlaceable(spaceItems, s, width, excludeId, cols)) continue;
+    const dr = Math.floor(s / cols) - tr;
+    const dc = (s % cols) - tc;
+    const d = dr * dr + dc * dc;
+    if (d < bestD) {
+      best = s;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+// ============================================================
+// useGridCols
+// ============================================================
+function useGridCols(
+  ref: React.RefObject<HTMLDivElement | null>,
+  size: number
+): number {
+  const [cols, setCols] = useState(1);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => {
+      const w = el.clientWidth;
+      if (w <= 0) return;
+      const c = Math.max(
+        1,
+        Math.floor((w + GRID_GAP) / (size + GRID_GAP))
+      );
+      setCols((prev) => (prev === c ? prev : c));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref, size]);
+
+  return cols;
+}
+
+// ============================================================
+// Layout-ячейка
+// ============================================================
+type LayoutCell = {
+  row: number;
+  col: number;
+  width: number;
+  slot: number;
+  item: MenuItem | null;
+};
+
+// ============================================================
+// buildRenderLayout — slot = row * cols + col
+// ============================================================
+function buildRenderLayout(
+  items: MenuItem[],
+  cols: number,
+  minEmptyRows: number
+): LayoutCell[] {
+  const cells: LayoutCell[] = [];
+  const occupied = new Set<number>();
+  let maxSlot = 0;
+
+  for (const it of items) {
+    const w = getItemWidth(it);
+    for (let i = 0; i < w; i++) occupied.add(it.sort_order + i);
+    maxSlot = Math.max(maxSlot, it.sort_order + w - 1);
+
+    const span = Math.min(w, cols);
+    const row = Math.floor(it.sort_order / cols);
+    let col = it.sort_order % cols;
+    if (col + span > cols) col = cols - span; // защита от старых данных
+
+    cells.push({ row, col, width: span, slot: it.sort_order, item: it });
+  }
+
+  const totalRows = Math.floor(maxSlot / cols) + 1 + minEmptyRows;
+  for (let r = 0; r < totalRows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const slot = r * cols + c;
+      if (occupied.has(slot)) continue;
+      cells.push({ row: r, col: c, width: 1, slot, item: null });
+    }
+  }
+
+  return cells;
+}
+
+// ============================================================
+// GridSpace
+// ============================================================
+function GridSpace({
+  space,
+  size,
+  compact,
+  allTops,
+  draggedId,
+  dragOverSlot,
+  setDragOverSlot,
+  handleSlotDrop,
+  startEdit,
+  handleDragStart,
+  handleDragEnd,
+  canMoveItem,
+  moveItemByOne,
+  registerCols,
+  textSize,
+}: {
+  space: CategorySpace;
+  size: number;
+  compact: boolean;
+  allTops: MenuItem[];
+  items: MenuItem[];
+  draggedId: string | null;
+  dragOverSlot: { space: CategorySpace; slot: number } | null;
+  setDragOverSlot: (
+    v: { space: CategorySpace; slot: number } | null
+  ) => void;
+  handleSlotDrop: (space: CategorySpace, slot: number, cols: number) => void;
+  startEdit: (item: MenuItem) => void;
+  handleDragStart: (id: string) => void;
+  handleDragEnd: () => void;
+  canMoveItem: (item: MenuItem, direction: -1 | 1, cols: number) => boolean;
+  moveItemByOne: (item: MenuItem, direction: -1 | 1, cols: number) => void;
+  registerCols: (space: CategorySpace, cols: number) => void;
+  textSize: number;
+}) {
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const cols = useGridCols(gridRef, size);
+
+  useEffect(() => {
+    registerCols(space, cols);
+  }, [space, cols, registerCols]);
+
+  const spaceItems = useMemo(
+    () => getSpaceItems(allTops, space),
+    [allTops, space]
+  );
+
+  const cells = useMemo(
+    () => buildRenderLayout(spaceItems, cols, EMPTY_ROWS_AFTER),
+    [spaceItems, cols]
+  );
+
+  const cellH = compact ? size + 32 : size + 50;
+
+  const highlightSlot =
+    dragOverSlot?.space === space ? dragOverSlot.slot : null;
+
+  const draggedItem = draggedId
+    ? allTops.find((i) => i.id === draggedId)
+    : null;
+  const dragW = draggedItem ? Math.min(getItemWidth(draggedItem), cols) : 1;
+
+  return (
+    <div
+      ref={gridRef}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: `repeat(${cols}, ${size}px)`,
+        gridAutoRows: `${cellH}px`,
+        gap: GRID_GAP,
+      }}
+    >
+      {cells.map((cell) => {
+        const key = cell.item ? cell.item.id : `empty-${cell.slot}`;
+
+        // ---------- пустая ячейка ----------
+        if (!cell.item) {
+          // подсвечиваем весь диапазон, который займёт карточка
+          const isHighlightedEmpty =
+            highlightSlot !== null &&
+            cell.slot >= highlightSlot &&
+            cell.slot < highlightSlot + dragW &&
+            Math.floor(cell.slot / cols) === Math.floor(highlightSlot / cols);
+
+          return (
+            <div
+              key={key}
+              onDragOver={(e) => {
+                if (!draggedId) return;
+                e.preventDefault();
+                if (
+                  dragOverSlot?.space !== space ||
+                  dragOverSlot?.slot !== cell.slot
+                ) {
+                  setDragOverSlot({ space, slot: cell.slot });
+                }
+              }}
+              onDragLeave={() => {
+                if (
+                  dragOverSlot?.space === space &&
+                  dragOverSlot?.slot === cell.slot
+                ) {
+                  setDragOverSlot(null);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleSlotDrop(space, cell.slot, cols);
+              }}
+              style={{
+                gridRowStart: cell.row + 1,
+                gridColumnStart: cell.col + 1,
+                gridColumnEnd: `span ${cell.width}`,
+              }}
+              className={`rounded-xl border-2 border-dashed transition-all ${
+                isHighlightedEmpty
+                  ? 'border-orange-400 bg-orange-100'
+                  : 'border-gray-200 bg-gray-50/60'
+              }`}
+            />
+          );
+        }
+
+        // ---------- карточка ----------
+        const card = cell.item;
+        const isHighlighted = highlightSlot === card.sort_order;
+
+        let variants: MenuItem[] | undefined;
+        if (card.type === 'dish' && card.dish_kind === 'group') {
+          variants = card.variants;
+        } else if (
+          card.type === 'set' &&
+          card.set_main?.dish_kind === 'group'
+        ) {
+          variants = card.set_main.variants;
+        }
+
+        const canLeft = canMoveItem(card, -1, cols);
+        const canRight = canMoveItem(card, 1, cols);
+
+        return (
+          <div
+            key={key}
+            onDragOver={(e) => {
+              if (!draggedId) return;
+              e.preventDefault();
+              if (
+                dragOverSlot?.space !== space ||
+                dragOverSlot?.slot !== card.sort_order
+              ) {
+                setDragOverSlot({ space, slot: card.sort_order });
+              }
+            }}
+            onDragLeave={() => {
+              if (
+                dragOverSlot?.space === space &&
+                dragOverSlot?.slot === card.sort_order
+              ) {
+                setDragOverSlot(null);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleSlotDrop(space, card.sort_order, cols);
+            }}
+            style={{
+              gridRowStart: cell.row + 1,
+              gridColumnStart: cell.col + 1,
+              gridColumnEnd: `span ${cell.width}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            className={`rounded-xl transition-all ${
+              isHighlighted
+                ? 'ring-4 ring-orange-400 ring-offset-2 bg-orange-50/60'
+                : ''
+            }`}
+          >
+            <DraggableCard
+              item={card}
+              variants={variants}
+              onEdit={startEdit}
+              onVariantClick={(v) => {
+                if (card.type === 'dish') startEdit(v);
+                else startEdit(card);
+              }}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onMoveLeft={() => moveItemByOne(card, -1, cols)}
+              onMoveRight={() => moveItemByOne(card, 1, cols)}
+              canMoveLeft={canLeft}
+              canMoveRight={canRight}
+              size={size}
+              textSize={textSize}
+              compact={compact}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================
+// MenuProduct
+// ============================================================
 export function MenuProduct() {
   const { t } = useI18n();
   const [items, setItems] = useState<MenuItem[]>([]);
@@ -187,8 +527,10 @@ export function MenuProduct() {
   const [pendingDelete, setPendingDelete] = useState<MenuItem | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const dragId = useRef<string | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
+  // Открыт ли диалог подтверждения «Сброс»
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+
+  const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverSlot, setDragOverSlot] = useState<{
     space: CategorySpace;
     slot: number;
@@ -196,6 +538,12 @@ export function MenuProduct() {
 
   const [layout, setLayout] = useLayoutSettings();
   const drinksWrapRef = useRef<HTMLDivElement>(null);
+
+  // Актуальное число колонок каждого пространства (для «Сброса»)
+  const colsRef = useRef<Partial<Record<CategorySpace, number>>>({});
+  const registerCols = useCallback((s: CategorySpace, c: number) => {
+    colsRef.current[s] = c;
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -234,13 +582,11 @@ export function MenuProduct() {
   };
 
   const handleDragStart = (id: string) => {
-    dragId.current = id;
-    setIsDragging(true);
+    setDraggedId(id);
   };
 
   const handleDragEnd = () => {
-    dragId.current = null;
-    setIsDragging(false);
+    setDraggedId(null);
     setDragOverSlot(null);
   };
 
@@ -263,140 +609,85 @@ export function MenuProduct() {
     }
   };
 
-  const allTops = items.filter((i) => !i.parent_id);
+  const allTops = useMemo(
+    () => items.filter((i) => !i.parent_id),
+    [items]
+  );
 
-  const findCardAtSlot = useCallback(
-    (space: CategorySpace, slot: number): MenuItem | null => {
+  // ============================================================
+  // DROP — как на рабочем столе Windows:
+  //   свободная ячейка → карточка встаёт ровно туда;
+  //   занятая → ближайшее свободное место, соседей не двигаем.
+  // ============================================================
+  const handleSlotDrop = useCallback(
+    async (space: CategorySpace, targetSlot: number, cols: number) => {
+      const fromId = draggedId;
+      setDraggedId(null);
+      setDragOverSlot(null);
+      if (!fromId) return;
+
+      const fromItem = items.find((i) => i.id === fromId);
+      if (!fromItem || fromItem.parent_id) return;
+      if (getSpaceOfType(fromItem.type) !== space) return;
+
       const spaceItems = getSpaceItems(allTops, space);
-      for (const it of spaceItems) {
-        const w = getItemWidth(it);
-        if (slot >= it.sort_order && slot < it.sort_order + w) return it;
+      const w = getItemWidth(fromItem);
+
+      let dest = targetSlot;
+      if (!isPlaceable(spaceItems, dest, w, fromItem.id, cols)) {
+        dest = findNearestFreeSlot(
+          spaceItems,
+          targetSlot,
+          w,
+          fromItem.id,
+          cols
+        );
+        if (dest < 0) return;
       }
-      return null;
+
+      if (dest === fromItem.sort_order) return;
+      await applyReorder([{ id: fromItem.id, sort_order: dest }]);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [draggedId, items, allTops]
+  );
+
+  // ============================================================
+  // КНОПКИ ◀ ▶ — двигают ТОЛЬКО саму карточку на ±1 ячейку,
+  //              если целевые ячейки свободны и группа не
+  //              перескакивает через край строки.
+  // ============================================================
+  const canMoveItem = useCallback(
+    (item: MenuItem, direction: -1 | 1, cols: number): boolean => {
+      if (item.parent_id) return false;
+      const spaceItems = getSpaceItems(allTops, getSpaceOfType(item.type));
+      return isPlaceable(
+        spaceItems,
+        item.sort_order + direction,
+        getItemWidth(item),
+        item.id,
+        cols
+      );
     },
     [allTops]
   );
 
-  // ============================================================
-  // DROP
-  // ============================================================
-  const handleSlotDrop = async (
-    space: CategorySpace,
-    targetSlot: number
-  ) => {
-    const fromId = dragId.current;
-    dragId.current = null;
-    setIsDragging(false);
-    setDragOverSlot(null);
-    if (!fromId) return;
-
-    const fromItem = items.find((i) => i.id === fromId);
-    if (!fromItem) return;
-    if (fromItem.parent_id) return;
-    if (getSpaceOfType(fromItem.type) !== space) return;
-
-    const fromStart = fromItem.sort_order;
-    const fromWidth = getItemWidth(fromItem);
-    const spaceItems = getSpaceItems(allTops, space);
-
-    const targetCard = findCardAtSlot(space, targetSlot);
-
-    if (targetCard && targetCard.id === fromItem.id) return;
-
-    // ---------- ПУСТАЯ ЯЧЕЙКА ----------
-    if (!targetCard) {
-      if (targetSlot === fromStart) return;
-      if (!isRangeFree(spaceItems, targetSlot, fromWidth, fromItem.id)) {
-        return;
-      }
-      await applyReorder([{ id: fromItem.id, sort_order: targetSlot }]);
-      return;
-    }
-
-    // ---------- НА КАРТОЧКУ ----------
-    const targetStart = targetCard.sort_order;
-    if (targetStart === fromStart) return;
-
-    const others = spaceItems.filter((i) => i.id !== fromItem.id);
-    const updates: { id: string; sort_order: number }[] = [];
-
-    if (fromStart < targetStart) {
-      // тащим вправо
-      const fromEnd = fromStart + fromWidth - 1;
-      const targetEnd = targetStart + fromWidth - 1;
-
-      for (const it of others) {
-        const itStart = it.sort_order;
-        const itEnd = itStart + getItemWidth(it) - 1;
-        if (itEnd <= fromEnd) continue;
-        if (itStart > targetEnd) continue;
-        updates.push({ id: it.id, sort_order: itStart - fromWidth });
-      }
-      updates.push({ id: fromItem.id, sort_order: targetStart });
-    } else {
-      // тащим влево
-      for (const it of others) {
-        const itStart = it.sort_order;
-        const itEnd = itStart + getItemWidth(it) - 1;
-        if (itStart >= fromStart) continue;
-        if (itEnd < targetStart) continue;
-        updates.push({ id: it.id, sort_order: itStart + fromWidth });
-      }
-      updates.push({ id: fromItem.id, sort_order: targetStart });
-    }
-
-    if (updates.length === 0) return;
-    await applyReorder(updates);
-  };
+  const moveItemByOne = useCallback(
+    async (item: MenuItem, direction: -1 | 1, cols: number) => {
+      if (!canMoveItem(item, direction, cols)) return;
+      await applyReorder([
+        { id: item.id, sort_order: item.sort_order + direction },
+      ]);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canMoveItem]
+  );
 
   // ============================================================
-  // СДВИГ НА 1 ЯЧЕЙКУ ◀ ▶
-  //
-  //   Вправо:
-  //     Все карточки, чей start >= fromStart + fromWidth,
-  //     сдвигаются вправо на 1. Сама карточка встаёт на fromStart + 1.
-  //
-  //   Влево:
-  //     Все карточки, чей end < fromStart (то есть полностью слева),
-  //     сдвигаются влево на 1. Сама карточка встаёт на fromStart - 1.
-  //
-  //   Это даёт "сдвиг на 1 ячейку" для любой карточки:
-  //   всё, что мешает, автоматически подвинется.
-  // ============================================================
-  const canMoveItem = (item: MenuItem, direction: -1 | 1): boolean => {
-    if (item.parent_id) return false;
-    const space = getSpaceOfType(item.type);
-    const spaceItems = getSpaceItems(allTops, space);
-    const fromStart = item.sort_order;
-    const fromWidth = getItemWidth(item);
-    const newStart = fromStart + direction;
-    if (newStart < 0) return false;
-    return isRangeFree(spaceItems, newStart, fromWidth, item.id);
-  };
-
-  const moveItemByOne = async (item: MenuItem, direction: -1 | 1) => {
-    if (item.parent_id) return;
-    const space = getSpaceOfType(item.type);
-    const spaceItems = getSpaceItems(allTops, space);
-    const fromStart = item.sort_order;
-    const fromWidth = getItemWidth(item);
-    const newStart = fromStart + direction;
-    if (newStart < 0) return;
-
-    // Если целевые ячейки заняты — ничего не делаем (кнопка disabled)
-    if (!isRangeFree(spaceItems, newStart, fromWidth, item.id)) {
-      return;
-    }
-
-    // Свободно — двигаем только саму карточку, соседей не трогаем
-    await applyReorder([{ id: item.id, sort_order: newStart }]);
-  };
-
-  // ============================================================
-  // КНОПКА «СБРОС»
+  // СБРОС
   // ============================================================
   const handleResetOrder = async () => {
-    const updates = buildCategorizedOrder(allTops);
+    const updates = buildCategorizedOrder(allTops, colsRef.current);
     if (updates.length === 0) return;
     await applyReorder(updates);
   };
@@ -462,252 +753,46 @@ export function MenuProduct() {
     startLayoutRef.current = null;
   };
 
-  const handleResizeOrders = (totalDelta: number) => {
+  const handleResizeOrders = (d: number) => {
     const base = startLayoutRef.current ?? layout;
     setLayout((prev) => ({
       ...prev,
-      ordersWidth: clampLayout('ordersWidth', base.ordersWidth + totalDelta),
+      ordersWidth: clampLayout('ordersWidth', base.ordersWidth + d),
     }));
   };
 
-  const handleResizeMenuRight = (totalDelta: number) => {
+  const handleResizeMenuRight = (d: number) => {
     const base = startLayoutRef.current ?? layout;
     setLayout((prev) => ({
       ...prev,
-      menuRightWidth: clampLayout(
-        'menuRightWidth',
-        base.menuRightWidth - totalDelta
-      ),
+      menuRightWidth: clampLayout('menuRightWidth', base.menuRightWidth - d),
     }));
   };
 
-  const handleResizeCart = (totalDelta: number) => {
+  const handleResizeCart = (d: number) => {
     const base = startLayoutRef.current ?? layout;
     setLayout((prev) => ({
       ...prev,
-      cartWidth: clampLayout('cartWidth', base.cartWidth - totalDelta),
+      cartWidth: clampLayout('cartWidth', base.cartWidth - d),
     }));
   };
 
-  const handleResizeToppings = (totalDelta: number) => {
+  const handleResizeToppings = (d: number) => {
     const base = startLayoutRef.current ?? layout;
     setLayout((prev) => ({
       ...prev,
-      toppingsHeight: clampLayout(
-        'toppingsHeight',
-        base.toppingsHeight - totalDelta
-      ),
+      toppingsHeight: clampLayout('toppingsHeight', base.toppingsHeight - d),
     }));
   };
 
-  const handleResizeDrinks = (totalDelta: number) => {
+  const handleResizeDrinks = (d: number) => {
     const base = startLayoutRef.current ?? layout;
     const containerH = drinksWrapRef.current?.clientHeight ?? 400;
-    const pctDelta = (totalDelta / containerH) * 100;
+    const pctDelta = (d / containerH) * 100;
     setLayout((prev) => ({
       ...prev,
       drinksShare: clampLayout('drinksShare', base.drinksShare + pctDelta),
     }));
-  };
-
-  // ============================================================
-  // GRID RENDER
-  // ============================================================
-  const renderGrid = (
-    space: CategorySpace,
-    size: number,
-    compact: boolean
-  ) => {
-    const spaceItems = getSpaceItems(allTops, space);
-
-    const occupied = getOccupiedSlots(spaceItems);
-    let maxEnd = -1;
-    for (const it of spaceItems) {
-      const w = getItemWidth(it);
-      maxEnd = Math.max(maxEnd, it.sort_order + w - 1);
-    }
-
-    const emptyAfter = isDragging
-      ? EMPTY_SLOTS_WHILE_DRAG
-      : EMPTY_SLOTS_AFTER_END;
-    const totalSlots = Math.max(
-      MIN_TOTAL_SLOTS,
-      maxEnd + 1 + emptyAfter
-    );
-    const cellH = compact ? size + 32 : size + 50;
-
-    const draggedItem = dragId.current
-      ? items.find((i) => i.id === dragId.current) ?? null
-      : null;
-    const dragInThisSpace =
-      draggedItem != null &&
-      !draggedItem.parent_id &&
-      getSpaceOfType(draggedItem.type) === space;
-
-    const dragWidth = dragInThisSpace
-      ? getItemWidth(draggedItem as MenuItem)
-      : 1;
-
-    let dropStart: number | null = null;
-    if (dragInThisSpace && dragOverSlot?.space === space) {
-      const targetCard = findCardAtSlot(space, dragOverSlot.slot);
-      dropStart = targetCard ? targetCard.sort_order : dragOverSlot.slot;
-    }
-    const dropEnd = dropStart != null ? dropStart + dragWidth - 1 : null;
-
-    const cells: React.ReactNode[] = [];
-    let slot = 0;
-    while (slot < totalSlots) {
-      const currentSlot = slot;
-      const card = occupied.get(currentSlot);
-
-      // -------- пустая ячейка --------
-      if (!card) {
-        const inDropRange =
-          dropStart != null &&
-          dropEnd != null &&
-          currentSlot >= dropStart &&
-          currentSlot <= dropEnd;
-
-        cells.push(
-          <div
-            key={`empty-${space}-${currentSlot}`}
-            onDragOver={(e) => {
-              if (!dragId.current) return;
-              e.preventDefault();
-              if (
-                dragOverSlot?.space !== space ||
-                dragOverSlot?.slot !== currentSlot
-              ) {
-                setDragOverSlot({ space, slot: currentSlot });
-              }
-            }}
-            onDragLeave={() => {
-              if (
-                dragOverSlot?.space === space &&
-                dragOverSlot?.slot === currentSlot
-              ) {
-                setDragOverSlot(null);
-              }
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              handleSlotDrop(space, currentSlot);
-            }}
-            style={{ width: size, height: cellH - 4 }}
-            className={`rounded-xl border-2 border-dashed transition-all ${
-              inDropRange
-                ? 'border-orange-400 bg-orange-100'
-                : 'border-gray-200 bg-gray-50/60'
-            }`}
-          />
-        );
-        slot = currentSlot + 1;
-        continue;
-      }
-
-      // -------- карточка --------
-      if (card.sort_order < currentSlot) {
-        slot = currentSlot + 1;
-        continue;
-      }
-
-      const w = getItemWidth(card);
-      const cardStart = currentSlot;
-      const cardEnd = currentSlot + w - 1;
-
-      const inDropRange =
-        dropStart != null &&
-        dropEnd != null &&
-        cardEnd >= dropStart &&
-        cardStart <= dropEnd;
-
-      let variants: MenuItem[] | undefined;
-      if (card.type === 'dish' && card.dish_kind === 'group') {
-        variants = card.variants;
-      } else if (
-        card.type === 'set' &&
-        card.set_main?.dish_kind === 'group'
-      ) {
-        variants = card.set_main.variants;
-      }
-
-      const canLeft = canMoveItem(card, -1);
-      const canRight = canMoveItem(card, 1);
-
-      cells.push(
-        <div
-          key={card.id}
-          onDragOver={(e) => {
-            if (!dragId.current) return;
-            e.preventDefault();
-            if (
-              dragOverSlot?.space !== space ||
-              dragOverSlot?.slot !== currentSlot
-            ) {
-              setDragOverSlot({ space, slot: currentSlot });
-            }
-          }}
-          onDragLeave={() => {
-            if (
-              dragOverSlot?.space === space &&
-              dragOverSlot?.slot === currentSlot
-            ) {
-              setDragOverSlot(null);
-            }
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            handleSlotDrop(space, currentSlot);
-          }}
-          style={{
-            gridColumn: `span ${w}`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-          className={`rounded-xl transition-all ${
-            inDropRange
-              ? 'ring-4 ring-orange-400 ring-offset-2 bg-orange-50/60'
-              : ''
-          }`}
-        >
-          <DraggableCard
-            item={card}
-            variants={variants}
-            onEdit={startEdit}
-            onVariantClick={(v) => {
-              if (card.type === 'dish') startEdit(v);
-              else startEdit(card);
-            }}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            onMoveLeft={() => moveItemByOne(card, -1)}
-            onMoveRight={() => moveItemByOne(card, 1)}
-            canMoveLeft={canLeft}
-            canMoveRight={canRight}
-            size={size}
-            textSize={layout.itemTextSize}
-            compact={compact}
-          />
-        </div>
-      );
-      slot = cardEnd + 1;
-    }
-
-    return (
-      <div
-        className="grid gap-3"
-        style={{
-          gridTemplateColumns: `repeat(auto-fill, ${size}px)`,
-          gridAutoRows: `${cellH}px`,
-        }}
-      >
-        {cells}
-      </div>
-    );
   };
 
   if (loading) {
@@ -793,7 +878,7 @@ export function MenuProduct() {
                 </h3>
               </div>
               <button
-                onClick={handleResetOrder}
+                onClick={() => setResetConfirmOpen(true)}
                 disabled={!hasAny}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-[10px] font-bold active:scale-[0.97] transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Разложить по категориям"
@@ -802,7 +887,24 @@ export function MenuProduct() {
                 Сброс
               </button>
             </div>
-            {renderGrid('dishset', layout.dishCardSize, false)}
+            <GridSpace
+              space="dishset"
+              size={layout.dishCardSize}
+              compact={false}
+              allTops={allTops}
+              items={items}
+              draggedId={draggedId}
+              dragOverSlot={dragOverSlot}
+              setDragOverSlot={setDragOverSlot}
+              handleSlotDrop={handleSlotDrop}
+              startEdit={startEdit}
+              handleDragStart={handleDragStart}
+              handleDragEnd={handleDragEnd}
+              canMoveItem={canMoveItem}
+              moveItemByOne={moveItemByOne}
+              registerCols={registerCols}
+              textSize={layout.itemTextSize}
+            />
           </div>
 
           {hasTopping && (
@@ -821,7 +923,24 @@ export function MenuProduct() {
                   {t('type_topping')}
                 </h3>
                 <div className="overflow-y-auto h-[calc(100%-16px)]">
-                  {renderGrid('topping', layout.toppingCardSize, true)}
+                  <GridSpace
+                    space="topping"
+                    size={layout.toppingCardSize}
+                    compact={true}
+                    allTops={allTops}
+                    items={items}
+                    draggedId={draggedId}
+                    dragOverSlot={dragOverSlot}
+                    setDragOverSlot={setDragOverSlot}
+                    handleSlotDrop={handleSlotDrop}
+                    startEdit={startEdit}
+                    handleDragStart={handleDragStart}
+                    handleDragEnd={handleDragEnd}
+                    canMoveItem={canMoveItem}
+                    moveItemByOne={moveItemByOne}
+                    registerCols={registerCols}
+                    textSize={layout.itemTextSize}
+                  />
                 </div>
               </div>
             </>
@@ -850,7 +969,24 @@ export function MenuProduct() {
               </h3>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {renderGrid('drink', layout.drinkCardSize, true)}
+              <GridSpace
+                space="drink"
+                size={layout.drinkCardSize}
+                compact={true}
+                allTops={allTops}
+                items={items}
+                draggedId={draggedId}
+                dragOverSlot={dragOverSlot}
+                setDragOverSlot={setDragOverSlot}
+                handleSlotDrop={handleSlotDrop}
+                startEdit={startEdit}
+                handleDragStart={handleDragStart}
+                handleDragEnd={handleDragEnd}
+                canMoveItem={canMoveItem}
+                moveItemByOne={moveItemByOne}
+                registerCols={registerCols}
+                textSize={layout.itemTextSize}
+              />
             </div>
           </div>
 
@@ -868,7 +1004,24 @@ export function MenuProduct() {
               </h3>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              {renderGrid('sauce', layout.sauceCardSize, true)}
+              <GridSpace
+                space="sauce"
+                size={layout.sauceCardSize}
+                compact={true}
+                allTops={allTops}
+                items={items}
+                draggedId={draggedId}
+                dragOverSlot={dragOverSlot}
+                setDragOverSlot={setDragOverSlot}
+                handleSlotDrop={handleSlotDrop}
+                startEdit={startEdit}
+                handleDragStart={handleDragStart}
+                handleDragEnd={handleDragEnd}
+                canMoveItem={canMoveItem}
+                moveItemByOne={moveItemByOne}
+                registerCols={registerCols}
+                textSize={layout.itemTextSize}
+              />
             </div>
           </div>
         </div>
@@ -948,6 +1101,21 @@ export function MenuProduct() {
           if (deleting) return;
           setPendingDelete(null);
         }}
+      />
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        title={t('confirmTitle')}
+        message="Разложить все товары по категориям? Порядок будет сброшен."
+        confirmLabel={t('yes')}
+        cancelLabel={t('cancel')}
+        variant="yellow"
+        disabledSeconds={4}
+        onConfirm={async () => {
+          setResetConfirmOpen(false);
+          await handleResetOrder();
+        }}
+        onCancel={() => setResetConfirmOpen(false)}
       />
     </div>
   );

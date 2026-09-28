@@ -12,7 +12,9 @@ import {
 import {
   getSocket,
   subscribeClientsCount,
+  emitLayoutSettings,
 } from '@/lib/socket';
+import { onLocalLayoutChange } from '@/lib/layoutSettings';
 import {
   UtensilsCrossed,
   ChefHat,
@@ -110,11 +112,22 @@ export default function App() {
   // Подписка на количество подключённых устройств
   // Инициализируем socket ТОЛЬКО после serverReady
   // ============================================================
-  useEffect(() => {
+    useEffect(() => {
     if (!serverReady) return;
     const unsubscribe = subscribeClientsCount(setClientsCount);
     getSocket();
     return unsubscribe;
+  }, [serverReady]);
+
+  // Синхронизация layout: любое локальное изменение (слайдеры в
+  // PanelSettings, ресайзы) отправляем на сервер — он рассылает
+  // всем остальным клиентам. Layout от других клиентов сюда не
+  // попадает (не создаём цикл).
+  useEffect(() => {
+    if (!serverReady) return;
+    return onLocalLayoutChange((s) => {
+      emitLayoutSettings(s);
+    });
   }, [serverReady]);
 
   // ============================================================

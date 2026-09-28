@@ -22,6 +22,11 @@ import {
 const PORT = process.env.PORT || 3001;
 
 // ============================================================
+// Глобальный layout, синхронизируемый между всеми клиентами
+// ============================================================
+let globalLayoutSettings = null;
+
+// ============================================================
 // EXPRESS
 // ============================================================
 const app = express();
@@ -89,12 +94,25 @@ io.on('connection', (socket) => {
     menu: store.getMenu(),
   });
 
+  // Отдаём текущий layout, если он уже был установлен
+  if (globalLayoutSettings) {
+    socket.emit('layout-settings', globalLayoutSettings);
+  }
+
   broadcastClientsCount();
+
+  // ---------- СИНХРОНИЗАЦИЯ LAYOUT ----------
+  socket.on('layout-settings', (settings) => {
+    if (!settings || typeof settings !== 'object') return;
+    globalLayoutSettings = settings;
+    // Рассылаем всем, кроме отправителя
+    socket.broadcast.emit('layout-settings', settings);
+    console.log('[ws] layout-settings broadcast');
+  });
 
   // ---------- СОЗДАНИЕ ЗАКАЗА ----------
   socket.on('create-order', (order, ack) => {
     try {
-      // Получаем номер от host.js (учитывает диапазон и глобальный max)
       const orderNumber = getNextOrderNumber();
       const created = store.createOrder({
         ...order,
@@ -156,9 +174,6 @@ async function main() {
     );
   }
 
-  // ============================================================
-  // ИНИЦИАЛИЗАЦИЯ ХОСТА — регистрация, диапазон, heartbeat
-  // ============================================================
   try {
     const supabase = getSupabaseClient();
     if (supabase) {
