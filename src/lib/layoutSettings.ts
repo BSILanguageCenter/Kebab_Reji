@@ -75,6 +75,51 @@ function loadLayout(): LayoutSettings {
 }
 
 // ============================================================
+// Слушатели локальных изменений (для отправки на сервер)
+// ============================================================
+const localChangeListeners = new Set<(s: LayoutSettings) => void>();
+
+export function onLocalLayoutChange(
+  listener: (s: LayoutSettings) => void
+): () => void {
+  localChangeListeners.add(listener);
+  return () => {
+    localChangeListeners.delete(listener);
+  };
+}
+
+function notifyLocalChange(s: LayoutSettings) {
+  localChangeListeners.forEach((l) => {
+    try {
+      l(s);
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+// ============================================================
+// Применение layout, пришедшего ИЗВНЕ (например, от сервера).
+// НЕ вызывает notifyLocalChange — иначе будет цикл с сервером.
+// ============================================================
+export function applyExternalLayout(settings: LayoutSettings) {
+  if (typeof window === 'undefined') return;
+  const clamped = clampAll(settings);
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(clamped));
+  } catch {
+    /* ignore */
+  }
+  try {
+    const bc = new BroadcastChannel(CHANNEL_NAME);
+    bc.postMessage(clamped);
+    bc.close();
+  } catch {
+    /* ignore */
+  }
+}
+
+// ============================================================
 // Персист через rAF — не блокирует UI при быстром drag
 // ============================================================
 let persistRaf: number | null = null;
@@ -101,6 +146,7 @@ function schedulePersist(settings: LayoutSettings) {
     } catch {
       /* ignore */
     }
+    notifyLocalChange(p);
   });
 }
 

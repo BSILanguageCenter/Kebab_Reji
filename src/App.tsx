@@ -12,7 +12,9 @@ import {
 import {
   getSocket,
   subscribeClientsCount,
+  emitLayoutSettings,
 } from '@/lib/socket';
+import { onLocalLayoutChange } from '@/lib/layoutSettings';
 import {
   UtensilsCrossed,
   ChefHat,
@@ -115,6 +117,19 @@ export default function App() {
     const unsubscribe = subscribeClientsCount(setClientsCount);
     getSocket();
     return unsubscribe;
+  }, [serverReady]);
+
+  // ============================================================
+  // Синхронизация layout: любое локальное изменение (слайдеры в
+  // PanelSettings, ресайзы колонок) отправляем на сервер — он
+  // рассылает всем остальным клиентам. Layout от других клиентов
+  // сюда не попадает (нет цикла).
+  // ============================================================
+  useEffect(() => {
+    if (!serverReady) return;
+    return onLocalLayoutChange((s) => {
+      emitLayoutSettings(s);
+    });
   }, [serverReady]);
 
   // ============================================================
@@ -436,14 +451,12 @@ function ModeSelectionScreen({
     setError(null);
 
     try {
-      // 1. Прибиваем возможный старый процесс
       try {
         await fetch('/api/server/stop', { method: 'POST' });
       } catch {
         /* ignore */
       }
 
-      // 2. Запускаем
       const res = await fetch('/api/server/start', { method: 'POST' });
       const data = await res.json();
 
@@ -453,7 +466,6 @@ function ModeSelectionScreen({
         return;
       }
 
-      // 3. Ждём готовности
       const ready = await waitForServer('localhost', 3001, 30000);
       if (!ready) {
         setError(t('serverStartTimeout'));
@@ -461,7 +473,6 @@ function ModeSelectionScreen({
         return;
       }
 
-      // 4. IP
       try {
         const ipRes = await fetch('/api/server/ip');
         const ipData = await ipRes.json();
