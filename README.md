@@ -16,3 +16,4 @@ VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_CgpCgeHbrKWpwos-eS_mEw_De_JHs9s
 PORT=3001
 SUPABASE_URL=https://ecoudnfpgibkvyjtazvu.supabase.co
 SUPABASE_KEY=sb_publishable_CgpCgeHbrKWpwos-eS_mEw_De_JHs9s
+sds
