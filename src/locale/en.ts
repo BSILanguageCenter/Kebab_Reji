@@ -306,7 +306,8 @@ export const en: Record<TranslationKey, string> = {
   undoCreateOrder: 'Cancel just-created order #{n}?',
   undoEditOrder: 'Revert order #{n} to previous version?',
   devicesOnline: 'online',
-    // ---------- PanelSettings v2 ----------
+
+  // ---------- PanelSettings v2 ----------
   preset: 'Preset',
   presetCompact: 'Compact',
   presetNormal: 'Normal',
@@ -318,21 +319,37 @@ export const en: Record<TranslationKey, string> = {
   colOrders: 'Orders / list',
   colMenuRight: 'Drinks / sauces',
   colCart: 'Cart / settings',
-    deleteProductMessage: 'Delete product',
+  deleteProductMessage: 'Delete product',
   deleting: 'Deleting...',
-    // ---------- Printers ----------
+
+  // ---------- Printers v2 ----------
   printers: 'Printers',
   kitchenPrinter: 'Kitchen printer',
   cashierPrinter: 'Cashier printer',
   printerEnabled: 'Enabled',
+  printerDisabled: 'Disabled',
   printerIp: 'IP address',
   printerPort: 'Port',
   printerWidth: 'Width',
   printerEncoding: 'Encoding',
-  printerTest: 'Test print',
+  printerTest: 'Test',
   printerTestSuccess: 'Test sent to printer',
   printerTestFailed: 'Print failed',
   printerSaved: 'Settings saved',
   printerHint:
-    'POS printers connect over LAN. Enter IP address and port (usually 9100). Test print verifies connectivity before saving.',
+    'Click "Scan network" — server scans LAN for POS printers (port 9100). USB printers are added via "USB" button. Click "+ Kitchen" or "+ Cashier" to assign.',
+  printerLoadFailed: 'Failed to load settings',
+  assignedPrinters: 'Assigned',
+  foundPrinters: 'Found printers',
+  noPrintersFound: 'No printers found',
+  clickScanHint: 'Click "Scan network" or "USB" to discover printers',
+  scanNetwork: 'Scan network',
+  scanning: 'Scanning...',
+  addUsbPrinter: 'USB',
+  notAssigned: 'Not assigned',
+  unassignPrinter: 'Unassign',
+  assignToKitchen: 'Assign to kitchen',
+  assignToCashier: 'Assign to cashier',
+  toKitchen: 'Kitchen',
+  toCashier: 'Cashier',
 };

@@ -306,7 +306,8 @@ export const ru: Record<TranslationKey, string> = {
   undoCreateOrder: 'Отменить только что созданный заказ #{n}?',
   undoEditOrder: 'Вернуть заказ #{n} к предыдущей версии?',
   devicesOnline: 'в сети',
-    // ---------- PanelSettings v2 ----------
+
+  // ---------- PanelSettings v2 ----------
   preset: 'Пресет',
   presetCompact: 'Компакт',
   presetNormal: 'Обычный',
@@ -318,21 +319,38 @@ export const ru: Record<TranslationKey, string> = {
   colOrders: 'Заказы / список',
   colMenuRight: 'Напитки / соусы',
   colCart: 'Корзина / настройки',
-    deleteProductMessage: 'Удалить продукт',
+  deleteProductMessage: 'Удалить продукт',
   deleting: 'Удаление...',
-    // ---------- Printers ----------
+
+  // ---------- Printers v2 ----------
   printers: 'Принтеры',
   kitchenPrinter: 'Принтер кухни',
   cashierPrinter: 'Принтер кассы',
   printerEnabled: 'Включён',
+  printerDisabled: 'Отключён',
   printerIp: 'IP-адрес',
   printerPort: 'Порт',
   printerWidth: 'Ширина',
   printerEncoding: 'Кодировка',
-  printerTest: 'Тест печати',
+  printerTest: 'Тест',
   printerTestSuccess: 'Тест отправлен на печать',
   printerTestFailed: 'Ошибка печати',
   printerSaved: 'Настройки сохранены',
   printerHint:
-    'POS-принтеры подключаются по локальной сети. Укажите IP-адрес и порт (обычно 9100). Тестовая печать проверяет связь до сохранения.',
+    'Нажмите «Найти в сети» — сервер просканирует локальную сеть и покажет POS-принтеры (порт 9100). USB-принтеры подключаются через кнопку «USB». Нажмите «+ Кухня» или «+ Касса», чтобы назначить принтер.',
+  printerLoadFailed: 'Не удалось загрузить настройки',
+  assignedPrinters: 'Назначено',
+  foundPrinters: 'Найденные принтеры',
+  noPrintersFound: 'Принтеры не найдены',
+  clickScanHint:
+    'Нажмите «Найти в сети» или «USB», чтобы обнаружить принтеры',
+  scanNetwork: 'Найти в сети',
+  scanning: 'Поиск...',
+  addUsbPrinter: 'USB',
+  notAssigned: 'Не назначен',
+  unassignPrinter: 'Отвязать',
+  assignToKitchen: 'Назначить на кухню',
+  assignToCashier: 'Назначить на кассу',
+  toKitchen: 'Кухня',
+  toCashier: 'Касса',
 };
