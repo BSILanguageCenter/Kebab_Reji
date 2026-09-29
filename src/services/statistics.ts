@@ -189,7 +189,9 @@ export async function fetchItemSales(range: DateRange): Promise<ItemSales[]> {
   return result;
 }
 
-export async function fetchCategorySales(range: DateRange): Promise<CategorySales[]> {
+export async function fetchCategorySales(
+  range: DateRange
+): Promise<CategorySales[]> {
   const { data: orders, error: orderError } = await supabase
     .from('orders')
     .select('id')
@@ -209,45 +211,50 @@ export async function fetchCategorySales(range: DateRange): Promise<CategorySale
   if (itemsError) throw itemsError;
   if (!items || items.length === 0) return [];
 
-  const menuItemIds = [...new Set(items.map((i) => i.menu_item_id).filter(Boolean))] as string[];
+  const menuItemIds = [
+    ...new Set(items.map((i) => i.menu_item_id).filter(Boolean)),
+  ] as string[];
   if (menuItemIds.length === 0) return [];
 
+  // Плоское пространство: категорий как отдельной сущности больше нет.
+  // Группируем по type из menu_items (dish / set / drink / sauce / topping).
   const { data: menuItems, error: menuError } = await supabase
     .from('menu_items')
-    .select('id, category_id')
+    .select('id, type, parent_id')
     .in('id', menuItemIds);
 
   if (menuError) throw menuError;
 
-  const categoryIdMap = new Map<string, string>();
+  // Для вариантов dish-group parent_id != null, но их type всё равно 'dish'
+  // → они попадут в группу «Блюда». Это корректно.
+  const typeById = new Map<string, string>();
   for (const mi of menuItems ?? []) {
-    categoryIdMap.set(mi.id, mi.category_id);
+    typeById.set(mi.id, mi.type);
   }
 
-  const categoryIds = [...new Set(categoryIdMap.values())];
-  const { data: categories, error: catError } = await supabase
-    .from('menu_categories')
-    .select('id, name')
-    .in('id', categoryIds);
-
-  if (catError) throw catError;
-
-  const categoryNameMap = new Map<string, string>();
-  for (const c of categories ?? []) {
-    categoryNameMap.set(c.id, c.name);
-  }
+  const TYPE_LABELS: Record<string, string> = {
+    dish: 'Блюда',
+    set: 'Сеты',
+    drink: 'Напитки',
+    sauce: 'Соусы',
+    topping: 'Топпинги',
+  };
 
   const catMap = new Map<string, CategorySales>();
   for (const item of items) {
-    const catId = item.menu_item_id ? categoryIdMap.get(item.menu_item_id) : null;
-    if (!catId) continue;
-    const catName = categoryNameMap.get(catId) ?? 'Unknown';
+    const t = item.menu_item_id ? typeById.get(item.menu_item_id) : null;
+    if (!t) continue;
+    const catName = TYPE_LABELS[t] ?? t;
     const existing = catMap.get(catName);
     if (existing) {
       existing.quantity += item.quantity;
       existing.total += item.subtotal;
     } else {
-      catMap.set(catName, { name: catName, quantity: item.quantity, total: item.subtotal });
+      catMap.set(catName, {
+        name: catName,
+        quantity: item.quantity,
+        total: item.subtotal,
+      });
     }
   }
 

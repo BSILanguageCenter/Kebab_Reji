@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { X, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useI18n, type TranslationKey } from '@/locale';
 import { formatYen } from '@/locale/format';
@@ -37,8 +37,10 @@ export interface BuilderResult {
   options: CartItemOption[];
 }
 
-// ---------- Steps ----------
-function buildSteps(item: MenuItem, selections: Selections): Step[] {
+// ============================================================
+// Чистые функции пересчёта шагов и цены
+// ============================================================
+function computeSteps(item: MenuItem, selections: Selections): Step[] {
   const steps: Step[] = [];
   const mainItem = item.type === 'set' ? item.set_main : item;
   if (!mainItem) return steps;
@@ -79,12 +81,22 @@ function buildSteps(item: MenuItem, selections: Selections): Step[] {
 
   if (item.type === 'set' && item.set_extra_groups) {
     for (const group of item.set_extra_groups) {
-      steps.push({ kind: 'extra-option', group });
       const ex = selections.extras[group.id];
-      if (!ex?.optionId) continue;
-      const optItem = group.options.find(
-        (o) => o.item.id === ex.optionId
-      )?.item;
+
+      // Если в группе больше одной опции и выбор ещё не сделан — показываем
+      // шаг выбора. Иначе (одна опция или уже выбрано) пропускаем шаг выбора
+      // и сразу идём в его sauce/properties.
+      if (!ex?.optionId && group.options.length > 1) {
+        steps.push({ kind: 'extra-option', group });
+        continue;
+      }
+
+      const optId =
+        ex?.optionId ??
+        (group.options.length === 1 ? group.options[0].item.id : null);
+      if (!optId) continue;
+
+      const optItem = group.options.find((o) => o.item.id === optId)?.item;
       if (!optItem) continue;
 
       if (
@@ -110,7 +122,6 @@ function buildSteps(item: MenuItem, selections: Selections): Step[] {
   return steps;
 }
 
-// ---------- Цена Set: ТОЛЬКО override варианта main ----------
 function computePrice(item: MenuItem, selections: Selections): number {
   if (item.type === 'set') {
     const mainItem = item.set_main;
@@ -134,7 +145,111 @@ function computePrice(item: MenuItem, selections: Selections): number {
   return item.price;
 }
 
-// ---------- Компонент ----------
+function buildResult(
+  item: MenuItem,
+  selections: Selections
+): BuilderResult {
+  const options: CartItemOption[] = [];
+  let variantName = '';
+
+  const mainItem = item.type === 'set' ? item.set_main : item;
+
+  if (mainItem?.dish_kind === 'group' && selections.variantId) {
+    const v = mainItem.variants?.find(
+      (x) => x.id === selections.variantId
+    );
+    if (v) {
+      variantName = v.name;
+      options.push({
+        type: 'variant',
+        name: v.name,
+        price: 0,
+        quantity: 1,
+      });
+    }
+  }
+
+  if (selections.mainSauceId) {
+    const s = mainItem?.allowed_sauces?.find(
+      (x) => x.id === selections.mainSauceId
+    );
+    if (s) {
+      options.push({ type: 'sauce', name: s.name, price: 0, quantity: 1 });
+    }
+  }
+
+  const resolvedMain =
+    mainItem?.dish_kind === 'group' && selections.variantId
+      ? mainItem.variants?.find((x) => x.id === selections.variantId)
+      : mainItem;
+
+  for (const propId of selections.mainProps) {
+    const p = resolvedMain?.properties?.find((x) => x.id === propId);
+    if (p) {
+      options.push({
+        type: 'property',
+        name: p.name,
+        price: 0,
+        quantity: 1,
+      });
+    }
+  }
+
+  if (item.type === 'set' && item.set_extra_groups) {
+    for (const group of item.set_extra_groups) {
+      const ex = selections.extras[group.id];
+      const optId =
+        ex?.optionId ??
+        (group.options.length === 1 ? group.options[0].item.id : null);
+      if (!optId) continue;
+      const optItem = group.options.find((o) => o.item.id === optId)?.item;
+      if (!optItem) continue;
+
+      options.push({
+        type: 'extra',
+        name: `${group.label}: ${optItem.name}`,
+        price: 0,
+        quantity: 1,
+      });
+
+      if (ex?.sauceId) {
+        const s = optItem.allowed_sauces?.find((x) => x.id === ex.sauceId);
+        if (s) {
+          options.push({
+            type: 'sauce',
+            name: `${optItem.name}: ${s.name}`,
+            price: 0,
+            quantity: 1,
+          });
+        }
+      }
+
+      if (ex?.props) {
+        for (const propId of ex.props) {
+          const p = optItem.properties?.find((x) => x.id === propId);
+          if (p) {
+            options.push({
+              type: 'property',
+              name: `${optItem.name}: ${p.name}`,
+              price: 0,
+              quantity: 1,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    variant: variantName,
+    price: computePrice(item, selections),
+    options,
+  };
+}
+
+// ============================================================
+// Компонент
+// ============================================================
 export function ProductBuilderDialog({
   open,
   item,
@@ -161,62 +276,232 @@ export function ProductBuilderDialog({
 
   const itemId = item?.id;
 
+  // ---------- Инициализация при открытии ----------
   useEffect(() => {
-    if (!open || !itemId) return;
+    if (!open || !itemId || !item) return;
     setError(null);
-    setSelections({
+
+    const initSel: Selections = {
       variantId: initialVariantId ?? null,
       mainSauceId: null,
       mainProps: new Set(),
       extras: {},
-    });
+    };
+
+    // Auto-select единственных опций в extra-группах
+    if (item.type === 'set' && item.set_extra_groups) {
+      for (const group of item.set_extra_groups) {
+        if (group.options.length === 1) {
+          initSel.extras[group.id] = {
+            optionId: group.options[0].item.id,
+            sauceId: null,
+            props: new Set(),
+          };
+        }
+      }
+    }
+
+    setSelections(initSel);
     setStepIndex(initialVariantId ? 1 : 0);
-  }, [open, itemId, initialVariantId]);
+  }, [open, itemId, initialVariantId, item]);
 
-  const steps = useMemo<Step[]>(() => {
-    if (!item) return [];
-    return buildSteps(item, selections);
-  }, [item, selections]);
+  // ---------- Текущие шаги ----------
+  const steps = useMemo(
+    () => (item ? computeSteps(item, selections) : []),
+    [item, selections]
+  );
 
+  // ---------- Клампим stepIndex ----------
   useEffect(() => {
     if (stepIndex > steps.length - 1) {
       setStepIndex(Math.max(0, steps.length - 1));
     }
   }, [steps.length, stepIndex]);
 
-  if (!open || !item) return null;
+  // ---------- Финиш ----------
+  const doFinish = useCallback(
+    (sel: Selections) => {
+      if (!item) return;
+      onConfirm(buildResult(item, sel));
+    },
+    [item, onConfirm]
+  );
 
-  const currentStep: Step | undefined = steps[stepIndex];
-  const currentPrice = computePrice(item, selections);
+  // ---------- Универсальный переход ----------
+  // reuse=true — если шаг, на котором мы стояли, исчезает из списка
+  //             (например extra-option → его sauce/props);
+  // reuse=false — если шаг остаётся (variant, sauce, properties).
+  const advance = useCallback(
+    (newSel: Selections, reuse: boolean) => {
+      if (!item) return;
+      const newSteps = computeSteps(item, newSel);
+      const nextIdx = reuse ? stepIndex : stepIndex + 1;
 
-  const canProceed = (): boolean => {
-    if (!currentStep) return true;
-    if (currentStep.kind === 'variant') return selections.variantId !== null;
-    if (currentStep.kind === 'sauce') {
-      if (currentStep.ctx === 'main') return selections.mainSauceId !== null;
-      const ex = selections.extras[currentStep.ctx.extra];
-      return ex?.sauceId != null;
+      if (nextIdx >= newSteps.length) {
+        doFinish(newSel);
+      } else {
+        setSelections(newSel);
+        setStepIndex(nextIdx);
+      }
+    },
+    [item, stepIndex, doFinish]
+  );
+
+  // ---------- Кнопка Далее (для properties с несколькими) ----------
+  const goNext = () => {
+    const current = steps[stepIndex];
+    if (!current) {
+      doFinish(selections);
+      return;
     }
-    if (currentStep.kind === 'properties') return true;
-    if (currentStep.kind === 'extra-option') {
-      const ex = selections.extras[currentStep.group.id];
-      if (!currentStep.group.required) return true;
-      return ex?.optionId != null;
-    }
-    return true;
-  };
-
-  const next = () => {
-    if (!canProceed()) {
+    if (current.kind === 'variant' && !selections.variantId) {
       setError(t('requiredChoice'));
       return;
     }
+    if (current.kind === 'sauce') {
+      const val =
+        current.ctx === 'main'
+          ? selections.mainSauceId
+          : selections.extras[(current.ctx as { extra: string }).extra]
+              ?.sauceId ?? null;
+      if (!val) {
+        setError(t('requiredChoice'));
+        return;
+      }
+    }
+    if (current.kind === 'extra-option') {
+      const ex = selections.extras[current.group.id];
+      if (current.group.required && !ex?.optionId) {
+        setError(t('requiredChoice'));
+        return;
+      }
+    }
+
     setError(null);
     if (stepIndex >= steps.length - 1) {
-      finish();
-      return;
+      doFinish(selections);
+    } else {
+      setStepIndex(stepIndex + 1);
     }
-    setStepIndex(stepIndex + 1);
+  };
+
+  // ---------- Обработчики выбора (с автопереходом) ----------
+  const selectVariant = (v: MenuItem) => {
+    advance(
+      {
+        ...selections,
+        variantId: v.id,
+        mainSauceId: null,
+        mainProps: new Set(),
+      },
+      false
+    );
+  };
+
+  const selectMainSauce = (sauceId: string) => {
+    advance({ ...selections, mainSauceId: sauceId }, false);
+  };
+
+  const selectExtraSauce = (groupId: string, sauceId: string) => {
+    const cur = selections.extras[groupId] ?? {
+      optionId: null,
+      sauceId: null,
+      props: new Set<string>(),
+    };
+    advance(
+      {
+        ...selections,
+        extras: {
+          ...selections.extras,
+          [groupId]: { ...cur, sauceId },
+        },
+      },
+      false
+    );
+  };
+
+  const selectExtraOption = (groupId: string, optionId: string) => {
+    advance(
+      {
+        ...selections,
+        extras: {
+          ...selections.extras,
+          [groupId]: {
+            optionId,
+            sauceId: null,
+            props: new Set(),
+          },
+        },
+      },
+      true
+    );
+  };
+
+  const skipExtraOption = (groupId: string) => {
+    // Пропускаем шаг выбора extra — не создаём запись в selections
+    const nextIdx = stepIndex + 1;
+    if (nextIdx >= steps.length) {
+      doFinish(selections);
+    } else {
+      setStepIndex(nextIdx);
+    }
+    void groupId;
+  };
+
+  // ---------- Toggle свойств (для нескольких) ----------
+  const toggleMainProp = (pid: string) => {
+    setSelections((s) => {
+      const np = new Set(s.mainProps);
+      if (np.has(pid)) np.delete(pid);
+      else np.add(pid);
+      return { ...s, mainProps: np };
+    });
+  };
+
+  const toggleExtraProp = (groupId: string, pid: string) => {
+    setSelections((s) => {
+      const cur = s.extras[groupId] ?? {
+        optionId: null,
+        sauceId: null,
+        props: new Set<string>(),
+      };
+      const np = new Set(cur.props);
+      if (np.has(pid)) np.delete(pid);
+      else np.add(pid);
+      return {
+        ...s,
+        extras: { ...s.extras, [groupId]: { ...cur, props: np } },
+      };
+    });
+  };
+
+  // ---------- Ответ на одно свойство (Да/Нет) ----------
+  const answerMainProp = (pid: string, on: boolean) => {
+    const np = new Set(selections.mainProps);
+    if (on) np.add(pid);
+    else np.delete(pid);
+    advance({ ...selections, mainProps: np }, false);
+  };
+
+  const answerExtraProp = (groupId: string, pid: string, on: boolean) => {
+    const cur = selections.extras[groupId] ?? {
+      optionId: null,
+      sauceId: null,
+      props: new Set<string>(),
+    };
+    const np = new Set(cur.props);
+    if (on) np.add(pid);
+    else np.delete(pid);
+    advance(
+      {
+        ...selections,
+        extras: {
+          ...selections.extras,
+          [groupId]: { ...cur, props: np },
+        },
+      },
+      false
+    );
   };
 
   const back = () => {
@@ -225,175 +510,12 @@ export function ProductBuilderDialog({
     else onCancel();
   };
 
-  const setVariant = (v: MenuItem) => {
-    setSelections((s) => ({
-      ...s,
-      variantId: v.id,
-      mainSauceId: null,
-      mainProps: new Set(),
-    }));
-    setError(null);
-  };
+  if (!open || !item) return null;
 
-  const setMainSauce = (sauceId: string) => {
-    setSelections((s) => ({ ...s, mainSauceId: sauceId }));
-    setError(null);
-    setTimeout(() => {
-      setStepIndex((idx) => Math.min(idx + 1, steps.length));
-    }, 100);
-  };
+  const currentStep: Step | undefined = steps[stepIndex];
+  const currentPrice = computePrice(item, selections);
 
-  const toggleMainProp = (propId: string) => {
-    setSelections((s) => {
-      const np = new Set(s.mainProps);
-      if (np.has(propId)) np.delete(propId);
-      else np.add(propId);
-      return { ...s, mainProps: np };
-    });
-  };
-
-  const setExtraOption = (groupId: string, optionId: string) => {
-    setSelections((s) => ({
-      ...s,
-      extras: {
-        ...s.extras,
-        [groupId]: { optionId, sauceId: null, props: new Set() },
-      },
-    }));
-    setError(null);
-  };
-
-  const setExtraSauce = (groupId: string, sauceId: string) => {
-    setSelections((s) => ({
-      ...s,
-      extras: {
-        ...s.extras,
-        [groupId]: {
-          ...(s.extras[groupId] ?? { optionId: null, props: new Set() }),
-          sauceId,
-        },
-      },
-    }));
-    setError(null);
-    setTimeout(() => {
-      setStepIndex((idx) => Math.min(idx + 1, steps.length));
-    }, 100);
-  };
-
-  const toggleExtraProp = (groupId: string, propId: string) => {
-    setSelections((s) => {
-      const cur = s.extras[groupId] ?? {
-        optionId: null,
-        sauceId: null,
-        props: new Set<string>(),
-      };
-      const np = new Set(cur.props);
-      if (np.has(propId)) np.delete(propId);
-      else np.add(propId);
-      return {
-        ...s,
-        extras: { ...s.extras, [groupId]: { ...cur, props: np } },
-      };
-    });
-  };
-
-  const finish = () => {
-    if (!item) return;
-    const options: CartItemOption[] = [];
-    let variantName = '';
-
-    const mainItem = item.type === 'set' ? item.set_main : item;
-
-    if (mainItem?.dish_kind === 'group' && selections.variantId) {
-      const v = mainItem.variants?.find(
-        (x) => x.id === selections.variantId
-      );
-      if (v) {
-        variantName = v.name;
-        options.push({
-          type: 'variant',
-          name: v.name,
-          price: 0,
-          quantity: 1,
-        });
-      }
-    }
-
-    if (selections.mainSauceId) {
-      const s = mainItem?.allowed_sauces?.find(
-        (x) => x.id === selections.mainSauceId
-      );
-      if (s) {
-        options.push({
-          type: 'sauce',
-          name: s.name,
-          price: 0,
-          quantity: 1,
-        });
-      }
-    }
-
-    const resolvedMain =
-      mainItem?.dish_kind === 'group' && selections.variantId
-        ? mainItem.variants?.find((x) => x.id === selections.variantId)
-        : mainItem;
-    for (const propId of selections.mainProps) {
-      const p = resolvedMain?.properties?.find((x) => x.id === propId);
-      if (p) {
-        options.push({
-          type: 'property',
-          name: p.name,
-          price: 0,
-          quantity: 1,
-        });
-      }
-    }
-
-    if (item.type === 'set' && item.set_extra_groups) {
-      for (const group of item.set_extra_groups) {
-        const ex = selections.extras[group.id];
-        if (!ex?.optionId) continue;
-        const optItem = group.options.find(
-          (o) => o.item.id === ex.optionId
-        )?.item;
-        if (!optItem) continue;
-
-        options.push({
-          type: 'extra',
-          name: `${group.label}: ${optItem.name}`,
-          price: 0,
-          quantity: 1,
-        });
-
-        if (ex.sauceId) {
-          const s = optItem.allowed_sauces?.find((x) => x.id === ex.sauceId);
-          if (s) {
-            options.push({
-              type: 'sauce',
-              name: `${optItem.name}: ${s.name}`,
-              price: 0,
-              quantity: 1,
-            });
-          }
-        }
-
-        for (const propId of ex.props) {
-          const p = optItem.properties?.find((x) => x.id === propId);
-          if (p) {
-            options.push({
-              type: 'property',
-              name: `${optItem.name}: ${p.name}`,
-              price: 0,
-              quantity: 1,
-            });
-          }
-        }
-      }
-    }
-
-    onConfirm({ variant: variantName, price: currentPrice, options });
-  };
-
+  // ---------- Единый лейбл шага ----------
   const stepLabel = (() => {
     if (!currentStep) return '';
     if (currentStep.kind === 'variant') return t('chooseVariant');
@@ -449,7 +571,7 @@ export function ProductBuilderDialog({
               {currentStep.variants.map((v) => (
                 <button
                   key={v.id}
-                  onClick={() => setVariant(v)}
+                  onClick={() => selectVariant(v)}
                   className={`p-4 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${
                     selections.variantId === v.id
                       ? 'bg-orange-500 border-orange-500 text-white shadow-md'
@@ -471,7 +593,7 @@ export function ProductBuilderDialog({
             </div>
           )}
 
-          {/* ============ SAUCE — маленькие квадратики, 3 в ряд ============ */}
+          {/* SAUCE — 3 в ряд, клик → сразу переход */}
           {currentStep?.kind === 'sauce' && (
             <div className="grid grid-cols-3 gap-3">
               {currentStep.sauces.map((s) => {
@@ -484,8 +606,9 @@ export function ProductBuilderDialog({
                   <button
                     key={s.id}
                     onClick={() => {
-                      if (currentStep.ctx === 'main') setMainSauce(s.id);
-                      else setExtraSauce(currentStep.ctx.extra, s.id);
+                      if (currentStep.ctx === 'main')
+                        selectMainSauce(s.id);
+                      else selectExtraSauce(currentStep.ctx.extra, s.id);
                     }}
                     className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-[0.97] ${
                       selected
@@ -493,7 +616,6 @@ export function ProductBuilderDialog({
                         : 'bg-white hover:bg-gray-50'
                     }`}
                   >
-                    {/* Маленький квадрат с цветной рамкой */}
                     <div
                       className="relative rounded-lg overflow-hidden w-full max-w-[88px] aspect-square"
                       style={{
@@ -525,7 +647,6 @@ export function ProductBuilderDialog({
                         </div>
                       )}
                     </div>
-
                     <span className="text-[11px] font-black text-gray-900 truncate w-full text-center leading-tight">
                       {s.name}
                     </span>
@@ -535,53 +656,113 @@ export function ProductBuilderDialog({
             </div>
           )}
 
-          {currentStep?.kind === 'properties' && (
-            <div className="space-y-2">
-              {currentStep.props.map((p) => {
-                const selected =
-                  currentStep.ctx === 'main'
-                    ? selections.mainProps.has(p.id)
-                    : selections.extras[currentStep.ctx.extra]?.props.has(
+          {/* PROPERTIES */}
+          {currentStep?.kind === 'properties' &&
+            (currentStep.props.length === 1
+              ? // Одно свойство — две кнопки Да/Нет
+                (() => {
+                  const p = currentStep.props[0];
+                  const isOn =
+                    currentStep.ctx === 'main'
+                      ? selections.mainProps.has(p.id)
+                      : selections.extras[currentStep.ctx.extra]?.props.has(
+                          p.id
+                        ) ?? false;
+                  return (
+                    <div className="py-2">
+                      <div className="text-center text-xl font-black text-gray-900 mb-6">
+                        {p.name}?
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <button
+                          onClick={() => {
+                            if (currentStep.ctx === 'main')
+                              answerMainProp(p.id, false);
+                            else
+                              answerExtraProp(
+                                (currentStep.ctx as { extra: string })
+                                  .extra,
+                                p.id,
+                                false
+                              );
+                          }}
+                          className={`py-4 rounded-xl text-base font-black transition-all active:scale-[0.98] ${
+                            !isOn
+                              ? 'bg-gray-800 text-white shadow-md'
+                              : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
+                          }`}
+                        >
+                          {t('no')}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (currentStep.ctx === 'main')
+                              answerMainProp(p.id, true);
+                            else
+                              answerExtraProp(
+                                (currentStep.ctx as { extra: string })
+                                  .extra,
+                                p.id,
+                                true
+                              );
+                          }}
+                          className={`py-4 rounded-xl text-base font-black transition-all active:scale-[0.98] ${
+                            isOn
+                              ? 'bg-green-600 text-white shadow-md'
+                              : 'bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50'
+                          }`}
+                        >
+                          {t('yes')}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()
+              : // Несколько свойств — toggle + кнопка Далее
+                currentStep.props.map((p) => {
+                  const selected =
+                    currentStep.ctx === 'main'
+                      ? selections.mainProps.has(p.id)
+                      : selections.extras[
+                          (currentStep.ctx as { extra: string }).extra
+                        ]?.props.has(p.id) ?? false;
+                  const toggle = () => {
+                    if (currentStep.ctx === 'main') toggleMainProp(p.id);
+                    else
+                      toggleExtraProp(
+                        (currentStep.ctx as { extra: string }).extra,
                         p.id
-                      ) ?? false;
-                const toggle = () => {
-                  if (currentStep.ctx === 'main') toggleMainProp(p.id);
-                  else
-                    toggleExtraProp(
-                      (currentStep.ctx as { extra: string }).extra,
-                      p.id
-                    );
-                };
-                return (
-                  <button
-                    key={p.id}
-                    onClick={toggle}
-                    className={`w-full flex items-center justify-between p-3 rounded-xl border-2 transition-all active:scale-[0.98] ${
-                      selected
-                        ? 'bg-green-50 border-green-500'
-                        : 'bg-white border-gray-200'
-                    }`}
-                  >
-                    <span className="text-sm font-bold text-gray-900">
-                      {p.name}
-                    </span>
-                    <div
-                      className={`w-10 h-6 rounded-full transition-colors relative ${
-                        selected ? 'bg-green-500' : 'bg-gray-300'
+                      );
+                  };
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={toggle}
+                      className={`w-full flex items-center justify-between p-3 mb-2 rounded-xl border-2 transition-all active:scale-[0.98] ${
+                        selected
+                          ? 'bg-green-50 border-green-500'
+                          : 'bg-white border-gray-200'
                       }`}
                     >
-                      <span
-                        className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform shadow ${
-                          selected ? 'translate-x-4' : ''
+                      <span className="text-sm font-bold text-gray-900">
+                        {p.name}
+                      </span>
+                      <div
+                        className={`w-10 h-6 rounded-full transition-colors relative ${
+                          selected ? 'bg-green-500' : 'bg-gray-300'
                         }`}
-                      />
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+                      >
+                        <span
+                          className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform shadow ${
+                            selected ? 'translate-x-4' : ''
+                          }`}
+                        />
+                      </div>
+                    </button>
+                  );
+                }))}
 
+          {/* EXTRA OPTION — клик → сразу переход */}
           {currentStep?.kind === 'extra-option' && (
             <div className="space-y-2">
               <div className="text-sm text-gray-500 mb-2">
@@ -599,7 +780,7 @@ export function ProductBuilderDialog({
                     <button
                       key={o.option_id}
                       onClick={() =>
-                        setExtraOption(currentStep.group.id, o.item.id)
+                        selectExtraOption(currentStep.group.id, o.item.id)
                       }
                       className={`p-3 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${
                         selected
@@ -638,14 +819,7 @@ export function ProductBuilderDialog({
               </div>
               {!currentStep.group.required && (
                 <button
-                  onClick={() => {
-                    setSelections((s) => {
-                      const cp = { ...s.extras };
-                      delete cp[currentStep.group.id];
-                      return { ...s, extras: cp };
-                    });
-                    setStepIndex((i) => i + 1);
-                  }}
+                  onClick={() => skipExtraOption(currentStep.group.id)}
                   className="w-full py-2 text-xs text-gray-500 underline"
                 >
                   {t('skip')}
@@ -670,21 +844,47 @@ export function ProductBuilderDialog({
             <ChevronLeft className="w-4 h-4" />
             {stepIndex === 0 ? t('cancel') : t('back')}
           </button>
-          <button
-            onClick={next}
-            className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold transition-all active:scale-[0.98] shadow-md shadow-orange-500/30 flex items-center justify-center gap-1"
-          >
-            {stepIndex >= steps.length - 1 ? (
-              <>
-                {t('addToCartBtn')} · {currentPrice > 0 ? formatYen(currentPrice) : ''}
-              </>
-            ) : (
-              <>
-                {t('next')}
-                <ChevronRight className="w-4 h-4" />
-              </>
-            )}
-          </button>
+
+          {/* Далее показываем только если текущий шаг НЕ автопереходный */}
+          {(() => {
+            const showNext =
+              currentStep &&
+              !(
+                currentStep.kind === 'variant' ||
+                currentStep.kind === 'sauce' ||
+                currentStep.kind === 'extra-option' ||
+                (currentStep.kind === 'properties' &&
+                  currentStep.props.length === 1)
+              );
+
+            if (!showNext) {
+              // Показываем только цену, если это финальный автопереходный шаг
+              return (
+                <div className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold flex items-center justify-center">
+                  {currentPrice > 0 ? formatYen(currentPrice) : t('addToCartBtn')}
+                </div>
+              );
+            }
+
+            return (
+              <button
+                onClick={goNext}
+                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold transition-all active:scale-[0.98] shadow-md shadow-orange-500/30 flex items-center justify-center gap-1"
+              >
+                {stepIndex >= steps.length - 1 ? (
+                  <>
+                    {t('addToCartBtn')} ·{' '}
+                    {currentPrice > 0 ? formatYen(currentPrice) : ''}
+                  </>
+                ) : (
+                  <>
+                    {t('next')}
+                    <ChevronRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+            );
+          })()}
         </div>
       </div>
     </div>

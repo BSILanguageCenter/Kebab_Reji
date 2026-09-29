@@ -7,13 +7,16 @@ export interface PrinterResult {
 }
 
 export interface PrinterAdapter {
-  printCustomerTicket(order: Order): Promise<PrinterResult>;
+  printCustomerTicket(
+    order: Order,
+    estimatedMinutes?: number
+  ): Promise<PrinterResult>;
   printKitchenOrder(order: Order): Promise<PrinterResult>;
   isAvailable(): Promise<boolean>;
 }
 
 // ============================================================
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ТЕКСТА
+// ОБЩИЕ УТИЛИТЫ
 // ============================================================
 const WIDTH = 32;
 const DIVIDER = '-'.repeat(WIDTH);
@@ -31,127 +34,110 @@ function padBetween(left: string, right: string, width = WIDTH): string {
   return left + ' '.repeat(gap) + right;
 }
 
-/**
- * Строка позиции заказа.
- *   С ценами (для клиента):
- *     1× Kebab Wrap Chicken          ¥500
- *   Без цен (для кухни):
- *     1× Kebab Wrap Chicken
- *
- * Опции (если есть) идут отдельной строкой с отступом:
- *        + Cheese ×2, Spicy
- */
-function formatItemLine(item: OrderItem, showPrices: boolean): string {
-  // Полное название блюда + вариант (Chicken / Mix / Beef)
-  let displayName = item.name;
-  if (item.variant) displayName += ` ${item.variant}`;
+// ============================================================
+// КУХОННЫЙ ЧЕК
+// ============================================================
+function formatKitchenItem(item: OrderItem): string[] {
+  const out: string[] = [];
 
-  let line = `${item.quantity}× ${displayName}`;
+  let name = item.name;
+  if (item.variant) name += ` [${item.variant}]`;
 
-  if (showPrices) {
-    const price =
-      item.price === 0 ? 'FREE' : formatYen(item.price * item.quantity);
-    line = padBetween(line, price);
+  const qty = `${item.quantity}x`;
+  out.push(`${qty.padEnd(4)}${name}`);
+
+  // Опции (property / sauce / extra / topping) с отступом.
+  // type === 'variant' пропускаем — он уже показан в скобках [Chicken].
+  for (const opt of item.options ?? []) {
+    if (opt.type === 'variant') continue;
+    const suffix = opt.quantity > 1 ? ` x${opt.quantity}` : '';
+    out.push(`    + ${opt.name}${suffix}`);
   }
 
-  // Опции (если они когда-нибудь появятся)
-  if (item.options && item.options.length > 0) {
-    const opts = item.options
-      .map((o) => (o.quantity > 1 ? `${o.name} ×${o.quantity}` : o.name))
-      .join(', ');
-    line += `\n   + ${opts}`;
-  }
-
-  return line;
+  return out;
 }
 
-/**
- * Все позиции заказа.
- */
-function buildOrderLines(order: Order, showPrices: boolean): string {
-  if (!order.order_items || order.order_items.length === 0) {
-    return '(empty)';
-  }
-  return order.order_items
-    .map((item) => formatItemLine(item, showPrices))
-    .join('\n');
-}
-
-// ============================================================
-// ЧЕК КЛИЕНТУ
-// ============================================================
-function buildCustomerTicketText(order: Order): string {
+function buildKitchenTicketText(order: Order): string {
   const lines: string[] = [];
 
-  lines.push(center('KEBAB POS'));
-  lines.push(center(`ORDER #${order.order_number}`));
+  lines.push(DIVIDER_HEAVY);
+  lines.push(center('K I T C H E N'));
+  lines.push(DIVIDER_HEAVY);
+  lines.push('');
+
+  lines.push(center(`#${order.order_number}`));
+  lines.push('');
   lines.push(center(formatTime(order.created_at)));
-  lines.push(DIVIDER);
   lines.push('');
-
-  // Тип заказа (OUTSIDE / INSIDE)
-  const typeLabel =
-    order.order_type === 'INSIDE' ? '>>> INSIDE <<<' : '>>> OUTSIDE <<<';
-  lines.push(center(typeLabel));
-  lines.push('');
-
-  // Позиции с ценами
-  lines.push(buildOrderLines(order, true));
-  lines.push('');
-
-  // Итого
-  lines.push(DIVIDER);
-  lines.push(padBetween('TOTAL', formatYen(order.total_amount)));
   lines.push(DIVIDER);
 
-  // Комментарий
-  if (order.comment) {
-    lines.push('');
-    lines.push(`Note: ${order.comment}`);
+  const activeItems = (order.order_items ?? []).filter(
+    (i) => !i.is_removed
+  );
+
+  if (activeItems.length === 0) {
+    lines.push(center('(empty)'));
+  } else {
+    for (const item of activeItems) {
+      lines.push(...formatKitchenItem(item));
+      lines.push('');
+    }
   }
 
-  // Подвал
+  lines.push(DIVIDER);
+
+  if (order.comment && order.comment.trim()) {
+    lines.push('');
+    lines.push(`!!! NOTE: ${order.comment}`);
+    lines.push('');
+    lines.push(DIVIDER);
+  }
+
   lines.push('');
-  lines.push(center('Thank you!'));
+  lines.push(DIVIDER_HEAVY);
   lines.push('');
 
   return lines.join('\n');
 }
 
 // ============================================================
-// КУХОННЫЙ ТИКЕТ (без цен, крупные строки)
+// ЧЕК КЛИЕНТУ (номерок + время ожидания)
+//
+//   ================================
+//              KEBAB POS
+//   ================================
+//
+//
+//                #1234
+//
+//
+//              ~15 min
+//
+//
+//   ================================
 // ============================================================
-function buildKitchenTicketText(order: Order): string {
+function buildCustomerTicketText(
+  order: Order,
+  estimatedMinutes?: number
+): string {
   const lines: string[] = [];
 
   lines.push(DIVIDER_HEAVY);
-  lines.push(center('KITCHEN'));
+  lines.push(center('KEBAB POS'));
   lines.push(DIVIDER_HEAVY);
   lines.push('');
-
-  // Номер заказа — крупно
-  lines.push(center(`ORDER #${order.order_number}`));
-  lines.push(center(formatTime(order.created_at)));
   lines.push('');
 
-  // Тип заказа
-  lines.push(center(order.order_type));
-  lines.push('');
-  lines.push(DIVIDER);
+  lines.push(center(`#${order.order_number}`, WIDTH));
   lines.push('');
 
-  // Позиции без цен
-  lines.push(buildOrderLines(order, false));
-  lines.push('');
-
-  // Комментарий — заметно
-  if (order.comment) {
-    lines.push(DIVIDER);
+  if (estimatedMinutes && estimatedMinutes > 0) {
     lines.push('');
-    lines.push(`!! ${order.comment} !!`);
+    lines.push(center(`~${estimatedMinutes} min`, WIDTH));
     lines.push('');
   }
 
+  lines.push('');
   lines.push(DIVIDER_HEAVY);
   lines.push('');
 
@@ -178,18 +164,17 @@ export function buildCartTicket(
 
   for (const item of cartItems) {
     let name = item.name;
-    if (item.variant) name += ` ${item.variant}`;
-    const left = `${item.quantity}× ${name}`;
+    if (item.variant) name += ` [${item.variant}]`;
+    const left = `${item.quantity}x ${name}`;
     const right =
-      item.price === 0
-        ? 'FREE'
-        : formatYen(item.price * item.quantity);
+      item.price === 0 ? 'FREE' : formatYen(item.price * item.quantity);
     lines.push(padBetween(left, right));
     if (item.options && item.options.length > 0) {
-      const opts = item.options
-        .map((o) => (o.quantity > 1 ? `${o.name} ×${o.quantity}` : o.name))
-        .join(', ');
-      lines.push(`   + ${opts}`);
+      for (const o of item.options) {
+        if (o.type === 'variant') continue;
+        const q = o.quantity > 1 ? ` x${o.quantity}` : '';
+        lines.push(`    + ${o.name}${q}`);
+      }
     }
   }
 
@@ -210,11 +195,16 @@ class ConsolePrinterAdapter implements PrinterAdapter {
     return true;
   }
 
-  async printCustomerTicket(order: Order): Promise<PrinterResult> {
+  async printCustomerTicket(
+    order: Order,
+    estimatedMinutes?: number
+  ): Promise<PrinterResult> {
     try {
-      console.log('=== CUSTOMER TICKET ===');
-      console.log(buildCustomerTicketText(order));
-      console.log('=== END TICKET ===');
+      console.log('');
+      console.log('┌──────── CUSTOMER TICKET ────────┐');
+      console.log(buildCustomerTicketText(order, estimatedMinutes));
+      console.log('└─────────────────────────────────┘');
+      console.log('');
       return { success: true };
     } catch (e) {
       return {
@@ -226,9 +216,11 @@ class ConsolePrinterAdapter implements PrinterAdapter {
 
   async printKitchenOrder(order: Order): Promise<PrinterResult> {
     try {
-      console.log('=== KITCHEN TICKET ===');
+      console.log('');
+      console.log('┌──────── KITCHEN TICKET ─────────┐');
       console.log(buildKitchenTicketText(order));
-      console.log('=== END TICKET ===');
+      console.log('└─────────────────────────────────┘');
+      console.log('');
       return { success: true };
     } catch (e) {
       return {
@@ -276,9 +268,12 @@ class WebUsbPrinterAdapter implements PrinterAdapter {
     await this.device.transferOut(endpointNumber, data);
   }
 
-  async printCustomerTicket(order: Order): Promise<PrinterResult> {
+  async printCustomerTicket(
+    order: Order,
+    estimatedMinutes?: number
+  ): Promise<PrinterResult> {
     try {
-      await this.print(buildCustomerTicketText(order));
+      await this.print(buildCustomerTicketText(order, estimatedMinutes));
       return { success: true };
     } catch (e) {
       return {
@@ -322,16 +317,22 @@ export function setWebUsbPrinter(): void {
   currentAdapter = new WebUsbPrinterAdapter();
 }
 
-export async function printCustomerTicket(order: Order): Promise<PrinterResult> {
-  return currentAdapter.printCustomerTicket(order);
+export async function printCustomerTicket(
+  order: Order,
+  estimatedMinutes?: number
+): Promise<PrinterResult> {
+  return currentAdapter.printCustomerTicket(order, estimatedMinutes);
 }
 
 export async function printKitchenOrder(order: Order): Promise<PrinterResult> {
   return currentAdapter.printKitchenOrder(order);
 }
 
-export function buildCustomerTicket(order: Order): string {
-  return buildCustomerTicketText(order);
+export function buildCustomerTicket(
+  order: Order,
+  estimatedMinutes?: number
+): string {
+  return buildCustomerTicketText(order, estimatedMinutes);
 }
 
 export function buildKitchenTicket(order: Order): string {

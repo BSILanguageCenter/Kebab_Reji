@@ -320,4 +320,19 @@ export const ru: Record<TranslationKey, string> = {
   colCart: 'Корзина / настройки',
     deleteProductMessage: 'Удалить продукт',
   deleting: 'Удаление...',
+    // ---------- Printers ----------
+  printers: 'Принтеры',
+  kitchenPrinter: 'Принтер кухни',
+  cashierPrinter: 'Принтер кассы',
+  printerEnabled: 'Включён',
+  printerIp: 'IP-адрес',
+  printerPort: 'Порт',
+  printerWidth: 'Ширина',
+  printerEncoding: 'Кодировка',
+  printerTest: 'Тест печати',
+  printerTestSuccess: 'Тест отправлен на печать',
+  printerTestFailed: 'Ошибка печати',
+  printerSaved: 'Настройки сохранены',
+  printerHint:
+    'POS-принтеры подключаются по локальной сети. Укажите IP-адрес и порт (обычно 9100). Тестовая печать проверяет связь до сохранения.',
 };

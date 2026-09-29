@@ -691,6 +691,65 @@ class Store extends EventEmitter {
 
     return { unsyncedCount, totalOrders };
   }
+
+  // ============================================================
+  // ПРИНТЕРЫ
+  // ============================================================
+  getPrinterSettings() {
+    const row = db
+      .prepare("SELECT * FROM printer_settings WHERE id = 'default'")
+      .get();
+
+    if (!row) {
+      return {
+        kitchen_enabled: false,
+        kitchen_ip: '',
+        kitchen_port: 9100,
+        kitchen_width: 32,
+        cashier_enabled: false,
+        cashier_ip: '',
+        cashier_port: 9100,
+        cashier_width: 32,
+        encoding: 'cp866',
+      };
+    }
+
+    return {
+      kitchen_enabled: Boolean(row.kitchen_enabled),
+      kitchen_ip: row.kitchen_ip ?? '',
+      kitchen_port: row.kitchen_port ?? 9100,
+      kitchen_width: row.kitchen_width ?? 32,
+      cashier_enabled: Boolean(row.cashier_enabled),
+      cashier_ip: row.cashier_ip ?? '',
+      cashier_port: row.cashier_port ?? 9100,
+      cashier_width: row.cashier_width ?? 32,
+      encoding: row.encoding === 'cp1251' ? 'cp1251' : 'cp866',
+    };
+  }
+
+  savePrinterSettings(s) {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT OR REPLACE INTO printer_settings
+       (id, kitchen_enabled, kitchen_ip, kitchen_port, kitchen_width,
+        cashier_enabled, cashier_ip, cashier_port, cashier_width,
+        encoding, updated_at)
+       VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      s.kitchen_enabled ? 1 : 0,
+      String(s.kitchen_ip ?? '').trim(),
+      Number(s.kitchen_port) || 9100,
+      Number(s.kitchen_width) || 32,
+      s.cashier_enabled ? 1 : 0,
+      String(s.cashier_ip ?? '').trim(),
+      Number(s.cashier_port) || 9100,
+      Number(s.cashier_width) || 32,
+      s.encoding === 'cp1251' ? 'cp1251' : 'cp866',
+      now
+    );
+
+    return this.getPrinterSettings();
+  }
 }
 
 export const store = new Store();

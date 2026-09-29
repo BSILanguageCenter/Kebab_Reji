@@ -15,7 +15,8 @@ import { ProductBuilderDialog } from '@/components/ProductBuilderDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageActions';
 import { Resizer } from '@/components/Resizer';
-import { printCustomerTicket } from '@/services/printer';
+import { printCustomerTicket, printKitchenOrder } from '@/services/printer';
+import { KITCHEN_LIMIT } from '@/services/kitchen';
 import {
   pushUndo,
   popUndo,
@@ -74,6 +75,98 @@ function getItemWidth(item: MenuItem): number {
 }
 
 const GRID_GAP = 12;
+
+// ============================================================
+// РАСЧЁТ ВРЕМЕНИ ОЖИДАНИЯ
+// ============================================================
+function getMenuItemCookTime(item: MenuItem): number {
+  // dish-group → берём максимальное время среди вариантов
+  if (item.dish_kind === 'group' && item.variants?.length) {
+    return Math.max(
+      ...item.variants.map((v) =>
+        v.station === 'kitchen' ? v.cook_time_min ?? 0 : 0
+      )
+    );
+  }
+  return item.station === 'kitchen' ? item.cook_time_min ?? 0 : 0;
+}
+
+function getItemCookTime(item: MenuItem): number {
+  // set → смотрим на его основной продукт (set_main)
+  if (item.type === 'set' && item.set_main) {
+    return getMenuItemCookTime(item.set_main);
+  }
+  return getMenuItemCookTime(item);
+}
+
+/**
+ * Ориентировочное время готовки заказа в минутах.
+ *
+ * Логика:
+ *   ownTime — максимум cook_time по всем позициям этого заказа
+ *             (блюда на кухне готовятся параллельно).
+ *             Если в заказе только напитки/соусы/топпинги → 0.
+ *
+ *   Очередь на кухне — активные заказы (NEW + PREPARING).
+ *   Считаем, сколько «партий» (batches) стоит впереди нас.
+ *   Каждая партия = KITCHEN_LIMIT заказов.
+ *
+ *   Батч готовится за среднее время кухонных заказов в очереди
+ *   (или fallback = 10 мин). Затем + ownTime.
+ *
+ *   Если очередь пуста, а ownTime = 0 — вернём 0 (номерок без ETA).
+ */
+function estimateWaitMinutes(
+  cart: CartItem[],
+  menuItems: MenuItem[],
+  activeOrders: Order[],
+  kitchenLimit: number = KITCHEN_LIMIT
+): number {
+  // 1) собственное время готовки
+  let ownTime = 0;
+  for (const c of cart) {
+    if (c.is_removed) continue;
+    const mi = menuItems.find((m) => m.id === c.menu_item_id);
+    if (!mi) continue;
+    const t = getItemCookTime(mi);
+    if (t > ownTime) ownTime = t;
+  }
+
+  // 2) активные кухонные заказы впереди нас
+  const activeKitchen = activeOrders.filter(
+    (o) => o.status === 'NEW' || o.status === 'PREPARING'
+  );
+
+  if (activeKitchen.length === 0) {
+    return ownTime;
+  }
+
+  // 3) среднее время готовки по активным заказам
+  let sumCook = 0;
+  let counted = 0;
+  for (const o of activeKitchen) {
+    let orderCook = 0;
+    for (const it of o.order_items ?? []) {
+      if (it.is_removed) continue;
+      const mi = menuItems.find((m) => m.id === it.menu_item_id);
+      if (!mi) continue;
+      const t = getItemCookTime(mi);
+      if (t > orderCook) orderCook = t;
+    }
+    if (orderCook > 0) {
+      sumCook += orderCook;
+      counted++;
+    }
+  }
+  const avgBatch = counted > 0 ? Math.round(sumCook / counted) : 10;
+
+  // 4) сколько полных партий впереди нашей
+  //    (наш заказ станет позицией activeKitchen.length + 1)
+  const batchesAhead = Math.floor(activeKitchen.length / kitchenLimit);
+
+  // 5) итог: партии впереди * среднее_время_партии + ownTime
+  return batchesAhead * avgBatch + ownTime;
+}
 
 export default function CashierPage() {
   const { t, lang } = useI18n();
@@ -337,8 +430,28 @@ export default function CashierPage() {
           })),
       };
 
-      printCustomerTicket(ticketOrder).then((res) => {
-        if (!res.success) setPrintError(res.error ?? t('printerError'));
+      // ETA учитывает очередь на кухне: свой заказ + активные заказы
+      const estimatedMinutes = estimateWaitMinutes(
+        cart,
+        menuItems,
+        activeOrders
+      );
+
+      // Сначала кухня — повара должны увидеть заказ.
+      // Затем клиентский номерок с ETA.
+      Promise.all([
+        printKitchenOrder(ticketOrder),
+        printCustomerTicket(ticketOrder, estimatedMinutes),
+      ]).then(([kitchenRes, customerRes]) => {
+        if (!kitchenRes.success) {
+          setPrintError(
+            kitchenRes.error ?? t('printerError')
+          );
+        } else if (!customerRes.success) {
+          setPrintError(
+            customerRes.error ?? t('printerError')
+          );
+        }
       });
 
       setCart([]);
@@ -801,7 +914,6 @@ export default function CashierPage() {
             </div>
           )}
 
-          {/* Центральная область — скролл только если есть товары */}
           {hasDishSet ? (
             <div className="flex-1 min-h-0 overflow-y-auto p-3">
               <div className="mb-2 px-2 py-1 rounded-md bg-orange-100 border-l-2 border-orange-500">

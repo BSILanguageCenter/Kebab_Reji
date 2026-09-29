@@ -165,6 +165,25 @@ function isRangeFree(
   return true;
 }
 
+// ---------- Проверка диапазона с исключением НЕСКОЛЬКИХ id (нужно для обмена местами) ----------
+function isRangeFreeMulti(
+  spaceItems: MenuItem[],
+  start: number,
+  width: number,
+  excludeIds: Set<string>
+): boolean {
+  if (start < 0) return false;
+  const end = start + width - 1;
+  for (const it of spaceItems) {
+    if (excludeIds.has(it.id)) continue;
+    const w = getItemWidth(it);
+    const iStart = it.sort_order;
+    const iEnd = iStart + w - 1;
+    if (iEnd >= start && iStart <= end) return false;
+  }
+  return true;
+}
+
 // ---------- Влезает ли карточка в строку ----------
 function fitsInRow(start: number, width: number, cols: number): boolean {
   if (start < 0) return false;
@@ -183,6 +202,18 @@ function isPlaceable(
     fitsInRow(start, width, cols) &&
     isRangeFree(spaceItems, start, width, excludeId)
   );
+}
+
+// ---------- Безопасная временная позиция для обмена местами ----------
+// Нужна, чтобы при свапе A<->B никогда не возникало двух карточек с
+// одинаковым sort_order одновременно (это может быть отклонено бэкендом,
+// если там есть уникальный индекс на sort_order в пределах пространства).
+function getSafeTempSlot(spaceItems: MenuItem[]): number {
+  let maxEnd = 0;
+  for (const it of spaceItems) {
+    maxEnd = Math.max(maxEnd, it.sort_order + getItemWidth(it));
+  }
+  return maxEnd + 100000;
 }
 
 // ---------- Ближайшее свободное место (как на рабочем столе) ----------
@@ -260,6 +291,12 @@ type LayoutCell = {
 
 // ============================================================
 // buildRenderLayout — slot = row * cols + col
+//
+// ВАЖНО: занятость ячеек считается по РЕАЛЬНО отрисованным
+// row/col карточки (с учётом переноса, если она не влезала в
+// строку по краю), а не по сырому диапазону sort_order..sort_order+w-1.
+// Раньше это приводило к тому, что первая ячейка следующей строки
+// иногда ошибочно помечалась занятой и "пропадала" из раскладки.
 // ============================================================
 function buildRenderLayout(
   items: MenuItem[],
@@ -268,22 +305,26 @@ function buildRenderLayout(
 ): LayoutCell[] {
   const cells: LayoutCell[] = [];
   const occupied = new Set<number>();
-  let maxSlot = 0;
+  let maxRow = 0;
 
   for (const it of items) {
     const w = getItemWidth(it);
-    for (let i = 0; i < w; i++) occupied.add(it.sort_order + i);
-    maxSlot = Math.max(maxSlot, it.sort_order + w - 1);
-
     const span = Math.min(w, cols);
+
     const row = Math.floor(it.sort_order / cols);
     let col = it.sort_order % cols;
-    if (col + span > cols) col = cols - span;
+    if (col + span > cols) col = cols - span; // защита от старых/несовпадающих данных
+
+    // помечаем занятыми РЕАЛЬНО отрисованные ячейки
+    for (let k = 0; k < span; k++) {
+      occupied.add(row * cols + (col + k));
+    }
+    maxRow = Math.max(maxRow, row);
 
     cells.push({ row, col, width: span, slot: it.sort_order, item: it });
   }
 
-  const totalRows = Math.floor(maxSlot / cols) + 1 + minEmptyRows;
+  const totalRows = maxRow + 1 + minEmptyRows;
   for (let r = 0; r < totalRows; r++) {
     for (let c = 0; c < cols; c++) {
       const slot = r * cols + c;
@@ -602,7 +643,12 @@ export function MenuProduct() {
   );
 
   // ============================================================
-  // DROP — как на рабочем столе Windows
+  // DROP — как на рабочем столе Windows, плюс ОБМЕН МЕСТАМИ:
+  //   свободная ячейка → карточка встаёт ровно туда;
+  //   занятая карточкой → они меняются местами;
+  //   обмен невозможен (разная ширина не влезает на новом месте) →
+  //     перетаскиваемая карточка уходит в ближайшее свободное место,
+  //     а та, на которую бросили, остаётся на месте.
   // ============================================================
   const handleSlotDrop = useCallback(
     async (space: CategorySpace, targetSlot: number, cols: number) => {
@@ -618,6 +664,81 @@ export function MenuProduct() {
       const spaceItems = getSpaceItems(allTops, space);
       const w = getItemWidth(fromItem);
 
+      const targetCard = spaceItems.find(
+        (i) => i.sort_order === targetSlot && i.id !== fromItem.id
+      );
+
+      // ---------- Бросок на занятую ячейку — ОБМЕН МЕСТАМИ ----------
+      if (targetCard) {
+        if (targetCard.sort_order === fromItem.sort_order) return;
+
+        const wB = getItemWidth(targetCard);
+        const newFromStart = targetCard.sort_order;
+        const newTargetStart = fromItem.sort_order;
+        const excludeIds = new Set([fromItem.id, targetCard.id]);
+
+        const fromFits =
+          fitsInRow(newFromStart, w, cols) &&
+          isRangeFreeMulti(spaceItems, newFromStart, w, excludeIds);
+        const targetFits =
+          fitsInRow(newTargetStart, wB, cols) &&
+          isRangeFreeMulti(spaceItems, newTargetStart, wB, excludeIds);
+
+        if (fromFits && targetFits) {
+          // Мгновенно показываем финальный результат обмена — без
+          // промежуточного "прыжка" на временную позицию, чтобы не
+          // подвисал UI на время сетевых запросов.
+          setItems((prev) =>
+            prev.map((it) => {
+              if (it.id === fromItem.id) {
+                return { ...it, sort_order: newFromStart };
+              }
+              if (it.id === targetCard.id) {
+                return { ...it, sort_order: newTargetStart };
+              }
+              return it;
+            })
+          );
+
+          // На бэкенд шлём через временный слот в фоне, последовательно,
+          // чтобы не столкнуться с уникальным индексом на sort_order —
+          // но локальный UI уже обновлён и не ждёт эти запросы.
+          const tempSlot = getSafeTempSlot(spaceItems);
+          (async () => {
+            try {
+              await reorderItems([{ id: fromItem.id, sort_order: tempSlot }]);
+              await reorderItems([
+                { id: targetCard.id, sort_order: newTargetStart },
+              ]);
+              await reorderItems([
+                { id: fromItem.id, sort_order: newFromStart },
+              ]);
+            } catch (err) {
+              setError(
+                err instanceof Error ? err.message : 'reorder failed'
+              );
+              loadData();
+            }
+          })();
+          return;
+        }
+
+        // Обмен не влезает (например, группа другой ширины упирается
+        // в край строки) — перетаскиваемую карточку ставим в ближайшее
+        // свободное место, целевую не трогаем.
+        const dest = findNearestFreeSlot(
+          spaceItems,
+          targetSlot,
+          w,
+          fromItem.id,
+          cols
+        );
+        if (dest < 0 || dest === fromItem.sort_order) return;
+        await applyReorder([{ id: fromItem.id, sort_order: dest }]);
+        return;
+      }
+
+      // ---------- Бросок в свободную ячейку ----------
       let dest = targetSlot;
       if (!isPlaceable(spaceItems, dest, w, fromItem.id, cols)) {
         dest = findNearestFreeSlot(
