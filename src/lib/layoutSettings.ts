@@ -146,10 +146,6 @@ function schedulePersist(settings: LayoutSettings) {
     } catch {
       /* ignore */
     }
-<<<<<<< HEAD
-=======
-    // Уведомляем подписчиков — например, чтобы отправить на сервер
->>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
     notifyLocalChange(p);
   });
 }

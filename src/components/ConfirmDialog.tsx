@@ -29,10 +29,7 @@ export function ConfirmDialog({
   const { t } = useI18n();
   const [cooldown, setCooldown] = useState(0);
 
-<<<<<<< HEAD
-=======
   // Обратный отсчёт, запускается при open=true и сбрасывается при закрытии
->>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
   useEffect(() => {
     if (!open || disabledSeconds <= 0) {
       setCooldown(0);
@@ -78,6 +75,7 @@ export function ConfirmDialog({
         className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-md p-5"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Иконка + Заголовок */}
         <div className="flex items-start gap-3 mb-4">
           <div
             className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${iconColors[variant]}`}
@@ -92,6 +90,7 @@ export function ConfirmDialog({
           </div>
         </div>
 
+        {/* Кнопки Да / Нет */}
         <div className="flex gap-2">
           <button
             onClick={onCancel}
