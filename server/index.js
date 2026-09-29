@@ -105,11 +105,7 @@ io.on('connection', (socket) => {
   socket.on('layout-settings', (settings) => {
     if (!settings || typeof settings !== 'object') return;
     globalLayoutSettings = settings;
-<<<<<<< HEAD
     // Рассылаем всем, КРОМЕ отправителя — без цикла
-=======
-    // Рассылаем всем, кроме отправителя
->>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
     socket.broadcast.emit('layout-settings', settings);
     console.log('[ws] layout-settings broadcast');
   });
