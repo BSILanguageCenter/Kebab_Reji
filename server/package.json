@@ -2,8 +2,12 @@
   "name": "kebab-pos-server",
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
-    "start": "node --experimental-sqlite index.js"
+    "start": "node --experimental-sqlite index.js",
+    "dev": "node --experimental-sqlite index.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

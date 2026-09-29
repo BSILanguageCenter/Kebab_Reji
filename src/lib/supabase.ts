@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { trackedFetch, startTrafficLogger } from './traffic';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseKey =
@@ -27,4 +28,11 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: {
     params: { eventsPerSecond: 20 },
   },
+  global: {
+    // Оборачиваем fetch — считаем байты для счётчика трафика
+    fetch: trackedFetch,
+  },
 });
+
+// Запускаем периодический лог трафика в консоль браузера
+startTrafficLogger(15_000);

@@ -5,7 +5,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const HOST_ID_PATH = path.join(__dirname, 'host.id');
+
+// ============================================================
+// host.id хранится в server/data/host.id
+// Папка data/ создаётся в db.js, который импортируется ДО host.js
+// ============================================================
+const HOST_ID_PATH = path.join(__dirname, 'data', 'host.id');
 
 const RANGE_SIZE = 500;
 const HEARTBEAT_INTERVAL = 5 * 60 * 1000; // 5 минут
@@ -15,12 +20,12 @@ let storeRef = null;
 
 let hostUuid = null;
 let hostNumber = 1;
-let rangeStart = 100;
-let rangeEnd = 599;
-let nextOrderNumber = 100;
+let rangeStart = 1;
+let rangeEnd = 500;
+let nextOrderNumber = 1;
 
 // ============================================================
-// Persistent UUID — сохраняется в файле host.id
+// Persistent UUID — сохраняется в файле server/data/host.id
 // ============================================================
 function loadOrCreateUuid() {
   try {
@@ -108,7 +113,7 @@ async function recalculateRange() {
   }
 
   const newHostNumber = myIndex + 1;
-  const newRangeStart = 100 + (newHostNumber - 1) * RANGE_SIZE;
+  const newRangeStart = 1 + (newHostNumber - 1) * RANGE_SIZE;
   const newRangeEnd = newRangeStart + RANGE_SIZE - 1;
 
   // Обновляем локальные переменные
@@ -142,7 +147,7 @@ async function recalculateRange() {
     .limit(1)
     .maybeSingle();
 
-  const globalMax = maxRow?.order_number ?? 99;
+  const globalMax = maxRow?.order_number ?? 0;
 
   // Если глобальный max меньше нашего диапазона → начинаем с rangeStart
   // Иначе продолжаем с globalMax + 1

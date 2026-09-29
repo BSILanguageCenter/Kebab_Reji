@@ -1,9 +1,20 @@
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { mkdirSync, existsSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dbPath = join(__dirname, 'pos.db');
+
+// ============================================================
+// Все данные (SQLite + host.id) — в отдельной папке server/data/
+// Папка создаётся автоматически при первом запуске.
+// ============================================================
+const DATA_DIR = join(__dirname, 'data');
+if (!existsSync(DATA_DIR)) {
+  mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const dbPath = join(DATA_DIR, 'pos.db');
 const db = new DatabaseSync(dbPath);
 
 db.exec('PRAGMA journal_mode = WAL');
@@ -146,6 +157,23 @@ db.exec(`
     sort_order     INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (group_id) REFERENCES menu_set_extra_groups(id) ON DELETE CASCADE,
     FOREIGN KEY (item_id)  REFERENCES menu_items(id) ON DELETE CASCADE
+  );
+
+  -- ============================================================
+  -- НАСТРОЙКИ ПРИНТЕРОВ (одна строка id='default')
+  -- ============================================================
+  CREATE TABLE IF NOT EXISTS printer_settings (
+    id                TEXT PRIMARY KEY,
+    kitchen_enabled   INTEGER NOT NULL DEFAULT 0,
+    kitchen_ip        TEXT    NOT NULL DEFAULT '',
+    kitchen_port      INTEGER NOT NULL DEFAULT 9100,
+    kitchen_width     INTEGER NOT NULL DEFAULT 32,
+    cashier_enabled   INTEGER NOT NULL DEFAULT 0,
+    cashier_ip        TEXT    NOT NULL DEFAULT '',
+    cashier_port      INTEGER NOT NULL DEFAULT 9100,
+    cashier_width     INTEGER NOT NULL DEFAULT 32,
+    encoding          TEXT    NOT NULL DEFAULT 'cp866',
+    updated_at        TEXT
   );
 
   -- ============================================================

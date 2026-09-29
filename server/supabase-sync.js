@@ -188,13 +188,29 @@ function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
 
 // ============================================================
 // SYNC LOOP — отправка в Supabase
+//
+// Лог «нет интернета» пишем не чаще, чем раз в 30 секунд,
+// и дополнительно — при изменении количества заказов в очереди.
+// Это полностью убирает бесконечный спам при offline-состоянии.
 // ============================================================
 export function startSyncLoop() {
   console.log('[sync] Цикл отправки запущен (интервал 1 сек)');
 
+  let lastOfflineLogAt = 0;
+  let lastOfflineLogCount = -1;
+  const OFFLINE_LOG_INTERVAL_MS = 30_000;
+
   setInterval(async () => {
     const unsynced = store.getUnsyncedOrders();
-    if (unsynced.length === 0) return;
+
+    if (unsynced.length === 0) {
+      // Очередь пуста — если ранее жаловались, сообщаем один раз о восстановлении
+      if (lastOfflineLogCount !== -1) {
+        console.log('[sync] ✓ Очередь отправки пуста');
+        lastOfflineLogCount = -1;
+      }
+      return;
+    }
 
     let successCount = 0;
 
@@ -217,9 +233,16 @@ export function startSyncLoop() {
 
     const stats = store.getStats();
     if (stats.unsyncedCount > 0 && !lastOnline) {
-      console.log(
-        `[sync] ⏳ ${stats.unsyncedCount} заказ(ов) в очереди (нет интернета)`
-      );
+      const now = Date.now();
+      const changed = stats.unsyncedCount !== lastOfflineLogCount;
+      const timePassed = now - lastOfflineLogAt >= OFFLINE_LOG_INTERVAL_MS;
+      if (changed || timePassed) {
+        lastOfflineLogAt = now;
+        lastOfflineLogCount = stats.unsyncedCount;
+        console.log(
+          `[sync] ⏳ ${stats.unsyncedCount} заказ(ов) в очереди (нет интернета)`
+        );
+      }
     }
   }, 1000);
 }
@@ -307,6 +330,8 @@ async function pushOrderToSupabase(order) {
 
 // ============================================================
 // REALTIME — ORDERS
+//
+// Логи о каждом событии убраны — чтобы не засорять терминал.
 // ============================================================
 let ordersChannel = null;
 
@@ -321,7 +346,6 @@ function subscribeToOrderChanges() {
       'postgres_changes',
       { event: '*', schema: 'public', table: 'orders' },
       (payload) => {
-        console.log('[sync] 🔔 Realtime orders event:', payload.eventType);
         const orderId = payload.new?.id || payload.old?.id;
         if (orderId) pullOrderFromSupabase(orderId);
       }
@@ -405,8 +429,6 @@ async function pullOrderFromSupabase(orderId) {
       ...order,
       order_items: items ?? [],
     });
-
-    console.log(`[sync] 📥 Pulled: #${order.order_number} (${order.status})`);
   } catch (e) {
     console.error('[sync] pullOrder error:', e.message);
   }
@@ -414,6 +436,8 @@ async function pullOrderFromSupabase(orderId) {
 
 // ============================================================
 // REALTIME — MENU
+//
+// Логи о каждом обновлении меню убраны — чтобы не засорять терминал.
 // ============================================================
 let menuChannel = null;
 
@@ -496,9 +520,7 @@ async function reloadMenu() {
         setExtraGroups: setGroups.data ?? [],
         setExtraOptions: setOpts.data ?? [],
       });
-      console.log(
-        `[sync] 🔄 Меню обновлено: ${items.data.length} товаров`
-      );
+      // Лог убран намеренно — слишком часто при работе менеджера с меню.
     }
   } catch (e) {
     console.error('[sync] Ошибка перезагрузки меню:', e.message);
@@ -545,10 +567,6 @@ export function startPollingFallback() {
       for (const o of updatedOrders) {
         await pullOrderFromSupabase(o.id);
       }
-
-      console.log(
-        `[sync] 📥 Polling: обработано ${updatedOrders.length} заказов`
-      );
     } catch (e) {
       console.error('[sync] Polling exception:', e.message);
     }

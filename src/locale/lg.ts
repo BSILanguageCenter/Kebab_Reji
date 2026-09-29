@@ -317,6 +317,20 @@ export const translationKeys = [
   'colCart',
   'deleteProductMessage',
   'deleting',
+    // ---------- Printers ----------
+  'printers',
+  'kitchenPrinter',
+  'cashierPrinter',
+  'printerEnabled',
+  'printerIp',
+  'printerPort',
+  'printerWidth',
+  'printerEncoding',
+  'printerTest',
+  'printerTestSuccess',
+  'printerTestFailed',
+  'printerSaved',
+  'printerHint',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];

@@ -41,6 +41,11 @@ const HOST_IP_KEY = 'kebab-pos-host-ip';
 const LOCAL_IP_KEY = 'kebab-pos-local-ip';
 
 // ============================================================
+// Общий таймаут ожидания сервера (сек)
+// ============================================================
+const SERVER_WAIT_TIMEOUT_MS = 10_000;
+
+// ============================================================
 // Копирование в буфер обмена с fallback
 // ============================================================
 function copyToClipboard(text: string): Promise<void> {
@@ -65,29 +70,65 @@ function copyToClipboard(text: string): Promise<void> {
 }
 
 // ============================================================
-// Ожидание готовности сервера
+// Ожидание готовности сервера (макс. timeoutMs)
+//
+// initialDelayMs — пауза перед первым запросом.
+// Экспоненциальный backoff:
+//   400 → 600 → 900 → 1350 → 2000 (cap) → 2000 → ...
 // ============================================================
 async function waitForServer(
   host: string,
   port: number,
-  timeoutMs: number
+  timeoutMs: number,
+  initialDelayMs = 500
 ): Promise<boolean> {
   const start = Date.now();
   const url = `http://${host}:${port}/health`;
 
+  if (initialDelayMs > 0) {
+    await new Promise((r) => setTimeout(r, initialDelayMs));
+  }
+
+  let delay = 400;
+
   while (Date.now() - start < timeoutMs) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 700);
+      const timeoutId = setTimeout(() => controller.abort(), 1000);
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
       if (res.ok) return true;
     } catch {
-      // сервер ещё не готов
+      // Сервер ещё не готов — это ожидаемо на старте.
     }
-    await new Promise((r) => setTimeout(r, 400));
+
+    if (Date.now() - start + delay >= timeoutMs) break;
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(2000, Math.round(delay * 1.5));
   }
+
   return false;
+}
+
+// ============================================================
+// Одиночный быстрый probe: сервер уже работает?
+// Одна попытка, без retry-цикла — минимум «красного» в консоли.
+// ============================================================
+async function probeServer(
+  host: string,
+  port: number,
+  timeoutMs = 500
+): Promise<boolean> {
+  const url = `http://${host}:${port}/health`;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export default function App() {
@@ -104,13 +145,12 @@ export default function App() {
 
   const [visited, setVisited] = useState<Set<Role>>(() => new Set());
 
-  // Bootstrap-состояния
   const [serverReady, setServerReady] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
 
   // ============================================================
-  // Подписка на количество подключённых устройств
-  // Инициализируем socket ТОЛЬКО после serverReady
+  // Подписка на количество подключённых устройств.
+  // Инициализируем socket ТОЛЬКО после serverReady.
   // ============================================================
   useEffect(() => {
     if (!serverReady) return;
@@ -120,10 +160,7 @@ export default function App() {
   }, [serverReady]);
 
   // ============================================================
-  // Синхронизация layout: любое локальное изменение (слайдеры в
-  // PanelSettings, ресайзы колонок) отправляем на сервер — он
-  // рассылает всем остальным клиентам. Layout от других клиентов
-  // сюда не попадает (нет цикла).
+  // Синхронизация layout host ↔ client
   // ============================================================
   useEffect(() => {
     if (!serverReady) return;
@@ -133,8 +170,7 @@ export default function App() {
   }, [serverReady]);
 
   // ============================================================
-  // Bootstrap: проверить режим → запустить сервер (если host) →
-  // дождаться /health → установить serverReady
+  // Bootstrap
   // ============================================================
   useEffect(() => {
     if (!mode) return;
@@ -148,8 +184,8 @@ export default function App() {
         if (mode === 'host') {
           console.log('[app] Режим host — проверяю сервер...');
 
-          // 1. Пробуем /health напрямую — может быть, уже запущен
-          const alreadyUp = await waitForServer('localhost', 3001, 1500);
+          // 1. Одиночный probe: сервер уже работает?
+          const alreadyUp = await probeServer('localhost', 3001, 500);
 
           if (!alreadyUp) {
             // 2. Прибиваем возможный зависший процесс
@@ -168,9 +204,23 @@ export default function App() {
               throw new Error(startData.error || 'Server start failed');
             }
 
-            // 4. Ждём готовности до 30 сек
-            const ready = await waitForServer('localhost', 3001, 30000);
-            if (!ready) throw new Error('Сервер не отвечает (/health)');
+            // 4. Ждём готовности МАКСИМУМ 10 секунд.
+            //    Первая пауза 2500 мс — Node успевает поднять Express.
+            console.log(
+              `[app] Ждём сервер до ${SERVER_WAIT_TIMEOUT_MS / 1000} сек...`
+            );
+            const ready = await waitForServer(
+              'localhost',
+              3001,
+              SERVER_WAIT_TIMEOUT_MS,
+              2500
+            );
+            if (!ready) {
+              throw new Error(
+                `Сервер не запустился за ${SERVER_WAIT_TIMEOUT_MS / 1000} секунд`
+              );
+            }
+            console.log('[app] ✓ Сервер готов');
           }
 
           if (cancelled) return;
@@ -197,9 +247,18 @@ export default function App() {
 
           console.log('[app] Режим client — проверяю хост', hostIp);
 
-          const ready = await waitForServer(hostIp.trim(), 3001, 20000);
+          const ready = await waitForServer(
+            hostIp.trim(),
+            3001,
+            SERVER_WAIT_TIMEOUT_MS,
+            800
+          );
           if (!ready) {
-            throw new Error(`Хост ${hostIp}:3001 недоступен`);
+            throw new Error(
+              `Хост ${hostIp}:3001 не отвечает за ${
+                SERVER_WAIT_TIMEOUT_MS / 1000
+              } секунд`
+            );
           }
 
           if (!cancelled) setServerReady(true);
@@ -218,7 +277,7 @@ export default function App() {
   }, [mode]);
 
   // ============================================================
-  // Посещённые роли (для кеширования страниц)
+  // Посещённые роли
   // ============================================================
   useEffect(() => {
     if (role) {
@@ -274,7 +333,7 @@ export default function App() {
   const localIp = window.localStorage.getItem(LOCAL_IP_KEY) ?? '';
 
   // ============================================================
-  // ЭКРАН 1.5: СПЛЕШ — пока сервер не готов
+  // ЭКРАН 1.5: СПЛЕШ
   // ============================================================
   if (!serverReady) {
     return (
@@ -466,9 +525,16 @@ function ModeSelectionScreen({
         return;
       }
 
-      const ready = await waitForServer('localhost', 3001, 30000);
+      const ready = await waitForServer(
+        'localhost',
+        3001,
+        SERVER_WAIT_TIMEOUT_MS,
+        2500
+      );
       if (!ready) {
-        setError(t('serverStartTimeout'));
+        setError(
+          `Сервер не запустился за ${SERVER_WAIT_TIMEOUT_MS / 1000} секунд`
+        );
         setStarting(false);
         return;
       }

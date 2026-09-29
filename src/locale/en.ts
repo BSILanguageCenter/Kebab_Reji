@@ -320,4 +320,19 @@ export const en: Record<TranslationKey, string> = {
   colCart: 'Cart / settings',
     deleteProductMessage: 'Delete product',
   deleting: 'Deleting...',
+    // ---------- Printers ----------
+  printers: 'Printers',
+  kitchenPrinter: 'Kitchen printer',
+  cashierPrinter: 'Cashier printer',
+  printerEnabled: 'Enabled',
+  printerIp: 'IP address',
+  printerPort: 'Port',
+  printerWidth: 'Width',
+  printerEncoding: 'Encoding',
+  printerTest: 'Test print',
+  printerTestSuccess: 'Test sent to printer',
+  printerTestFailed: 'Print failed',
+  printerSaved: 'Settings saved',
+  printerHint:
+    'POS printers connect over LAN. Enter IP address and port (usually 9100). Test print verifies connectivity before saving.',
 };
