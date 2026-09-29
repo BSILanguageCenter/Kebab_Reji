@@ -186,7 +186,12 @@ export function getSocket(): Socket {
       notifyClientsCount(count);
     });
 
+<<<<<<< HEAD
     // Layout от сервера → пишем в localStorage + уведомляем хуки
+=======
+    // Layout от сервера (broadcast от другого клиента) →
+    // записываем в localStorage + уведомляем локальные хуки
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
     socket.on('layout-settings', (settings: LayoutSettings) => {
       console.log('[ws] layout-settings из сети');
       applyExternalLayout(settings);

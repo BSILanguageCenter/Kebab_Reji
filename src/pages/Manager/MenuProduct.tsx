@@ -85,8 +85,14 @@ const GRID_GAP = 12;
 const EMPTY_ROWS_AFTER = 3;
 
 // ============================================================
+<<<<<<< HEAD
 // Конфликты sort_order
 // ============================================================
+=======
+// Порядок при «Сбросе»
+// ============================================================
+
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
 function hasSortConflicts(tops: MenuItem[]): boolean {
   const spaces: CategorySpace[] = ['dishset', 'drink', 'sauce', 'topping'];
   for (const sp of spaces) {
@@ -100,7 +106,11 @@ function hasSortConflicts(tops: MenuItem[]): boolean {
   return false;
 }
 
+<<<<<<< HEAD
 // ---------- Сброс: dish single → dish group → set ----------
+=======
+// ---------- Сброс: раскладка с учётом ширины строки ----------
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
 function buildCategorizedOrder(
   tops: MenuItem[],
   colsBySpace: Partial<Record<CategorySpace, number>> = {}
@@ -111,6 +121,10 @@ function buildCategorizedOrder(
     let cursor = 0;
     for (const it of arr) {
       const w = getItemWidth(it);
+<<<<<<< HEAD
+=======
+      // группа не должна пересекать границу строки
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
       if (cols && w <= cols && (cursor % cols) + w > cols) {
         cursor = Math.ceil(cursor / cols) * cols;
       }
@@ -119,6 +133,14 @@ function buildCategorizedOrder(
     }
   };
 
+<<<<<<< HEAD
+=======
+    // Сортируем dish и set:
+  //   1) dish без вариантов (dish_kind !== 'group')  → 0
+  //   2) dish с вариантами (dish_kind === 'group')   → 1
+  //   3) set                                          → 2
+  // Внутри каждой группы — по старому sort_order.
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
   const sortKeyOf = (it: MenuItem): number => {
     if (it.type === 'dish') return it.dish_kind === 'group' ? 1 : 0;
     return 2; // set
@@ -278,7 +300,11 @@ function buildRenderLayout(
     const span = Math.min(w, cols);
     const row = Math.floor(it.sort_order / cols);
     let col = it.sort_order % cols;
+<<<<<<< HEAD
     if (col + span > cols) col = cols - span;
+=======
+    if (col + span > cols) col = cols - span; // защита от старых данных
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
 
     cells.push({ row, col, width: span, slot: it.sort_order, item: it });
   }
@@ -374,7 +400,13 @@ function GridSpace({
       {cells.map((cell) => {
         const key = cell.item ? cell.item.id : `empty-${cell.slot}`;
 
+<<<<<<< HEAD
         if (!cell.item) {
+=======
+        // ---------- пустая ячейка ----------
+        if (!cell.item) {
+          // подсвечиваем весь диапазон, который займёт карточка
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
           const isHighlightedEmpty =
             highlightSlot !== null &&
             cell.slot >= highlightSlot &&
@@ -421,6 +453,10 @@ function GridSpace({
           );
         }
 
+<<<<<<< HEAD
+=======
+        // ---------- карточка ----------
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
         const card = cell.item;
         const isHighlighted = highlightSlot === card.sort_order;
 
@@ -518,6 +554,12 @@ export function MenuProduct() {
   const [deleting, setDeleting] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
 
+<<<<<<< HEAD
+=======
+  // Открыт ли диалог подтверждения «Сброс»
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverSlot, setDragOverSlot] = useState<{
     space: CategorySpace;
@@ -527,6 +569,10 @@ export function MenuProduct() {
   const [layout, setLayout] = useLayoutSettings();
   const drinksWrapRef = useRef<HTMLDivElement>(null);
 
+<<<<<<< HEAD
+=======
+  // Актуальное число колонок каждого пространства (для «Сброса»)
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
   const colsRef = useRef<Partial<Record<CategorySpace, number>>>({});
   const registerCols = useCallback((s: CategorySpace, c: number) => {
     colsRef.current[s] = c;
@@ -602,7 +648,13 @@ export function MenuProduct() {
   );
 
   // ============================================================
+<<<<<<< HEAD
   // DROP — как на рабочем столе Windows
+=======
+  // DROP — как на рабочем столе Windows:
+  //   свободная ячейка → карточка встаёт ровно туда;
+  //   занятая → ближайшее свободное место, соседей не двигаем.
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
   // ============================================================
   const handleSlotDrop = useCallback(
     async (space: CategorySpace, targetSlot: number, cols: number) => {
@@ -638,7 +690,13 @@ export function MenuProduct() {
   );
 
   // ============================================================
+<<<<<<< HEAD
   // КНОПКИ ◀ ▶ — сдвиг на ±1 ячейку
+=======
+  // КНОПКИ ◀ ▶ — двигают ТОЛЬКО саму карточку на ±1 ячейку,
+  //              если целевые ячейки свободны и группа не
+  //              перескакивает через край строки.
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
   // ============================================================
   const canMoveItem = useCallback(
     (item: MenuItem, direction: -1 | 1, cols: number): boolean => {
