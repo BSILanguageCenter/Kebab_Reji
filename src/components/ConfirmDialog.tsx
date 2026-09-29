@@ -29,6 +29,10 @@ export function ConfirmDialog({
   const { t } = useI18n();
   const [cooldown, setCooldown] = useState(0);
 
+<<<<<<< HEAD
+=======
+  // Обратный отсчёт, запускается при open=true и сбрасывается при закрытии
+>>>>>>> 5486e83bb097d945c6f8c86585081a6a9b092245
   useEffect(() => {
     if (!open || disabledSeconds <= 0) {
       setCooldown(0);
