@@ -303,7 +303,8 @@ export const translationKeys = [
   'undoCreateOrder',
   'undoEditOrder',
   'devicesOnline',
-    // ---------- PanelSettings v2 ----------
+
+  // ---------- PanelSettings v2 ----------
   'preset',
   'presetCompact',
   'presetNormal',
@@ -317,11 +318,13 @@ export const translationKeys = [
   'colCart',
   'deleteProductMessage',
   'deleting',
-    // ---------- Printers ----------
+
+  // ---------- Printers v2 ----------
   'printers',
   'kitchenPrinter',
   'cashierPrinter',
   'printerEnabled',
+  'printerDisabled',
   'printerIp',
   'printerPort',
   'printerWidth',
@@ -331,6 +334,20 @@ export const translationKeys = [
   'printerTestFailed',
   'printerSaved',
   'printerHint',
+  'printerLoadFailed',
+  'assignedPrinters',
+  'foundPrinters',
+  'noPrintersFound',
+  'clickScanHint',
+  'scanNetwork',
+  'scanning',
+  'addUsbPrinter',
+  'notAssigned',
+  'unassignPrinter',
+  'assignToKitchen',
+  'assignToCashier',
+  'toKitchen',
+  'toCashier',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];

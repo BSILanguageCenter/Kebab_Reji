@@ -2,6 +2,39 @@ import { randomUUID } from 'crypto';
 import db from './db.js';
 import { EventEmitter } from 'events';
 
+// ============================================================
+// Значения по умолчанию для слота принтера
+// ============================================================
+const DEFAULT_SLOT = {
+  enabled: false,
+  source: 'network', // 'network' | 'usb' | 'windows'
+  name: '',
+  ip: '',
+  port: 9100,
+  width: 32,
+  usb_vendor_id: null,
+  usb_product_id: null,
+  usb_serial: '',
+  printer_name: '',
+};
+
+function normalizeSlot(raw) {
+  const s = { ...DEFAULT_SLOT, ...(raw || {}) };
+  s.enabled = Boolean(s.enabled);
+  if (s.source !== 'usb' && s.source !== 'windows') s.source = 'network';
+  s.name = String(s.name || '');
+  s.ip = String(s.ip || '').trim();
+  s.port = Number(s.port) || 9100;
+  s.width = Number(s.width) || 32;
+  s.usb_vendor_id =
+    s.usb_vendor_id == null ? null : Number(s.usb_vendor_id) || null;
+  s.usb_product_id =
+    s.usb_product_id == null ? null : Number(s.usb_product_id) || null;
+  s.usb_serial = String(s.usb_serial || '');
+  s.printer_name = String(s.printer_name || '');
+  return s;
+}
+
 class Store extends EventEmitter {
   constructor() {
     super();
@@ -148,9 +181,7 @@ class Store extends EventEmitter {
   // ОБНОВЛЕНИЕ СТАТУСА
   // ============================================================
   updateStatus(orderId, status) {
-    const order = db
-      .prepare('SELECT id FROM orders WHERE id = ?')
-      .get(orderId);
+    const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(orderId);
     if (!order) return null;
 
     const now = new Date().toISOString();
@@ -377,10 +408,9 @@ class Store extends EventEmitter {
   }
 
   // ============================================================
-  // МЕНЮ — СБОРКА ВЛОЖЕННОЙ СТРУКТУРЫ
+  // МЕНЮ
   // ============================================================
   getMenu() {
-    // 1. Грузим все таблицы
     const rawItems = db
       .prepare('SELECT * FROM menu_items ORDER BY sort_order')
       .all();
@@ -401,14 +431,18 @@ class Store extends EventEmitter {
       .prepare('SELECT * FROM menu_set_extra_options ORDER BY sort_order')
       .all();
 
-    // 2. Индексы
     const itemsById = new Map();
     for (const it of rawItems) itemsById.set(it.id, it);
 
     const propsByItem = new Map();
     for (const p of rawProps) {
       const arr = propsByItem.get(p.item_id) ?? [];
-      arr.push({ id: p.id, item_id: p.item_id, name: p.name, sort_order: p.sort_order });
+      arr.push({
+        id: p.id,
+        item_id: p.item_id,
+        name: p.name,
+        sort_order: p.sort_order,
+      });
       propsByItem.set(p.item_id, arr);
     }
 
@@ -451,7 +485,6 @@ class Store extends EventEmitter {
       optionsByGroup.set(o.group_id, arr);
     }
 
-    // 3. Гидратация одного item
     const hydrateOne = (raw) => ({
       ...raw,
       active: Boolean(raw.active),
@@ -472,23 +505,17 @@ class Store extends EventEmitter {
         })),
     });
 
-    // 4. Собираем верхнеуровневые items
     const result = [];
     for (const it of rawItems) {
       if (it.parent_id) continue;
       if (!it.active) continue;
-
       const base = hydrateOne(it);
 
-      // dish-group: докидываем варианты
       if (it.type === 'dish' && it.dish_kind === 'group') {
         const variants = variantsByParent.get(it.id) ?? [];
-        base.variants = variants
-          .filter((v) => v.active)
-          .map((v) => hydrateOne(v));
+        base.variants = variants.filter((v) => v.active).map(hydrateOne);
       }
 
-      // set: main + extras
       if (it.type === 'set') {
         const mainId = mainBySet.get(it.id);
         const mainRaw = mainId ? itemsById.get(mainId) : null;
@@ -525,10 +552,7 @@ class Store extends EventEmitter {
               const hyd = hydrateOne(optRaw);
               if (o.price_override != null) hyd.price = o.price_override;
               if (o.image_override) hyd.image_url = o.image_override;
-              return {
-                option_id: o.id,
-                item: hyd,
-              };
+              return { option_id: o.id, item: hyd };
             })
             .filter(Boolean),
         }));
@@ -540,9 +564,6 @@ class Store extends EventEmitter {
     return { items: result };
   }
 
-  // ============================================================
-  // МЕНЮ — ПОЛНАЯ ЗАМЕНА
-  // ============================================================
   replaceMenu = ({
     items = [],
     properties = [],
@@ -554,19 +575,15 @@ class Store extends EventEmitter {
   }) => {
     db.exec('BEGIN');
     try {
-      // Чистим всё
       db.prepare('DELETE FROM menu_set_extra_options').run();
       db.prepare('DELETE FROM menu_set_extra_groups').run();
       db.prepare('DELETE FROM menu_set_main_overrides').run();
       db.prepare('DELETE FROM menu_set_main').run();
       db.prepare('DELETE FROM menu_dish_sauces').run();
       db.prepare('DELETE FROM menu_item_properties').run();
-
-      // Сначала обнуляем parent_id, чтобы избежать FK-конфликтов при удалении
       db.prepare('UPDATE menu_items SET parent_id = NULL').run();
       db.prepare('DELETE FROM menu_items').run();
 
-      // Items: сначала без parent (топ-левел), потом с parent
       const insItem = db.prepare(
         `INSERT INTO menu_items
          (id, type, name, short_name, image_url, price, free,
@@ -688,7 +705,6 @@ class Store extends EventEmitter {
     const totalOrders = db
       .prepare('SELECT COUNT(*) as c FROM orders')
       .get().c;
-
     return { unsyncedCount, totalOrders };
   }
 
@@ -700,53 +716,38 @@ class Store extends EventEmitter {
       .prepare("SELECT * FROM printer_settings WHERE id = 'default'")
       .get();
 
-    if (!row) {
-      return {
-        kitchen_enabled: false,
-        kitchen_ip: '',
-        kitchen_port: 9100,
-        kitchen_width: 32,
-        cashier_enabled: false,
-        cashier_ip: '',
-        cashier_port: 9100,
-        cashier_width: 32,
-        encoding: 'cp866',
-      };
+    let kitchen = { ...DEFAULT_SLOT };
+    let cashier = { ...DEFAULT_SLOT };
+    let encoding = 'cp866';
+
+    if (row) {
+      try {
+        kitchen = normalizeSlot(JSON.parse(row.kitchen_json || '{}'));
+      } catch {
+        kitchen = { ...DEFAULT_SLOT };
+      }
+      try {
+        cashier = normalizeSlot(JSON.parse(row.cashier_json || '{}'));
+      } catch {
+        cashier = { ...DEFAULT_SLOT };
+      }
+      encoding = row.encoding === 'cp1251' ? 'cp1251' : 'cp866';
     }
 
-    return {
-      kitchen_enabled: Boolean(row.kitchen_enabled),
-      kitchen_ip: row.kitchen_ip ?? '',
-      kitchen_port: row.kitchen_port ?? 9100,
-      kitchen_width: row.kitchen_width ?? 32,
-      cashier_enabled: Boolean(row.cashier_enabled),
-      cashier_ip: row.cashier_ip ?? '',
-      cashier_port: row.cashier_port ?? 9100,
-      cashier_width: row.cashier_width ?? 32,
-      encoding: row.encoding === 'cp1251' ? 'cp1251' : 'cp866',
-    };
+    return { kitchen, cashier, encoding };
   }
 
   savePrinterSettings(s) {
     const now = new Date().toISOString();
+    const kitchen = normalizeSlot(s?.kitchen);
+    const cashier = normalizeSlot(s?.cashier);
+    const encoding = s?.encoding === 'cp1251' ? 'cp1251' : 'cp866';
+
     db.prepare(
       `INSERT OR REPLACE INTO printer_settings
-       (id, kitchen_enabled, kitchen_ip, kitchen_port, kitchen_width,
-        cashier_enabled, cashier_ip, cashier_port, cashier_width,
-        encoding, updated_at)
-       VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      s.kitchen_enabled ? 1 : 0,
-      String(s.kitchen_ip ?? '').trim(),
-      Number(s.kitchen_port) || 9100,
-      Number(s.kitchen_width) || 32,
-      s.cashier_enabled ? 1 : 0,
-      String(s.cashier_ip ?? '').trim(),
-      Number(s.cashier_port) || 9100,
-      Number(s.cashier_width) || 32,
-      s.encoding === 'cp1251' ? 'cp1251' : 'cp866',
-      now
-    );
+       (id, kitchen_json, cashier_json, encoding, updated_at)
+       VALUES ('default', ?, ?, ?, ?)`
+    ).run(JSON.stringify(kitchen), JSON.stringify(cashier), encoding, now);
 
     return this.getPrinterSettings();
   }

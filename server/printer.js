@@ -1,4 +1,5 @@
 import net from 'net';
+import { printViaBridge } from './printer-bridge-client.js';
 
 // ============================================================
 // ESC/POS константы
@@ -6,52 +7,58 @@ import net from 'net';
 const ESC = 0x1b;
 const GS = 0x1d;
 
-// ---------- Примитивы ESC/POS ----------
 const cmdInit = () => Buffer.from([ESC, 0x40]);
-
-const cmdCodePage = (encoding) => {
-  // ESC t n
-  // 17 (0x11) = CP866  ·  46 (0x46) = CP1251
-  const page = encoding === 'cp1251' ? 0x46 : 0x11;
-  return Buffer.from([ESC, 0x74, page]);
-};
-
+const cmdCodePage = (encoding) =>
+  Buffer.from([ESC, 0x74, encoding === 'cp1251' ? 0x46 : 0x11]);
 const cmdAlign = (align) => {
   const a = align === 'center' ? 1 : align === 'right' ? 2 : 0;
   return Buffer.from([ESC, 0x61, a]);
 };
-
 const cmdBold = (on) => Buffer.from([ESC, 0x45, on ? 1 : 0]);
-
-const cmdDoubleSize = (on) =>
-  // ESC ! n — битовая маска: 0x30 = 2x ширина + 2x высота
-  Buffer.from([ESC, 0x21, on ? 0x30 : 0x00]);
-
-const cmdFeed = (lines = 3) =>
-  Buffer.from([ESC, 0x64, Math.min(255, lines)]);
-
+const cmdDoubleSize = (on) => Buffer.from([ESC, 0x21, on ? 0x30 : 0x00]);
+const cmdFeed = (lines = 3) => Buffer.from([ESC, 0x64, Math.min(255, lines)]);
 const cmdCut = () => Buffer.from([GS, 0x56, 0x00]);
 
 // ============================================================
-// Кодирование текста
+// Кодирование CP866 / CP1251
 // ============================================================
-function encodeText(text, encoding) {
-  try {
-    return encoding === 'cp1251'
-      ? Buffer.from(text, 'win1251')
-      : Buffer.from(text, 'cp866');
-  } catch {
-    return Buffer.from(text, 'utf8');
+function encodeCp866(text) {
+  const bytes = [];
+  for (const ch of String(text)) {
+    const c = ch.codePointAt(0);
+    if (c < 0x80) bytes.push(c);
+    else if (c >= 0x0410 && c <= 0x042f) bytes.push(0x80 + (c - 0x0410));
+    else if (c >= 0x0430 && c <= 0x043f) bytes.push(0xa0 + (c - 0x0430));
+    else if (c >= 0x0440 && c <= 0x044f) bytes.push(0xe0 + (c - 0x0440));
+    else if (c === 0x0401) bytes.push(0xf0);
+    else if (c === 0x0451) bytes.push(0xf1);
+    else bytes.push(0x3f);
   }
+  return Buffer.from(bytes);
+}
+
+function encodeCp1251(text) {
+  const bytes = [];
+  for (const ch of String(text)) {
+    const c = ch.codePointAt(0);
+    if (c < 0x80) bytes.push(c);
+    else if (c >= 0x0410 && c <= 0x042f) bytes.push(0xc0 + (c - 0x0410));
+    else if (c >= 0x0430 && c <= 0x044f) bytes.push(0xe0 + (c - 0x0430));
+    else if (c === 0x0401) bytes.push(0xa8);
+    else if (c === 0x0451) bytes.push(0xb8);
+    else bytes.push(0x3f);
+  }
+  return Buffer.from(bytes);
+}
+
+function encodeText(text, encoding) {
+  return encoding === 'cp1251' ? encodeCp1251(text) : encodeCp866(text);
 }
 
 function textLine(text, encoding) {
   return Buffer.concat([encodeText(text, encoding), Buffer.from([0x0a])]);
 }
 
-// ============================================================
-// Форматирование
-// ============================================================
 function center(text, width) {
   if (text.length >= width) return text;
   const pad = Math.floor((width - text.length) / 2);
@@ -66,15 +73,14 @@ function formatTime(iso) {
 }
 
 // ============================================================
-// Кухонный чек → Buffer
+// Билдеры буферов
 // ============================================================
-function buildKitchenTicket(order, width, encoding) {
+export function buildKitchenBuffer(order, width, encoding) {
   const chunks = [];
   const div = '-'.repeat(width);
   const divH = '='.repeat(width);
 
   chunks.push(cmdInit(), cmdCodePage(encoding), cmdAlign('center'));
-
   chunks.push(cmdBold(true));
   chunks.push(textLine(divH, encoding));
   chunks.push(textLine('K I T C H E N', encoding));
@@ -88,7 +94,6 @@ function buildKitchenTicket(order, width, encoding) {
   chunks.push(textLine('', encoding));
   chunks.push(textLine(formatTime(order.created_at), encoding));
   chunks.push(textLine('', encoding));
-
   chunks.push(cmdAlign('left'), textLine(div, encoding));
 
   const active = (order.order_items ?? []).filter((i) => !i.is_removed);
@@ -98,11 +103,9 @@ function buildKitchenTicket(order, width, encoding) {
     for (const item of active) {
       let name = item.name;
       if (item.variant) name += ` [${item.variant}]`;
-
       chunks.push(cmdBold(true));
       chunks.push(textLine(`${item.quantity}x ${name}`, encoding));
       chunks.push(cmdBold(false));
-
       for (const opt of item.options ?? []) {
         if (opt.type === 'variant') continue;
         const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
@@ -128,21 +131,16 @@ function buildKitchenTicket(order, width, encoding) {
   return Buffer.concat(chunks);
 }
 
-// ============================================================
-// Клиентский чек (номерок + ETA)
-// ============================================================
-function buildCustomerTicket(order, etaMinutes, width, encoding) {
+export function buildCustomerBuffer(order, etaMinutes, width, encoding) {
   const chunks = [];
   const divH = '='.repeat(width);
 
   chunks.push(cmdInit(), cmdCodePage(encoding), cmdAlign('center'));
-
   chunks.push(cmdBold(true));
   chunks.push(textLine(divH, encoding));
   chunks.push(textLine('KEBAB POS', encoding));
   chunks.push(textLine(divH, encoding));
   chunks.push(cmdBold(false));
-
   chunks.push(textLine('', encoding), textLine('', encoding));
 
   chunks.push(cmdDoubleSize(true));
@@ -162,105 +160,14 @@ function buildCustomerTicket(order, etaMinutes, width, encoding) {
   return Buffer.concat(chunks);
 }
 
-// ============================================================
-// Отправка по TCP (9100)
-// ============================================================
-function sendToPrinter(ip, port, buffer, timeoutMs = 6000) {
-  return new Promise((resolve, reject) => {
-    const socket = new net.Socket();
-    let finished = false;
-
-    const finish = (err) => {
-      if (finished) return;
-      finished = true;
-      try {
-        socket.destroy();
-      } catch {
-        /* ignore */
-      }
-      if (err) reject(err);
-      else resolve();
-    };
-
-    socket.setTimeout(timeoutMs);
-    socket.once('error', finish);
-    socket.once('timeout', () =>
-      finish(new Error('Превышено время ожидания принтера'))
-    );
-
-    socket.connect(port, ip, () => {
-      socket.write(buffer, (err) => {
-        if (err) return finish(err);
-        // Дать принтеру обработать буфер перед закрытием сокета
-        setTimeout(() => finish(), 300);
-      });
-    });
-  });
-}
-
-// ============================================================
-// Публичный API
-// ============================================================
-export async function printKitchenTicket(order, settings) {
-  if (!settings.kitchen_enabled) return { success: true, skipped: true };
-  if (!settings.kitchen_ip) {
-    return { success: false, error: 'IP кухонного принтера не указан' };
-  }
-  try {
-    const buffer = buildKitchenTicket(
-      order,
-      settings.kitchen_width || 32,
-      settings.encoding || 'cp866'
-    );
-    await sendToPrinter(
-      settings.kitchen_ip,
-      settings.kitchen_port || 9100,
-      buffer
-    );
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: e.message };
-  }
-}
-
-export async function printCustomerTicket(order, etaMinutes, settings) {
-  if (!settings.cashier_enabled) return { success: true, skipped: true };
-  if (!settings.cashier_ip) {
-    return { success: false, error: 'IP принтера кассы не указан' };
-  }
-  try {
-    const buffer = buildCustomerTicket(
-      order,
-      etaMinutes,
-      settings.cashier_width || 32,
-      settings.encoding || 'cp866'
-    );
-    await sendToPrinter(
-      settings.cashier_ip,
-      settings.cashier_port || 9100,
-      buffer
-    );
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: e.message };
-  }
-}
-
-export async function testPrinter(target, settings) {
-  const ip = target === 'kitchen' ? settings.kitchen_ip : settings.cashier_ip;
-  const port =
-    target === 'kitchen' ? settings.kitchen_port : settings.cashier_port;
-  const width =
-    target === 'kitchen' ? settings.kitchen_width : settings.cashier_width;
+function buildTestBuffer(target, settings) {
+  const slot = target === 'kitchen' ? settings.kitchen : settings.cashier;
+  const w = slot?.width || 32;
   const encoding = settings.encoding || 'cp866';
-
-  if (!ip) return { success: false, error: 'IP не указан' };
-
-  const label = target === 'kitchen' ? 'KITCHEN PRINTER' : 'CASHIER PRINTER';
-  const w = width || 32;
   const divH = '='.repeat(w);
+  const label = target === 'kitchen' ? 'KITCHEN PRINTER' : 'CASHIER PRINTER';
 
-  const buffer = Buffer.concat([
+  return Buffer.concat([
     cmdInit(),
     cmdCodePage(encoding),
     cmdAlign('center'),
@@ -279,11 +186,167 @@ export async function testPrinter(target, settings) {
     cmdFeed(3),
     cmdCut(),
   ]);
+}
 
+// ============================================================
+// TCP-отправка (для сетевых принтеров)
+// ============================================================
+function sendToPrinter(ip, port, buffer, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const socket = new net.Socket();
+    let finished = false;
+    let writeDone = false;
+
+    const finish = (err) => {
+      if (finished) return;
+      finished = true;
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore */
+      }
+      if (err) reject(err);
+      else resolve();
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once('error', (e) => finish(e));
+    socket.once('timeout', () =>
+      finish(new Error('Превышено время ожидания принтера'))
+    );
+    socket.once('close', () => {
+      if (writeDone) finish();
+    });
+
+    socket.connect(port, ip, () => {
+      console.log(`[printer] TCP connected to ${ip}:${port}`);
+      socket.write(buffer, (err) => {
+        if (err) return finish(err);
+        writeDone = true;
+        console.log(
+          `[printer] TCP wrote ${buffer.length} bytes → ${ip}:${port}`
+        );
+        socket.end();
+        setTimeout(() => {
+          if (!finished) {
+            console.log('[printer] force close (timeout)');
+            finish();
+          }
+        }, 3000);
+      });
+    });
+  });
+}
+
+// ============================================================
+// Универсальный роутер — печать в один слот
+// ============================================================
+async function printToSlot(slot, buffer, target, settings) {
+  if (!slot || !slot.enabled) {
+    return { success: true, skipped: true };
+  }
+
+  // Windows USB через Python-бридж
+  if (slot.source === 'windows') {
+    if (!slot.printer_name) {
+      return { success: false, error: 'Windows-принтер не выбран' };
+    }
+    try {
+      const r = await printViaBridge(slot.printer_name, buffer);
+      console.log(
+        `[printer] ✓ ${target} → windows bridge "${slot.printer_name}" (${r.bytes} bytes)`
+      );
+      return { success: true };
+    } catch (e) {
+      console.error(`[printer] ✗ ${target} windows bridge:`, e.message);
+      return { success: false, error: e.message };
+    }
+  }
+
+  // WebUSB — печатает клиент, сервер пропускает
+  if (slot.source === 'usb') {
+    return { success: true, skipped: true, note: 'usb-client-side' };
+  }
+
+  // Сеть
+  if (!slot.ip) {
+    return { success: false, error: 'IP принтера не указан' };
+  }
   try {
-    await sendToPrinter(ip, port || 9100, buffer);
+    await sendToPrinter(slot.ip, slot.port || 9100, buffer);
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
   }
+}
+
+// ============================================================
+// Публичный API
+// ============================================================
+export async function printKitchenTicket(order, settings) {
+  console.log(
+    `[printer] printKitchenTicket #${order?.order_number ?? '?'}`
+  );
+  const slot = settings.kitchen;
+  if (slot?.source === 'network' && slot?.ip) {
+    const buffer = buildKitchenBuffer(
+      order,
+      slot.width || 32,
+      settings.encoding || 'cp866'
+    );
+    return printToSlot(slot, buffer, 'kitchen', settings);
+  }
+  const buffer = buildKitchenBuffer(
+    order,
+    slot?.width || 32,
+    settings.encoding || 'cp866'
+  );
+  return printToSlot(slot, buffer, 'kitchen', settings);
+}
+
+export async function printCustomerTicket(order, etaMinutes, settings) {
+  console.log(
+    `[printer] printCustomerTicket #${order?.order_number ?? '?'} eta=${etaMinutes}`
+  );
+  const slot = settings.cashier;
+  const buffer = buildCustomerBuffer(
+    order,
+    etaMinutes,
+    slot?.width || 32,
+    settings.encoding || 'cp866'
+  );
+  return printToSlot(slot, buffer, 'cashier', settings);
+}
+
+export async function testPrinter(target, settings) {
+  const slot = target === 'kitchen' ? settings.kitchen : settings.cashier;
+  console.log(`[printer] testPrinter target=${target}`, JSON.stringify(slot));
+
+  if (!slot || !slot.enabled) {
+    return { success: false, error: 'Принтер не включён' };
+  }
+
+  const buffer = buildTestBuffer(target, settings);
+  console.log(`[printer] test buffer: ${buffer.length} bytes`);
+  return printToSlot(slot, buffer, `test/${target}`, settings);
+}
+
+// ============================================================
+// Для WebUSB: отдать base64 ESC/POS буфера клиенту
+// ============================================================
+export function buildTicketBase64(target, order, etaMinutes, settings) {
+  const slot = target === 'kitchen' ? settings.kitchen : settings.cashier;
+  const width = slot?.width || 32;
+  const encoding = settings.encoding || 'cp866';
+
+  const buf =
+    target === 'kitchen'
+      ? buildKitchenBuffer(order, width, encoding)
+      : buildCustomerBuffer(order, etaMinutes || 0, width, encoding);
+
+  return buf.toString('base64');
+}
+
+export function buildTestBufferBase64(target, settings) {
+  return buildTestBuffer(target, settings).toString('base64');
 }

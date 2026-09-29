@@ -1,5 +1,10 @@
 import { io, type Socket } from 'socket.io-client';
 import type { Order, MenuItem } from '@/types/database';
+import type {
+  PrinterSettings,
+  PrinterResult,
+  DiscoveredPrinter,
+} from '@/types/database';
 import {
   applyExternalLayout,
   type LayoutSettings,
@@ -186,7 +191,6 @@ export function getSocket(): Socket {
       notifyClientsCount(count);
     });
 
-    // Layout от сервера → пишем в localStorage + уведомляем хуки
     socket.on('layout-settings', (settings: LayoutSettings) => {
       console.log('[ws] layout-settings из сети');
       applyExternalLayout(settings);
@@ -215,7 +219,7 @@ export function disconnectSocket(): void {
 }
 
 // ============================================================
-// API — методы обёртки
+// API — методы обёртки (заказы)
 // ============================================================
 export interface OrderItemPayload {
   menu_item_id: string | null;
@@ -303,4 +307,147 @@ export function emitLayoutSettings(settings: LayoutSettings): void {
   const s = getSocket();
   if (!s.connected) return;
   s.emit('layout-settings', settings);
+}
+
+// ============================================================
+// API: принтеры (с таймаутами — не висим вечно)
+// ============================================================
+function emitWithTimeout<T>(
+  event: string,
+  payload: unknown,
+  timeoutMs = 6000
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const s = getSocket();
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      reject(new Error('Сервер не отвечает'));
+    }, timeoutMs);
+
+    s.emit(event, payload, (res: T) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(res);
+    });
+  });
+}
+
+export async function emitGetPrinterSettings(): Promise<PrinterSettings> {
+  const res = await emitWithTimeout<{
+    ok: boolean;
+    settings?: PrinterSettings;
+    error?: string;
+  }>('printer-settings-get', null, 6000);
+
+  if (res.ok && res.settings) return res.settings;
+  throw new Error(res.error || 'printer-settings-get failed');
+}
+
+export async function emitSavePrinterSettings(
+  settings: PrinterSettings
+): Promise<PrinterSettings> {
+  const res = await emitWithTimeout<{
+    ok: boolean;
+    settings?: PrinterSettings;
+    error?: string;
+  }>('printer-settings-save', settings, 6000);
+
+  if (res.ok && res.settings) return res.settings;
+  throw new Error(res.error || 'printer-settings-save failed');
+}
+
+export async function emitScanPrinters(): Promise<DiscoveredPrinter[]> {
+  // Сканирование сети может занять много времени — таймаут больше
+  const res = await emitWithTimeout<{
+    ok: boolean;
+    printers?: DiscoveredPrinter[];
+    error?: string;
+  }>('printer-scan', null, 60_000);
+
+  if (res.ok) return res.printers ?? [];
+  throw new Error(res.error || 'printer-scan failed');
+}
+
+export async function emitPrintKitchen(
+  order: unknown
+): Promise<PrinterResult> {
+  try {
+    const res = await emitWithTimeout<PrinterResult>(
+      'printer-print-kitchen',
+      order,
+      8000
+    );
+    return res ?? { success: false, error: 'no response' };
+  } catch (e) {
+    return {
+      success: false,
+      error: e instanceof Error ? e.message : 'print failed',
+    };
+  }
+}
+
+export async function emitPrintCustomer(
+  order: unknown,
+  etaMinutes: number
+): Promise<PrinterResult> {
+  try {
+    const res = await emitWithTimeout<PrinterResult>(
+      'printer-print-customer',
+      { order, etaMinutes },
+      8000
+    );
+    return res ?? { success: false, error: 'no response' };
+  } catch (e) {
+    return {
+      success: false,
+      error: e instanceof Error ? e.message : 'print failed',
+    };
+  }
+}
+
+export async function emitTestPrinter(
+  target: 'kitchen' | 'cashier',
+  settings: PrinterSettings
+): Promise<PrinterResult> {
+  try {
+    const res = await emitWithTimeout<PrinterResult>(
+      'printer-test',
+      { target, settings },
+      10_000
+    );
+    return res ?? { success: false, error: 'no response' };
+  } catch (e) {
+    return {
+      success: false,
+      error: e instanceof Error ? e.message : 'test failed',
+    };
+  }
+}
+
+export async function emitBuildTicket(payload: {
+  target: 'kitchen' | 'cashier';
+  order: unknown;
+  etaMinutes: number;
+}): Promise<{ ok: boolean; buffer?: string; error?: string }> {
+  const res = await emitWithTimeout<{
+    ok: boolean;
+    buffer?: string;
+    error?: string;
+  }>('printer-build', payload, 6000);
+
+  return res ?? { ok: false, error: 'no response' };
+}
+
+export async function emitBuildTestTicket(
+  target: 'kitchen' | 'cashier'
+): Promise<{ ok: boolean; buffer?: string; error?: string }> {
+  const res = await emitWithTimeout<{
+    ok: boolean;
+    buffer?: string;
+    error?: string;
+  }>('printer-build-test', { target }, 6000);
+  return res ?? { ok: false, error: 'no response' };
 }

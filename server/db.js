@@ -5,10 +5,6 @@ import { mkdirSync, existsSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// ============================================================
-// Все данные (SQLite + host.id) — в отдельной папке server/data/
-// Папка создаётся автоматически при первом запуске.
-// ============================================================
 const DATA_DIR = join(__dirname, 'data');
 if (!existsSync(DATA_DIR)) {
   mkdirSync(DATA_DIR, { recursive: true });
@@ -21,9 +17,6 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
 db.exec(`
-  -- ============================================================
-  -- ЗАКАЗЫ
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY,
     order_number INTEGER NOT NULL,
@@ -63,9 +56,6 @@ db.exec(`
     FOREIGN KEY (order_item_id) REFERENCES order_items(id) ON DELETE CASCADE
   );
 
-  -- ============================================================
-  -- МЕНЮ: ТОВАРЫ
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS menu_items (
     id             TEXT PRIMARY KEY,
     type           TEXT NOT NULL,
@@ -87,9 +77,6 @@ db.exec(`
     FOREIGN KEY (parent_id) REFERENCES menu_items(id) ON DELETE CASCADE
   );
 
-  -- ============================================================
-  -- МЕНЮ: СВОЙСТВА (переключатели)
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS menu_item_properties (
     id          TEXT PRIMARY KEY,
     item_id     TEXT NOT NULL,
@@ -98,9 +85,6 @@ db.exec(`
     FOREIGN KEY (item_id) REFERENCES menu_items(id) ON DELETE CASCADE
   );
 
-  -- ============================================================
-  -- МЕНЮ: РАЗРЕШЁННЫЕ СОУСЫ ДЛЯ БЛЮДА
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS menu_dish_sauces (
     dish_item_id   TEXT NOT NULL,
     sauce_item_id  TEXT NOT NULL,
@@ -110,9 +94,6 @@ db.exec(`
     FOREIGN KEY (sauce_item_id) REFERENCES menu_items(id) ON DELETE CASCADE
   );
 
-  -- ============================================================
-  -- МЕНЮ: SET — ОСНОВНОЙ ПРОДУКТ
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS menu_set_main (
     set_item_id   TEXT PRIMARY KEY,
     main_item_id  TEXT NOT NULL,
@@ -120,9 +101,6 @@ db.exec(`
     FOREIGN KEY (main_item_id) REFERENCES menu_items(id) ON DELETE CASCADE
   );
 
-  -- ============================================================
-  -- МЕНЮ: SET — ПЕРЕОПРЕДЕЛЕНИЯ ДЛЯ ВАРИАНТОВ ОСНОВНОГО (dish-group)
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS menu_set_main_overrides (
     set_item_id      TEXT NOT NULL,
     variant_item_id  TEXT NOT NULL,
@@ -133,9 +111,6 @@ db.exec(`
     FOREIGN KEY (variant_item_id) REFERENCES menu_items(id) ON DELETE CASCADE
   );
 
-  -- ============================================================
-  -- МЕНЮ: SET — ГРУППЫ ДОПОЛНИТЕЛЬНЫХ ПРОДУКТОВ (шаги визарда)
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS menu_set_extra_groups (
     id          TEXT PRIMARY KEY,
     set_item_id TEXT NOT NULL,
@@ -145,9 +120,6 @@ db.exec(`
     FOREIGN KEY (set_item_id) REFERENCES menu_items(id) ON DELETE CASCADE
   );
 
-  -- ============================================================
-  -- МЕНЮ: SET — ОПЦИИ ВНУТРИ ГРУППЫ
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS menu_set_extra_options (
     id             TEXT PRIMARY KEY,
     group_id       TEXT NOT NULL,
@@ -160,25 +132,16 @@ db.exec(`
   );
 
   -- ============================================================
-  -- НАСТРОЙКИ ПРИНТЕРОВ (одна строка id='default')
+  -- НАСТРОЙКИ ПРИНТЕРОВ (JSON-схема)
   -- ============================================================
   CREATE TABLE IF NOT EXISTS printer_settings (
-    id                TEXT PRIMARY KEY,
-    kitchen_enabled   INTEGER NOT NULL DEFAULT 0,
-    kitchen_ip        TEXT    NOT NULL DEFAULT '',
-    kitchen_port      INTEGER NOT NULL DEFAULT 9100,
-    kitchen_width     INTEGER NOT NULL DEFAULT 32,
-    cashier_enabled   INTEGER NOT NULL DEFAULT 0,
-    cashier_ip        TEXT    NOT NULL DEFAULT '',
-    cashier_port      INTEGER NOT NULL DEFAULT 9100,
-    cashier_width     INTEGER NOT NULL DEFAULT 32,
-    encoding          TEXT    NOT NULL DEFAULT 'cp866',
-    updated_at        TEXT
+    id            TEXT PRIMARY KEY,
+    kitchen_json  TEXT NOT NULL DEFAULT '{}',
+    cashier_json  TEXT NOT NULL DEFAULT '{}',
+    encoding      TEXT NOT NULL DEFAULT 'cp866',
+    updated_at    TEXT
   );
 
-  -- ============================================================
-  -- ИНДЕКСЫ
-  -- ============================================================
   CREATE INDEX IF NOT EXISTS idx_orders_status        ON orders(status);
   CREATE INDEX IF NOT EXISTS idx_orders_synced        ON orders(synced);
   CREATE INDEX IF NOT EXISTS idx_orders_number        ON orders(order_number);
@@ -194,5 +157,27 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_extra_groups_set     ON menu_set_extra_groups(set_item_id);
   CREATE INDEX IF NOT EXISTS idx_extra_options_group  ON menu_set_extra_options(group_id);
 `);
+
+// ============================================================
+// МИГРАЦИЯ: старая схема printer_settings → JSON
+// ============================================================
+try {
+  const cols = db.prepare('PRAGMA table_info(printer_settings)').all();
+  if (cols.length > 0 && !cols.some((c) => c.name === 'kitchen_json')) {
+    console.log('[db] Миграция printer_settings → JSON-схема');
+    db.exec('DROP TABLE printer_settings');
+    db.exec(`
+      CREATE TABLE printer_settings (
+        id            TEXT PRIMARY KEY,
+        kitchen_json  TEXT NOT NULL DEFAULT '{}',
+        cashier_json  TEXT NOT NULL DEFAULT '{}',
+        encoding      TEXT NOT NULL DEFAULT 'cp866',
+        updated_at    TEXT
+      )
+    `);
+  }
+} catch (e) {
+  console.warn('[db] Migration check failed:', e.message);
+}
 
 export default db;

@@ -65,7 +65,6 @@ export type Station = 'kitchen' | 'ready';
 export type DishKind = 'single' | 'group';
 export type SauceMode = 'none' | 'with';
 
-// Плоские строки из БД (используются для CRUD)
 export interface MenuItemProperty {
   id: string;
   item_id: string;
@@ -108,7 +107,6 @@ export interface MenuSetExtraOption {
   sort_order: number;
 }
 
-// Hydrated-структуры (то, что приходит с Node-сервера через getMenu)
 export interface HydratedSauce {
   id: string;
   name: string;
@@ -141,7 +139,6 @@ export interface HydratedSetExtraGroup {
   options: HydratedSetExtraOption[];
 }
 
-// Основной тип товара (как приходит с сервера)
 export interface MenuItem {
   id: string;
   type: MenuItemType;
@@ -161,12 +158,11 @@ export interface MenuItem {
   created_at: string;
   updated_at: string;
 
-  // Собирается на сервере:
   properties?: HydratedProperty[];
   allowed_sauces?: HydratedSauce[];
-  variants?: MenuItem[];                    // для dish-group
-  set_main?: MenuItem;                      // для set
-  set_extra_groups?: HydratedSetExtraGroup[]; // для set
+  variants?: MenuItem[];
+  set_main?: MenuItem;
+  set_extra_groups?: HydratedSetExtraGroup[];
 }
 
 // ============================================================
@@ -192,3 +188,69 @@ export interface CartItem {
   is_added_later?: boolean;
   db_id?: string;
 }
+
+// ============================================================
+// ПРИНТЕРЫ
+// ============================================================
+export type PrinterSource = 'network' | 'usb' | 'windows';
+
+export interface PrinterSlot {
+  enabled: boolean;
+  source: PrinterSource;
+  name: string;
+  // network
+  ip: string;
+  port: number;
+  // usb (WebUSB)
+  usb_vendor_id: number | null;
+  usb_product_id: number | null;
+  usb_serial: string;
+  // windows (Python bridge)
+  printer_name: string;
+  // common
+  width: number;
+}
+
+export interface PrinterSettings {
+  kitchen: PrinterSlot;
+  cashier: PrinterSlot;
+  encoding: 'cp866' | 'cp1251';
+}
+
+export interface DiscoveredPrinter {
+  id: string;
+  source: PrinterSource;
+  name: string;
+  // network
+  ip?: string;
+  port?: number;
+  // usb
+  vendorId?: number;
+  productId?: number;
+  serialNumber?: string;
+  manufacturer?: string;
+  // windows
+  printer_name?: string;
+  driver?: string;
+  is_default?: boolean;
+}
+
+export interface PrinterResult {
+  success: boolean;
+  error?: string;
+  skipped?: boolean;
+  note?: string;
+}
+
+export const DEFAULT_PRINTER_SLOT: PrinterSlot = {
+  enabled: false,
+  source: 'network',
+  name: '',
+  ip: '',
+  port: 9100,
+  width: 32,
+  usb_vendor_id: null,
+  usb_product_id: null,
+  usb_serial: '',
+  printer_name: '',
+};
