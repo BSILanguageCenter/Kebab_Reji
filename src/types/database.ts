@@ -187,6 +187,7 @@ export interface CartItem {
   is_removed?: boolean;
   is_added_later?: boolean;
   db_id?: string;
+  original_quantity?: number;   // ← новое
 }
 
 // ============================================================

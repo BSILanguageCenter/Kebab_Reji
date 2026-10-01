@@ -25,10 +25,12 @@ import {
 } from './host.js';
 import {
   printKitchenTicket,
+  printKitchenDelta,
   printCustomerTicket,
   testPrinter,
   buildTicketBase64,
   buildTestBufferBase64,
+  buildKitchenDeltaBase64,
 } from './printer.js';
 import { scanNetworkForPrinters } from './printer-discovery.js';
 import {
@@ -39,10 +41,10 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 3001;
-const SERVER_VERSION = 'v4-printers-windows';
+const SERVER_VERSION = 'v6-printers-delta';
 
 // ============================================================
-// АВТОЗАПУСК PYTHON PRINTER BRIDGE
+// PYTHON BRIDGE
 // ============================================================
 let bridgeProcess = null;
 
@@ -71,9 +73,7 @@ function startPrinterBridge() {
 
   const python = findPythonBinary();
   if (!python) {
-    console.warn(
-      '[bridge] Python не найден — USB через Windows будет недоступен'
-    );
+    console.warn('[bridge] Python не найден — Windows-принтеры недоступны');
     return;
   }
 
@@ -123,7 +123,7 @@ process.on('SIGTERM', () => {
 });
 
 // ============================================================
-// Глобальный layout
+// Layout
 // ============================================================
 let globalLayoutSettings = null;
 
@@ -134,9 +134,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ============================================================
-// HEALTH
-// ============================================================
 app.get('/health', (_req, res) => {
   const stats = store.getStats();
   const hostInfo = getHostInfo();
@@ -159,9 +156,6 @@ app.get('/health', (_req, res) => {
   });
 });
 
-// ============================================================
-// ДИАГНОСТИКА ПРИНТЕРОВ
-// ============================================================
 app.get('/api/printer/status', async (_req, res) => {
   const settings = store.getPrinterSettings();
 
@@ -362,8 +356,6 @@ io.on('connection', (socket) => {
           console.log(
             `[ws] printer-scan: bridge → ${windows.length} windows printers`
           );
-        } else {
-          console.log('[ws] printer-scan: bridge не отвечает');
         }
       } catch (e) {
         console.warn('[ws] printer-scan bridge error:', e.message);
@@ -380,9 +372,14 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---------- ПОЛНЫЙ ЧЕК КУХНИ ----------
   socket.on('printer-print-kitchen', async (order, ack) => {
+    console.log(
+      `[ws] printer-print-kitchen #${order?.order_number ?? '?'}`
+    );
     try {
       const res = await printKitchenTicket(order, store.getPrinterSettings());
+      console.log('[ws] printer-print-kitchen result:', JSON.stringify(res));
       if (typeof ack === 'function') ack(res);
     } catch (e) {
       console.error('[ws] printer-print-kitchen error:', e);
@@ -391,6 +388,26 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---------- DELTA-ЧЕК КУХНИ ----------
+  socket.on('printer-print-kitchen-delta', async (order, ack) => {
+    console.log(
+      `[ws] printer-print-kitchen-delta #${order?.order_number ?? '?'}`
+    );
+    try {
+      const res = await printKitchenDelta(order, store.getPrinterSettings());
+      console.log(
+        '[ws] printer-print-kitchen-delta result:',
+        JSON.stringify(res)
+      );
+      if (typeof ack === 'function') ack(res);
+    } catch (e) {
+      console.error('[ws] printer-print-kitchen-delta error:', e);
+      if (typeof ack === 'function')
+        ack({ success: false, error: e.message });
+    }
+  });
+
+  // ---------- ЧЕК КЛИЕНТУ ----------
   socket.on('printer-print-customer', async ({ order, etaMinutes }, ack) => {
     try {
       const res = await printCustomerTicket(
@@ -406,10 +423,12 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---------- ТЕСТ ----------
   socket.on('printer-test', async ({ target, settings }, ack) => {
     console.log(`[ws] printer-test target=${target}`);
     try {
       const res = await testPrinter(target, settings ?? {});
+      console.log('[ws] printer-test result:', JSON.stringify(res));
       if (typeof ack === 'function') ack(res);
     } catch (e) {
       console.error('[ws] printer-test error:', e);
@@ -418,6 +437,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---------- BUILD (WebUSB) ----------
   socket.on('printer-build', ({ target, order, etaMinutes }, ack) => {
     try {
       const settings = store.getPrinterSettings();
@@ -445,6 +465,17 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('printer-build-delta', (order, ack) => {
+    try {
+      const settings = store.getPrinterSettings();
+      const buffer = buildKitchenDeltaBase64(order, settings);
+      if (typeof ack === 'function') ack({ ok: true, buffer });
+    } catch (e) {
+      console.error('[ws] printer-build-delta error:', e);
+      if (typeof ack === 'function') ack({ ok: false, error: e.message });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log(`[ws] - ${socket.id} (всего: ${io.engine.clientsCount})`);
     setTimeout(() => broadcastClientsCount(), 100);
@@ -455,10 +486,7 @@ io.on('connection', (socket) => {
 // СТАРТ
 // ============================================================
 async function main() {
-  // Python-бридж стартует первым — он нужен для USB
   startPrinterBridge();
-
-  // Даём Python 1.5 сек подняться
   await new Promise((r) => setTimeout(r, 1500));
 
   try {
@@ -490,22 +518,18 @@ async function main() {
     const describe = (slot) => {
       if (!slot.enabled) return 'OFF';
       if (slot.source === 'usb') return `USB (client-side)`;
-      if (slot.source === 'windows') return `WINDOWS "${slot.printer_name || '?'}"`;
-      return `NETWORK ${slot.ip}:${slot.port}`;
+      if (slot.source === 'windows')
+        return `WINDOWS "${slot.printer_name || '?'}" (${slot.paper})`;
+      return `NETWORK ${slot.ip}:${slot.port} (${slot.paper})`;
     };
 
     console.log('');
     console.log(`🚀 Kebab POS local server (${SERVER_VERSION})`);
     console.log(`   HTTP:      http://localhost:${PORT}`);
     console.log(`   WebSocket: ws://localhost:${PORT}`);
-    console.log(`   В сети:    http://<YOUR-LAN-IP>:${PORT}`);
-    console.log(`   Bridge:    ${bridgeProcess ? '✓ работает' : '✗ не запущен'}`);
-    console.log('');
-    console.log(`   Host #${hostInfo.hostNumber}`);
     console.log(
-      `   Диапазон заказов: ${hostInfo.rangeStart}–${hostInfo.rangeEnd}`
+      `   Bridge:    ${bridgeProcess ? '✓ работает' : '✗ не запущен'}`
     );
-    console.log(`   Следующий заказ:  ${hostInfo.nextOrderNumber}`);
     console.log('');
     console.log(`   Кухня: ${describe(p.kitchen)}`);
     console.log(`   Касса: ${describe(p.cashier)}`);

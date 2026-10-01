@@ -2,7 +2,7 @@ import net from 'net';
 import { printViaBridge } from './printer-bridge-client.js';
 
 // ============================================================
-// ESC/POS константы
+// ESC/POS
 // ============================================================
 const ESC = 0x1b;
 const GS = 0x1d;
@@ -19,8 +19,11 @@ const cmdDoubleSize = (on) => Buffer.from([ESC, 0x21, on ? 0x30 : 0x00]);
 const cmdFeed = (lines = 3) => Buffer.from([ESC, 0x64, Math.min(255, lines)]);
 const cmdCut = () => Buffer.from([GS, 0x56, 0x00]);
 
+// ESC - n — подчёркивание: 0=выкл, 1=вкл, 2=двойное
+const cmdUnderline = (on) => Buffer.from([ESC, 0x2d, on ? 1 : 0]);
+
 // ============================================================
-// Кодирование CP866 / CP1251
+// Кодировки
 // ============================================================
 function encodeCp866(text) {
   const bytes = [];
@@ -73,7 +76,16 @@ function formatTime(iso) {
 }
 
 // ============================================================
-// Билдеры буферов
+// Хелперы delta
+// ============================================================
+function splitDelta(items) {
+  const removed = (items ?? []).filter((i) => i.is_removed);
+  const added = (items ?? []).filter((i) => i.is_added_later && !i.is_removed);
+  return { removed, added };
+}
+
+// ============================================================
+// Билдеры — РУЛОН
 // ============================================================
 export function buildKitchenBuffer(order, width, encoding) {
   const chunks = [];
@@ -131,6 +143,104 @@ export function buildKitchenBuffer(order, width, encoding) {
   return Buffer.concat(chunks);
 }
 
+// ============================================================
+// DELTA — рулон
+// Удалённые позиции печатаем ПОДЧЁРКНУТЫМИ (эффект «зачёркнуто»)
+// ============================================================
+export function buildKitchenDeltaBuffer(order, width, encoding) {
+  const { removed, added } = splitDelta(order.order_items);
+
+  if (removed.length === 0 && added.length === 0) {
+    return null;
+  }
+
+  const chunks = [];
+  const div = '-'.repeat(width);
+  const divH = '='.repeat(width);
+
+  chunks.push(cmdInit(), cmdCodePage(encoding), cmdAlign('center'));
+  chunks.push(cmdBold(true));
+  chunks.push(textLine(divH, encoding));
+  chunks.push(textLine('*** ИЗМЕНЕНИЕ ***', encoding));
+  chunks.push(textLine(divH, encoding));
+  chunks.push(cmdBold(false));
+
+  chunks.push(cmdDoubleSize(true));
+  chunks.push(textLine(`#${order.order_number}`, encoding));
+  chunks.push(cmdDoubleSize(false));
+
+  chunks.push(textLine('', encoding));
+  chunks.push(textLine(formatTime(new Date().toISOString()), encoding));
+  chunks.push(textLine('', encoding));
+
+  chunks.push(cmdAlign('left'), textLine(div, encoding));
+
+  // ---------- УБРАТЬ (зачёркнуто = подчёркнуто) ----------
+  if (removed.length > 0) {
+    chunks.push(cmdBold(true));
+    chunks.push(textLine('УБРАТЬ:', encoding));
+    chunks.push(cmdBold(false));
+
+    for (const item of removed) {
+      let name = item.name;
+      if (item.variant) name += ` [${item.variant}]`;
+
+      // Включаем подчёркивание
+      chunks.push(cmdUnderline(true), cmdBold(true));
+      chunks.push(textLine(`  ${item.quantity}x ${name}`, encoding));
+      chunks.push(cmdBold(false));
+
+      for (const opt of item.options ?? []) {
+        if (opt.type === 'variant') continue;
+        const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
+        chunks.push(textLine(`      + ${opt.name}${q}`, encoding));
+      }
+
+      // Выключаем подчёркивание
+      chunks.push(cmdUnderline(false));
+    }
+    chunks.push(textLine('', encoding));
+  }
+
+  // ---------- ДОБАВИТЬ ----------
+  if (added.length > 0) {
+    chunks.push(cmdBold(true));
+    chunks.push(textLine('ДОБАВИТЬ:', encoding));
+    chunks.push(cmdBold(false));
+
+    for (const item of added) {
+      let name = item.name;
+      if (item.variant) name += ` [${item.variant}]`;
+
+      chunks.push(cmdBold(true));
+      chunks.push(textLine(`  ${item.quantity}x ${name}`, encoding));
+      chunks.push(cmdBold(false));
+
+      for (const opt of item.options ?? []) {
+        if (opt.type === 'variant') continue;
+        const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
+        chunks.push(textLine(`      + ${opt.name}${q}`, encoding));
+      }
+    }
+    chunks.push(textLine('', encoding));
+  }
+
+  chunks.push(textLine(div, encoding));
+
+  if (order.comment && order.comment.trim()) {
+    chunks.push(textLine('', encoding), cmdBold(true));
+    chunks.push(textLine(`ЗАМЕТКА: ${order.comment}`, encoding));
+    chunks.push(cmdBold(false), textLine('', encoding));
+    chunks.push(textLine(div, encoding));
+  }
+
+  chunks.push(textLine('', encoding), cmdAlign('center'));
+  chunks.push(textLine(divH, encoding));
+  chunks.push(cmdFeed(3), cmdCut());
+
+  return Buffer.concat(chunks);
+}
+
 export function buildCustomerBuffer(order, etaMinutes, width, encoding) {
   const chunks = [];
   const divH = '='.repeat(width);
@@ -160,10 +270,203 @@ export function buildCustomerBuffer(order, etaMinutes, width, encoding) {
   return Buffer.concat(chunks);
 }
 
+// ============================================================
+// A4
+// ============================================================
+function a4Line(text, encoding) {
+  return Buffer.concat([encodeText(text, encoding), Buffer.from([0x0d, 0x0a])]);
+}
+
+function a4Center(text, width) {
+  if (text.length >= width) return text;
+  const pad = Math.floor((width - text.length) / 2);
+  return ' '.repeat(pad) + text;
+}
+
+// «Псевдо-зачёркивание» для A4:
+// обычный текст → добавляем пробелы между буквами и поверх — не получится,
+// поэтому используем префикс [X] и всё равно подчёркиваем подчёркиваниями.
+function strikeText(text) {
+  // Простой визуальный акцент: [~~~] текст [~~~]
+  return `[~УДАЛЕНО~] ${text}`;
+}
+
+export function buildKitchenA4Buffer(order, encoding = 'cp1251') {
+  const W = 80;
+  const div = '-'.repeat(W);
+  const divH = '='.repeat(W);
+  const chunks = [];
+
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line(a4Center('К У Х Н Я', W), encoding));
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(
+    a4Line(a4Center(`ЗАКАЗ  # ${order.order_number}`, W), encoding)
+  );
+  chunks.push(a4Line('', encoding));
+  chunks.push(
+    a4Line(
+      a4Center(
+        `${formatTime(order.created_at)}   ·   ${
+          order.order_type === 'INSIDE' ? 'В ЗАЛЕ' : 'С СОБОЙ'
+        }`,
+        W
+      ),
+      encoding
+    )
+  );
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line(div, encoding));
+  chunks.push(a4Line('', encoding));
+
+  const active = (order.order_items ?? []).filter((i) => !i.is_removed);
+
+  if (active.length === 0) {
+    chunks.push(a4Line(a4Center('(пусто)', W), encoding));
+  } else {
+    for (const item of active) {
+      let name = item.name;
+      if (item.variant) name += `  [${item.variant}]`;
+      chunks.push(a4Line(`${item.quantity} x   ${name}`, encoding));
+      for (const opt of item.options ?? []) {
+        if (opt.type === 'variant') continue;
+        const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
+        chunks.push(a4Line(`         + ${opt.name}${q}`, encoding));
+      }
+      chunks.push(a4Line('', encoding));
+    }
+  }
+
+  chunks.push(a4Line(div, encoding));
+
+  if (order.comment && order.comment.trim()) {
+    chunks.push(a4Line('', encoding));
+    chunks.push(a4Line(`ПРИМЕЧАНИЕ:  ${order.comment}`, encoding));
+    chunks.push(a4Line('', encoding));
+    chunks.push(a4Line(div, encoding));
+  }
+
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(Buffer.from([0x0c]));
+
+  return Buffer.concat(chunks);
+}
+
+// ============================================================
+// DELTA — A4 (текстовый режим Windows-драйвера).
+// "Зачёркивание" эмулируем префиксом [~УДАЛЕНО~]
+// ============================================================
+export function buildKitchenA4DeltaBuffer(order, encoding = 'cp1251') {
+  const { removed, added } = splitDelta(order.order_items);
+
+  if (removed.length === 0 && added.length === 0) {
+    return null;
+  }
+
+  const W = 80;
+  const div = '-'.repeat(W);
+  const divH = '='.repeat(W);
+  const chunks = [];
+
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line(a4Center('*** ИЗМЕНЕНИЕ ЗАКАЗА ***', W), encoding));
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(
+    a4Line(a4Center(`ЗАКАЗ  # ${order.order_number}`, W), encoding)
+  );
+  chunks.push(
+    a4Line(a4Center(formatTime(new Date().toISOString()), W), encoding)
+  );
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line(div, encoding));
+  chunks.push(a4Line('', encoding));
+
+  if (removed.length > 0) {
+    chunks.push(a4Line('УБРАТЬ:', encoding));
+    for (const item of removed) {
+      let name = item.name;
+      if (item.variant) name += `  [${item.variant}]`;
+      chunks.push(
+        a4Line(`   ${item.quantity} x   ${strikeText(name)}`, encoding)
+      );
+      for (const opt of item.options ?? []) {
+        if (opt.type === 'variant') continue;
+        const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
+        chunks.push(
+          a4Line(`         + ${strikeText(opt.name + q)}`, encoding)
+        );
+      }
+    }
+    chunks.push(a4Line('', encoding));
+  }
+
+  if (added.length > 0) {
+    chunks.push(a4Line('ДОБАВИТЬ:', encoding));
+    for (const item of added) {
+      let name = item.name;
+      if (item.variant) name += `  [${item.variant}]`;
+      chunks.push(a4Line(`   ${item.quantity} x   ${name}`, encoding));
+      for (const opt of item.options ?? []) {
+        if (opt.type === 'variant') continue;
+        const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
+        chunks.push(a4Line(`         + ${opt.name}${q}`, encoding));
+      }
+    }
+    chunks.push(a4Line('', encoding));
+  }
+
+  chunks.push(a4Line(div, encoding));
+
+  if (order.comment && order.comment.trim()) {
+    chunks.push(a4Line('', encoding));
+    chunks.push(a4Line(`ПРИМЕЧАНИЕ:  ${order.comment}`, encoding));
+    chunks.push(a4Line('', encoding));
+    chunks.push(a4Line(div, encoding));
+  }
+
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(Buffer.from([0x0c]));
+
+  return Buffer.concat(chunks);
+}
+
+// ============================================================
+// Тестовый буфер
+// ============================================================
 function buildTestBuffer(target, settings) {
   const slot = target === 'kitchen' ? settings.kitchen : settings.cashier;
-  const w = slot?.width || 32;
   const encoding = settings.encoding || 'cp866';
+
+  if (slot?.paper === 'a4') {
+    const W = 80;
+    const divH = '='.repeat(W);
+    const label = target === 'kitchen' ? 'ПРИНТЕР КУХНИ' : 'ПРИНТЕР КАССЫ';
+    const lines = [
+      divH,
+      a4Center('KEBAB POS', W),
+      divH,
+      '',
+      a4Center(label, W),
+      a4Center('ТЕСТ ПЕЧАТИ — OK', W),
+      '',
+      new Date().toLocaleString('ru-RU'),
+      '',
+      divH,
+      '',
+    ];
+    return Buffer.concat([
+      ...lines.map((l) => a4Line(l, 'cp1251')),
+      Buffer.from([0x0c]),
+    ]);
+  }
+
+  const w = slot?.width || 32;
   const divH = '='.repeat(w);
   const label = target === 'kitchen' ? 'KITCHEN PRINTER' : 'CASHIER PRINTER';
 
@@ -189,7 +492,7 @@ function buildTestBuffer(target, settings) {
 }
 
 // ============================================================
-// TCP-отправка (для сетевых принтеров)
+// TCP
 // ============================================================
 function sendToPrinter(ip, port, buffer, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
@@ -239,22 +542,25 @@ function sendToPrinter(ip, port, buffer, timeoutMs = 8000) {
 }
 
 // ============================================================
-// Универсальный роутер — печать в один слот
+// Универсальный роутер
 // ============================================================
-async function printToSlot(slot, buffer, target, settings) {
+async function printToSlot(slot, buffer, target, settings, opts = {}) {
   if (!slot || !slot.enabled) {
     return { success: true, skipped: true };
   }
 
-  // Windows USB через Python-бридж
+  const datatype =
+    typeof opts.datatype === 'string' ? opts.datatype : 'RAW';
+
   if (slot.source === 'windows') {
     if (!slot.printer_name) {
       return { success: false, error: 'Windows-принтер не выбран' };
     }
     try {
-      const r = await printViaBridge(slot.printer_name, buffer);
+      const r = await printViaBridge(slot.printer_name, buffer, { datatype });
       console.log(
-        `[printer] ✓ ${target} → windows bridge "${slot.printer_name}" (${r.bytes} bytes)`
+        `[printer] ✓ ${target} → windows bridge "${slot.printer_name}" ` +
+          `(${r.bytes} bytes, ${datatype})`
       );
       return { success: true };
     } catch (e) {
@@ -263,12 +569,10 @@ async function printToSlot(slot, buffer, target, settings) {
     }
   }
 
-  // WebUSB — печатает клиент, сервер пропускает
   if (slot.source === 'usb') {
     return { success: true, skipped: true, note: 'usb-client-side' };
   }
 
-  // Сеть
   if (!slot.ip) {
     return { success: false, error: 'IP принтера не указан' };
   }
@@ -288,20 +592,78 @@ export async function printKitchenTicket(order, settings) {
     `[printer] printKitchenTicket #${order?.order_number ?? '?'}`
   );
   const slot = settings.kitchen;
-  if (slot?.source === 'network' && slot?.ip) {
-    const buffer = buildKitchenBuffer(
-      order,
-      slot.width || 32,
-      settings.encoding || 'cp866'
-    );
-    return printToSlot(slot, buffer, 'kitchen', settings);
-  }
-  const buffer = buildKitchenBuffer(
-    order,
-    slot?.width || 32,
-    settings.encoding || 'cp866'
+  const isA4 = slot?.paper === 'a4';
+  const encoding = isA4 ? 'cp1251' : settings.encoding || 'cp866';
+
+  const buffer = isA4
+    ? buildKitchenA4Buffer(order, encoding)
+    : buildKitchenBuffer(order, slot?.width || 32, encoding);
+
+  return printToSlot(slot, buffer, 'kitchen', settings, {
+    datatype: isA4 ? 'TEXT' : 'RAW',
+  });
+}
+
+export async function printKitchenDelta(order, settings) {
+  console.log(
+    `[printer] printKitchenDelta #${order?.order_number ?? '?'}`
   );
-  return printToSlot(slot, buffer, 'kitchen', settings);
+
+  const slot = settings.kitchen;
+  if (!slot || !slot.enabled) {
+    console.log('[printer] delta: kitchen disabled → skip');
+    return { success: true, skipped: true };
+  }
+
+  const isA4 = slot?.paper === 'a4';
+  const encoding = isA4 ? 'cp1251' : settings.encoding || 'cp866';
+
+  const buffer = isA4
+    ? buildKitchenA4DeltaBuffer(order, encoding)
+    : buildKitchenDeltaBuffer(order, slot?.width || 32, encoding);
+
+  if (!buffer) {
+    console.log('[printer] delta: нет изменений — пропускаю');
+    return { success: true, skipped: true, note: 'no-changes' };
+  }
+
+  return printToSlot(slot, buffer, 'kitchen-delta', settings, {
+    datatype: isA4 ? 'TEXT' : 'RAW',
+  });
+}
+
+export function buildCustomerA4Buffer(order, etaMinutes, encoding = 'cp1251') {
+  const W = 80;
+  const divH = '='.repeat(W);
+  const chunks = [];
+
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line(a4Center('K E B A B   P O S', W), encoding));
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(
+    a4Line(a4Center(`Ваш номер:  #${order.order_number}`, W), encoding)
+  );
+  chunks.push(a4Line('', encoding));
+
+  if (etaMinutes && etaMinutes > 0) {
+    chunks.push(
+      a4Line(a4Center(`Примерное время: ~${etaMinutes} мин`, W), encoding)
+    );
+  }
+
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(Buffer.from([0x0c]));
+
+  return Buffer.concat(chunks);
 }
 
 export async function printCustomerTicket(order, etaMinutes, settings) {
@@ -309,18 +671,21 @@ export async function printCustomerTicket(order, etaMinutes, settings) {
     `[printer] printCustomerTicket #${order?.order_number ?? '?'} eta=${etaMinutes}`
   );
   const slot = settings.cashier;
-  const buffer = buildCustomerBuffer(
-    order,
-    etaMinutes,
-    slot?.width || 32,
-    settings.encoding || 'cp866'
-  );
-  return printToSlot(slot, buffer, 'cashier', settings);
+  const isA4 = slot?.paper === 'a4';
+  const encoding = isA4 ? 'cp1251' : settings.encoding || 'cp866';
+
+  const buffer = isA4
+    ? buildCustomerA4Buffer(order, etaMinutes, encoding)
+    : buildCustomerBuffer(order, etaMinutes, slot?.width || 32, encoding);
+
+  return printToSlot(slot, buffer, 'cashier', settings, {
+    datatype: isA4 ? 'TEXT' : 'RAW',
+  });
 }
 
 export async function testPrinter(target, settings) {
   const slot = target === 'kitchen' ? settings.kitchen : settings.cashier;
-  console.log(`[printer] testPrinter target=${target}`, JSON.stringify(slot));
+  console.log(`[printer] testPrinter target=${target}`);
 
   if (!slot || !slot.enabled) {
     return { success: false, error: 'Принтер не включён' };
@@ -328,11 +693,13 @@ export async function testPrinter(target, settings) {
 
   const buffer = buildTestBuffer(target, settings);
   console.log(`[printer] test buffer: ${buffer.length} bytes`);
-  return printToSlot(slot, buffer, `test/${target}`, settings);
+  return printToSlot(slot, buffer, `test/${target}`, settings, {
+    datatype: slot.paper === 'a4' ? 'TEXT' : 'RAW',
+  });
 }
 
 // ============================================================
-// Для WebUSB: отдать base64 ESC/POS буфера клиенту
+// base64 для WebUSB
 // ============================================================
 export function buildTicketBase64(target, order, etaMinutes, settings) {
   const slot = target === 'kitchen' ? settings.kitchen : settings.cashier;
@@ -349,4 +716,13 @@ export function buildTicketBase64(target, order, etaMinutes, settings) {
 
 export function buildTestBufferBase64(target, settings) {
   return buildTestBuffer(target, settings).toString('base64');
+}
+
+export function buildKitchenDeltaBase64(order, settings) {
+  const slot = settings.kitchen;
+  const width = slot?.width || 32;
+  const encoding = settings.encoding || 'cp866';
+  const buf = buildKitchenDeltaBuffer(order, width, encoding);
+  if (!buf) return null;
+  return buf.toString('base64');
 }

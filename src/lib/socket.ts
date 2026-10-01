@@ -24,14 +24,8 @@ export interface SyncStats {
   totalOrders: number;
 }
 
-// ============================================================
-// Socket singleton
-// ============================================================
 let socket: Socket | null = null;
 
-// ============================================================
-// Кеш последнего состояния
-// ============================================================
 let lastOrders: Order[] | null = null;
 let lastMenu: ServerMenu | null = null;
 let lastClientsCount = 1;
@@ -69,14 +63,9 @@ function notifyClientsCount(count: number) {
   clientsListeners.forEach((l) => l(count));
 }
 
-// ============================================================
-// Подписки
-// ============================================================
 export function subscribeOrders(listener: OrdersListener): () => void {
   ordersListeners.add(listener);
-  if (lastOrders !== null) {
-    listener(lastOrders);
-  }
+  if (lastOrders !== null) listener(lastOrders);
   return () => {
     ordersListeners.delete(listener);
   };
@@ -84,9 +73,7 @@ export function subscribeOrders(listener: OrdersListener): () => void {
 
 export function subscribeMenu(listener: MenuListener): () => void {
   menuListeners.add(listener);
-  if (lastMenu !== null) {
-    listener(lastMenu);
-  }
+  if (lastMenu !== null) listener(lastMenu);
   return () => {
     menuListeners.delete(listener);
   };
@@ -110,21 +97,14 @@ export function subscribeClientsCount(listener: ClientsListener): () => void {
   };
 }
 
-// ============================================================
-// Определяем URL сервера автоматически
-// ============================================================
 const MODE_KEY = 'kebab-pos-mode';
 const HOST_IP_KEY = 'kebab-pos-host-ip';
 
 function resolveServerUrl(): string {
   const explicit = import.meta.env.VITE_SOCKET_URL as string | undefined;
-  if (explicit && explicit.trim().length > 0) {
-    return explicit;
-  }
+  if (explicit && explicit.trim().length > 0) return explicit;
 
-  if (typeof window === 'undefined') {
-    return 'http://localhost:3001';
-  }
+  if (typeof window === 'undefined') return 'http://localhost:3001';
 
   const mode = window.localStorage.getItem(MODE_KEY);
   const hostIp = window.localStorage.getItem(HOST_IP_KEY);
@@ -139,13 +119,9 @@ function resolveServerUrl(): string {
   return `${protocol}//${hostname}:3001`;
 }
 
-// ============================================================
-// Socket getter
-// ============================================================
 export function getSocket(): Socket {
   if (!socket) {
     const url = resolveServerUrl();
-
     console.log('[ws] Подключаюсь к серверу:', url);
 
     socket = io(url, {
@@ -178,14 +154,8 @@ export function getSocket(): Socket {
       notifyInit(snap);
     });
 
-    socket.on('orders', (orders: Order[]) => {
-      notifyOrders(orders);
-    });
-
-    socket.on('menu', (menu: ServerMenu) => {
-      notifyMenu(menu);
-    });
-
+    socket.on('orders', (orders: Order[]) => notifyOrders(orders));
+    socket.on('menu', (menu: ServerMenu) => notifyMenu(menu));
     socket.on('clients-count', (count: number) => {
       console.log('[ws] clients-count:', count);
       notifyClientsCount(count);
@@ -219,7 +189,7 @@ export function disconnectSocket(): void {
 }
 
 // ============================================================
-// API — методы обёртки (заказы)
+// API — заказы
 // ============================================================
 export interface OrderItemPayload {
   menu_item_id: string | null;
@@ -294,15 +264,10 @@ export function emitUpdateOrder(payload: {
 
 export function emitForceSync(): Promise<SyncStats> {
   return new Promise((resolve) => {
-    getSocket().emit('force-sync', null, (stats: SyncStats) => {
-      resolve(stats);
-    });
+    getSocket().emit('force-sync', null, (stats: SyncStats) => resolve(stats));
   });
 }
 
-// ============================================================
-// Layout: отправить на сервер
-// ============================================================
 export function emitLayoutSettings(settings: LayoutSettings): void {
   const s = getSocket();
   if (!s.connected) return;
@@ -310,7 +275,7 @@ export function emitLayoutSettings(settings: LayoutSettings): void {
 }
 
 // ============================================================
-// API: принтеры (с таймаутами — не висим вечно)
+// API — принтеры
 // ============================================================
 function emitWithTimeout<T>(
   event: string,
@@ -360,7 +325,6 @@ export async function emitSavePrinterSettings(
 }
 
 export async function emitScanPrinters(): Promise<DiscoveredPrinter[]> {
-  // Сканирование сети может занять много времени — таймаут больше
   const res = await emitWithTimeout<{
     ok: boolean;
     printers?: DiscoveredPrinter[];
@@ -377,6 +341,25 @@ export async function emitPrintKitchen(
   try {
     const res = await emitWithTimeout<PrinterResult>(
       'printer-print-kitchen',
+      order,
+      8000
+    );
+    return res ?? { success: false, error: 'no response' };
+  } catch (e) {
+    return {
+      success: false,
+      error: e instanceof Error ? e.message : 'print failed',
+    };
+  }
+}
+
+// ---------- DELTA — печать изменений ----------
+export async function emitPrintKitchenDelta(
+  order: unknown
+): Promise<PrinterResult> {
+  try {
+    const res = await emitWithTimeout<PrinterResult>(
+      'printer-print-kitchen-delta',
       order,
       8000
     );
@@ -449,5 +432,16 @@ export async function emitBuildTestTicket(
     buffer?: string;
     error?: string;
   }>('printer-build-test', { target }, 6000);
+  return res ?? { ok: false, error: 'no response' };
+}
+
+export async function emitBuildKitchenDelta(
+  order: unknown
+): Promise<{ ok: boolean; buffer?: string; error?: string }> {
+  const res = await emitWithTimeout<{
+    ok: boolean;
+    buffer?: string;
+    error?: string;
+  }>('printer-build-delta', order, 6000);
   return res ?? { ok: false, error: 'no response' };
 }
