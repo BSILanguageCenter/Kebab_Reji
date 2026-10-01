@@ -69,6 +69,8 @@ export interface MenuItemProperty {
   id: string;
   item_id: string;
   name: string;
+  options: string[];
+  required: boolean;
   sort_order: number;
 }
 
@@ -122,6 +124,10 @@ export interface HydratedProperty {
   id: string;
   item_id: string;
   name: string;
+  /** Варианты выбора. Пусто → обычный чекбокс (вкл/выкл). */
+  options: string[];
+  /** Обязательно ли выбрать вариант. */
+  required: boolean;
   sort_order: number;
 }
 
@@ -187,7 +193,7 @@ export interface CartItem {
   is_removed?: boolean;
   is_added_later?: boolean;
   db_id?: string;
-  original_quantity?: number;   // ← новое
+  original_quantity?: number;
 }
 
 // ============================================================

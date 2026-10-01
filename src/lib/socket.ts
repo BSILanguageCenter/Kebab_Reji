@@ -128,8 +128,10 @@ export function getSocket(): Socket {
       transports: ['websocket'],
       reconnection: true,
       reconnectionDelay: 500,
-      reconnectionDelayMax: 2000,
-      reconnectionAttempts: Infinity,
+      reconnectionDelayMax: 10_000,
+      // ⚡ #7: не спамим бесконечно — 20 попыток ≈ 3 минуты.
+      // Если хост совсем упал, клиент не будет грузить браузер.
+      reconnectionAttempts: 20,
     });
 
     socket.on('connect', () => {

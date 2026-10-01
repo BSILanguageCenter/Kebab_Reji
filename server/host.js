@@ -12,7 +12,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ============================================================
 const HOST_ID_PATH = path.join(__dirname, 'data', 'host.id');
 
-const RANGE_SIZE = 500;
 const HEARTBEAT_INTERVAL = 5 * 60 * 1000; // 5 минут
 
 let supabaseRef = null;
@@ -20,8 +19,6 @@ let storeRef = null;
 
 let hostUuid = null;
 let hostNumber = 1;
-let rangeStart = 1;
-let rangeEnd = 500;
 let nextOrderNumber = 1;
 
 // ============================================================
@@ -56,10 +53,10 @@ export async function initHost(supabase, store) {
   console.log('[host] UUID:', hostUuid);
 
   await registerHost();
-  await recalculateRange();
+  await recalculateNextOrderNumber();
 
   console.log(
-    `[host] Хост #${hostNumber}, диапазон: ${rangeStart}–${rangeEnd}, следующий заказ: ${nextOrderNumber}`
+    `[host] Хост #${hostNumber}, следующий заказ: ${nextOrderNumber}`
   );
 
   startHeartbeat();
@@ -90,10 +87,14 @@ async function registerHost() {
 }
 
 // ============================================================
-// Пересчёт позиции и диапазона
+// Пересчёт номера хоста и nextOrderNumber
+//
+// Новая логика: у каждого хоста СВОЙ независимый счётчик.
+// nextOrderNumber = MAX(order_number этого хоста) + 1
+// Диапазоны больше не используются.
 // ============================================================
-async function recalculateRange() {
-  // Все хосты, отсортированные по first_seen_at
+async function recalculateNextOrderNumber() {
+  // Получаем список всех хостов для определения порядкового номера
   const { data: hosts, error } = await supabaseRef
     .from('pos_hosts')
     .select('*')
@@ -101,60 +102,56 @@ async function recalculateRange() {
 
   if (error || !hosts) {
     console.error('[host] Не удалось получить список хостов:', error?.message);
+    // Всё равно пересчитываем локальный nextOrderNumber
+    recalculateLocalNext();
     return;
   }
 
-  // Ищем свою позицию
   const myIndex = hosts.findIndex((h) => h.host_uuid === hostUuid);
   if (myIndex === -1) {
     console.warn('[host] Себя не нашёл в списке — повторная регистрация');
     await registerHost();
+    recalculateLocalNext();
     return;
   }
 
   const newHostNumber = myIndex + 1;
-  const newRangeStart = 1 + (newHostNumber - 1) * RANGE_SIZE;
-  const newRangeEnd = newRangeStart + RANGE_SIZE - 1;
-
-  // Обновляем локальные переменные
   const numberChanged = hostNumber !== newHostNumber;
   hostNumber = newHostNumber;
-  rangeStart = newRangeStart;
-  rangeEnd = newRangeEnd;
 
-  // Обновляем в Supabase, если номер поменялся
-  if (numberChanged || hosts[myIndex].host_number !== newHostNumber) {
-    await supabaseRef
-      .from('pos_hosts')
-      .update({
-        host_number: newHostNumber,
-        last_seen_at: new Date().toISOString(),
-      })
-      .eq('host_uuid', hostUuid);
-  } else {
-    // Просто обновляем heartbeat
-    await supabaseRef
-      .from('pos_hosts')
-      .update({ last_seen_at: new Date().toISOString() })
-      .eq('host_uuid', hostUuid);
+  // Обновляем номер хоста в Supabase (heartbeat + number)
+  await supabaseRef
+    .from('pos_hosts')
+    .update({
+      host_number: newHostNumber,
+      last_seen_at: new Date().toISOString(),
+    })
+    .eq('host_uuid', hostUuid);
+
+  if (numberChanged) {
+    console.log(`[host] Мой номер изменился: #${newHostNumber}`);
   }
 
-  // Определяем следующий номер: MAX(order_number) + 1 из Supabase
-  const { data: maxRow } = await supabaseRef
-    .from('orders')
-    .select('order_number')
-    .order('order_number', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  recalculateLocalNext();
+}
 
-  const globalMax = maxRow?.order_number ?? 0;
+// ============================================================
+// Локальный пересчёт nextOrderNumber
+//
+// MAX(order_number) среди МОИХ заказов (host_uuid = текущий).
+// Если у меня ещё нет заказов — начинаем со 100.
+// ============================================================
+function recalculateLocalNext() {
+  if (!storeRef) return;
 
-  // Если глобальный max меньше нашего диапазона → начинаем с rangeStart
-  // Иначе продолжаем с globalMax + 1
-  nextOrderNumber = Math.max(globalMax + 1, rangeStart);
+  const localMax =
+    typeof storeRef.getMaxOrderNumber === 'function'
+      ? storeRef.getMaxOrderNumber(hostUuid)
+      : 0;
 
-  // Передаём в store
-  if (storeRef && typeof storeRef.setNextOrderNumber === 'function') {
+  nextOrderNumber = localMax > 0 ? localMax + 1 : 100;
+
+  if (typeof storeRef.setNextOrderNumber === 'function') {
     storeRef.setNextOrderNumber(nextOrderNumber);
   }
 }
@@ -165,7 +162,7 @@ async function recalculateRange() {
 function startHeartbeat() {
   setInterval(async () => {
     try {
-      await recalculateRange();
+      await recalculateNextOrderNumber();
       console.log(
         `[host] Heartbeat OK: host #${hostNumber}, следующий заказ: ${nextOrderNumber}`
       );
@@ -186,10 +183,16 @@ export function getHostInfo() {
   return {
     hostUuid,
     hostNumber,
-    rangeStart,
-    rangeEnd,
+    // Поля rangeStart/rangeEnd оставлены для обратной совместимости
+    // с /health endpoint. Больше не используются для нумерации.
+    rangeStart: 0,
+    rangeEnd: 0,
     nextOrderNumber,
   };
+}
+
+export function getHostUuid() {
+  return hostUuid;
 }
 
 export function getNextOrderNumber() {
@@ -213,5 +216,5 @@ export function bumpNextOrderNumber(usedNumber) {
 
 /** Принудительный пересчёт (можно вызвать вручную) */
 export async function forceRecalculate() {
-  await recalculateRange();
+  await recalculateNextOrderNumber();
 }

@@ -13,6 +13,7 @@ import {
   findUsbDeviceBySlot,
 } from '@/lib/printer-discovery';
 import { printBufferViaUsb, base64ToBytes } from '@/lib/usb-printer';
+import { invalidatePrinterSettingsCache } from '@/services/printer';
 import {
   Printer,
   Save,
@@ -190,11 +191,14 @@ export function PrinterSettingsPage() {
     setMsg(null);
     try {
       const saved = await emitSavePrinterSettings(settings);
+      // ⚡ #6: сбрасываем кэш настроек в printer.ts
+      invalidatePrinterSettingsCache();
       setSettings({
         kitchen: { ...DEFAULT_PRINTER_SLOT, ...saved.kitchen },
         cashier: { ...DEFAULT_PRINTER_SLOT, ...saved.cashier },
         encoding: saved.encoding ?? 'cp866',
       });
+      setMsg({ kind: 'ok', text: t('printerSaved') });
       setMsg({ kind: 'ok', text: t('printerSaved') });
     } catch (e) {
       setMsg({
@@ -214,6 +218,7 @@ export function PrinterSettingsPage() {
     setMsg(null);
     try {
       const saved = await emitSavePrinterSettings(settings);
+      invalidatePrinterSettingsCache();
       setSettings({
         kitchen: { ...DEFAULT_PRINTER_SLOT, ...saved.kitchen },
         cashier: { ...DEFAULT_PRINTER_SLOT, ...saved.cashier },

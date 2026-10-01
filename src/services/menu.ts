@@ -33,13 +33,68 @@ export async function fetchAllMenuItems(): Promise<MenuItem[]> {
   }));
   for (const it of rawList) itemsById.set(it.id, it);
 
+  // ---- Свойства: options (jsonb) с fallback на options_json ----
   const propsByItem = new Map<
     string,
-    { id: string; item_id: string; name: string; sort_order: number }[]
+    {
+      id: string;
+      item_id: string;
+      name: string;
+      options: string[];
+      required: boolean;
+      sort_order: number;
+    }[]
   >();
+
   for (const p of props.data ?? []) {
     const arr = propsByItem.get(p.item_id) ?? [];
-    arr.push(p);
+
+    let parsedOptions: string[] = [];
+
+    // 1) options (jsonb) — Supabase обычно отдаёт готовый массив
+    const rawOptions = (p as Record<string, unknown>).options;
+    if (Array.isArray(rawOptions)) {
+      parsedOptions = (rawOptions as unknown[]).filter(
+        (x): x is string => typeof x === 'string'
+      );
+    } else if (typeof rawOptions === 'string') {
+      try {
+        const parsed = JSON.parse(rawOptions);
+        if (Array.isArray(parsed)) {
+          parsedOptions = parsed.filter(
+            (x): x is string => typeof x === 'string'
+          );
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // 2) options_json (text) — fallback, если options пустой
+    if (parsedOptions.length === 0) {
+      const rawJson = (p as Record<string, unknown>).options_json;
+      if (typeof rawJson === 'string') {
+        try {
+          const parsed = JSON.parse(rawJson);
+          if (Array.isArray(parsed)) {
+            parsedOptions = parsed.filter(
+              (x): x is string => typeof x === 'string'
+            );
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    arr.push({
+      id: p.id,
+      item_id: p.item_id,
+      name: p.name,
+      options: parsedOptions,
+      required: Boolean((p as Record<string, unknown>).required),
+      sort_order: p.sort_order,
+    });
     propsByItem.set(p.item_id, arr);
   }
 
@@ -195,8 +250,14 @@ export interface VariantDraftPayload {
   station: Station | null;
   cook_time_min: number | null;
   sauce_mode: SauceMode | null;
-  properties: { name: string }[];
+  properties: PropertyDraftPayload[];
   allowed_sauce_ids: string[];
+}
+
+export interface PropertyDraftPayload {
+  name: string;
+  options?: string[];
+  required?: boolean;
 }
 
 export interface SetExtraGroupPayload {
@@ -224,7 +285,7 @@ export interface SaveItemPayload {
   active: boolean;
   sort_order: number;
 
-  properties?: { name: string }[];
+  properties?: PropertyDraftPayload[];
   allowed_sauce_ids?: string[];
 
   variants?: VariantDraftPayload[];
@@ -236,6 +297,35 @@ export interface SaveItemPayload {
     image_override: string | null;
   }[];
   set_extra_groups?: SetExtraGroupPayload[];
+}
+
+// ============================================================
+// ХЕЛПЕР: подготовить строки для menu_item_properties
+// ============================================================
+function buildPropertyRows(
+  itemId: string,
+  properties: PropertyDraftPayload[]
+): Array<{
+  item_id: string;
+  name: string;
+  options: string[];
+  options_json: string;
+  required: number;
+  sort_order: number;
+}> {
+  return properties.map((p, i) => {
+    const opts = Array.isArray(p.options) ? p.options : [];
+    const optsJson = JSON.stringify(opts);
+    return {
+      item_id: itemId,
+      name: p.name,
+      options: opts,
+      options_json: optsJson,
+      // smallint в БД: 1 / 0
+      required: p.required ? 1 : 0,
+      sort_order: i,
+    };
+  });
 }
 
 // ============================================================
@@ -264,11 +354,7 @@ export async function createItem(payload: SaveItemPayload): Promise<MenuItem> {
   // Свойства и соусы корня — только если НЕ dish-group
   if (base.type !== 'dish' || base.dish_kind !== 'group') {
     if (properties.length) {
-      const rows = properties.map((p, i) => ({
-        item_id: itemId,
-        name: p.name,
-        sort_order: i,
-      }));
+      const rows = buildPropertyRows(itemId, properties);
       const { error: e } = await supabase
         .from('menu_item_properties')
         .insert(rows);
@@ -315,11 +401,7 @@ export async function createItem(payload: SaveItemPayload): Promise<MenuItem> {
       if (ev) throw ev;
 
       if (v.properties.length) {
-        const rows = v.properties.map((p, j) => ({
-          item_id: newV.id,
-          name: p.name,
-          sort_order: j,
-        }));
+        const rows = buildPropertyRows(newV.id, v.properties);
         const { error: e } = await supabase
           .from('menu_item_properties')
           .insert(rows);
@@ -502,11 +584,7 @@ export async function updateItem(
       }
 
       if (v.properties.length) {
-        const rows = v.properties.map((p, j) => ({
-          item_id: variantId,
-          name: p.name,
-          sort_order: j,
-        }));
+        const rows = buildPropertyRows(variantId, v.properties);
         const { error: e } = await supabase
           .from('menu_item_properties')
           .insert(rows);
@@ -527,11 +605,7 @@ export async function updateItem(
   } else {
     // Обычные свойства / соусы
     if (properties.length) {
-      const rows = properties.map((p, i) => ({
-        item_id: id,
-        name: p.name,
-        sort_order: i,
-      }));
+      const rows = buildPropertyRows(id, properties);
       const { error: e } = await supabase
         .from('menu_item_properties')
         .insert(rows);

@@ -25,6 +25,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 let lastOnline = false;
 
+// ============================================================
+// Состояние Realtime — используется в polling fallback
+// ============================================================
+let realtimeStatus = 'DISCONNECTED';
+
 export function isSupabaseOnline() {
   return lastOnline;
 }
@@ -35,12 +40,16 @@ export function getSupabaseClient() {
 
 // ============================================================
 // BOOTSTRAP + RECONCILE
+//
+// ⚡ #5: грузим только 7 дней вместо 90 — быстрее старт,
+// меньше трафик. Прошлые заказы подгрузит статистика менеджера
+// напрямую из Supabase, когда откроют вкладку.
 // ============================================================
 export async function bootstrapFromSupabase() {
   console.log('[sync] Загрузка данных из Supabase...');
 
   const since = new Date();
-  since.setDate(since.getDate() - 90);
+  since.setDate(since.getDate() - 7);
   const sinceIso = since.toISOString();
 
   const [
@@ -120,7 +129,7 @@ export async function bootstrapFromSupabase() {
 // ============================================================
 function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
   const localOrders = db
-    .prepare('SELECT id, order_number, updated_at, synced FROM orders')
+    .prepare('SELECT id, order_number, host_uuid, updated_at, synced FROM orders')
     .all();
   const localMap = new Map();
   for (const o of localOrders) {
@@ -187,24 +196,36 @@ function reconcileOrders(remoteOrders, remoteItems, remoteOptions) {
 }
 
 // ============================================================
-// SYNC LOOP — отправка в Supabase
-//
-// Лог «нет интернета» пишем не чаще, чем раз в 30 секунд,
-// и дополнительно — при изменении количества заказов в очереди.
-// Это полностью убирает бесконечный спам при offline-состоянии.
+// SYNC LOOP
 // ============================================================
 export function startSyncLoop() {
   console.log('[sync] Цикл отправки запущен (интервал 1 сек)');
 
+  const OFFLINE_LOG_INTERVAL_MS = 30_000;
+  const ERROR_BACKOFF_MS = 15_000;
+
   let lastOfflineLogAt = 0;
   let lastOfflineLogCount = -1;
-  const OFFLINE_LOG_INTERVAL_MS = 30_000;
+
+  let dirty = true;
+  let lastUnsyncedCount = -1;
+  let nextRetryAt = 0;
+
+  store.on('orders-changed', () => {
+    dirty = true;
+    nextRetryAt = 0;
+  });
 
   setInterval(async () => {
-    const unsynced = store.getUnsyncedOrders();
+    if (Date.now() < nextRetryAt) return;
+    if (!dirty && lastUnsyncedCount === 0) return;
 
-    if (unsynced.length === 0) {
-      // Очередь пуста — если ранее жаловались, сообщаем один раз о восстановлении
+    const unsynced = store.getUnsyncedOrders();
+    const count = unsynced.length;
+    lastUnsyncedCount = count;
+
+    if (count === 0) {
+      dirty = false;
       if (lastOfflineLogCount !== -1) {
         console.log('[sync] ✓ Очередь отправки пуста');
         lastOfflineLogCount = -1;
@@ -223,9 +244,12 @@ export function startSyncLoop() {
       } catch (e) {
         lastOnline = false;
         store.markSyncError(order.id, e.message);
+        nextRetryAt = Date.now() + ERROR_BACKOFF_MS;
         break;
       }
     }
+
+    dirty = false;
 
     if (successCount > 0) {
       console.log(`[sync] ✓ Отправлено в Supabase: ${successCount} заказ(ов)`);
@@ -254,6 +278,7 @@ async function pushOrderToSupabase(order) {
   const { error: orderErr } = await supabase.from('orders').upsert({
     id: order.id,
     order_number: order.order_number,
+    host_uuid: order.host_uuid ?? null,
     order_type: order.order_type,
     status: order.status,
     total_amount: order.total_amount,
@@ -264,15 +289,12 @@ async function pushOrderToSupabase(order) {
   });
 
   if (orderErr) {
-    if (
-      orderErr.code === '23505' ||
-      orderErr.message?.includes('orders_order_number_unique')
-    ) {
+    if (orderErr.code === '23505') {
       console.warn(
-        `[sync] ⚠️ Конфликт order_number #${order.order_number}. Пропускаем.`
+        `[sync] ⚠️ Конфликт уникальности для #${order.order_number} ` +
+          `(host=${order.host_uuid}). ` +
+          `Проверь SQL-миграцию в Supabase. Повторю позже.`
       );
-      store.markSynced(order.id);
-      return true;
     }
     throw orderErr;
   }
@@ -330,8 +352,6 @@ async function pushOrderToSupabase(order) {
 
 // ============================================================
 // REALTIME — ORDERS
-//
-// Логи о каждом событии убраны — чтобы не засорять терминал.
 // ============================================================
 let ordersChannel = null;
 
@@ -376,6 +396,9 @@ function subscribeToOrderChanges() {
       }
     )
     .subscribe((status, err) => {
+      // ⚡ #4: сохраняем статус — polling смотрит на него
+      realtimeStatus = status;
+
       console.log(
         `[sync] Realtime orders status: ${status}`,
         err ? `— ${err.message || err}` : ''
@@ -393,7 +416,7 @@ function subscribeToOrderChanges() {
 }
 
 // ============================================================
-// PULL ЗАКАЗА ИЗ SUPABASE (с защитой от эха)
+// PULL ЗАКАЗА ИЗ SUPABASE
 // ============================================================
 async function pullOrderFromSupabase(orderId) {
   try {
@@ -436,8 +459,6 @@ async function pullOrderFromSupabase(orderId) {
 
 // ============================================================
 // REALTIME — MENU
-//
-// Логи о каждом обновлении меню убраны — чтобы не засорять терминал.
 // ============================================================
 let menuChannel = null;
 
@@ -520,7 +541,6 @@ async function reloadMenu() {
         setExtraGroups: setGroups.data ?? [],
         setExtraOptions: setOpts.data ?? [],
       });
-      // Лог убран намеренно — слишком часто при работе менеджера с меню.
     }
   } catch (e) {
     console.error('[sync] Ошибка перезагрузки меню:', e.message);
@@ -528,13 +548,19 @@ async function reloadMenu() {
 }
 
 // ============================================================
-// POLLING FALLBACK — каждые 5 секунд
+// POLLING FALLBACK
+//
+// ⚡ #4: если Realtime подписка жива — polling НЕ работает.
+// Polling включается только когда Realtime отвалился или в
+// состоянии ошибки. Это экономит ~20% трафика Supabase.
 // ============================================================
 let lastPollTime = null;
 let lastMenuCheck = 0;
 
 export function startPollingFallback() {
-  console.log('[sync] 🔁 Polling fallback запущен (каждые 5 сек)');
+  console.log(
+    '[sync] 🔁 Polling fallback запущен (5 сек, но пропускает при Realtime)'
+  );
 
   const row = db
     .prepare('SELECT MAX(updated_at) as max_time FROM orders')
@@ -542,6 +568,9 @@ export function startPollingFallback() {
   lastPollTime = row?.max_time ?? new Date(0).toISOString();
 
   setInterval(async () => {
+    // Скипаем, если Realtime работает
+    if (realtimeStatus === 'SUBSCRIBED') return;
+
     try {
       const { data: updatedOrders, error } = await supabase
         .from('orders')
@@ -572,7 +601,9 @@ export function startPollingFallback() {
     }
   }, 5000);
 
+  // Меню перезагружаем реже и тоже только если Realtime не работает
   setInterval(async () => {
+    if (realtimeStatus === 'SUBSCRIBED') return;
     const now = Date.now();
     if (now - lastMenuCheck < 30000) return;
     lastMenuCheck = now;
