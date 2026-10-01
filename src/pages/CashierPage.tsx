@@ -15,7 +15,11 @@ import { ProductBuilderDialog } from '@/components/ProductBuilderDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageActions';
 import { Resizer } from '@/components/Resizer';
-import { printCustomerTicket, printKitchenOrder } from '@/services/printer';
+import {
+  printCustomerTicket,
+  printKitchenOrder,
+  printKitchenDelta,
+} from '@/services/printer';
 import { KITCHEN_LIMIT } from '@/services/kitchen';
 import {
   pushUndo,
@@ -33,6 +37,7 @@ import type {
   CartItem,
   CartItemOption,
   Order,
+  OrderItem,
   OrderType,
 } from '@/types/database';
 import {
@@ -50,7 +55,7 @@ import {
 } from 'lucide-react';
 
 // ============================================================
-// Категории (пространства) — dish и set вместе
+// Категории (пространства)
 // ============================================================
 type CategorySpace = 'dishset' | 'drink' | 'sauce' | 'topping';
 
@@ -80,7 +85,6 @@ const GRID_GAP = 12;
 // РАСЧЁТ ВРЕМЕНИ ОЖИДАНИЯ
 // ============================================================
 function getMenuItemCookTime(item: MenuItem): number {
-  // dish-group → берём максимальное время среди вариантов
   if (item.dish_kind === 'group' && item.variants?.length) {
     return Math.max(
       ...item.variants.map((v) =>
@@ -92,37 +96,18 @@ function getMenuItemCookTime(item: MenuItem): number {
 }
 
 function getItemCookTime(item: MenuItem): number {
-  // set → смотрим на его основной продукт (set_main)
   if (item.type === 'set' && item.set_main) {
     return getMenuItemCookTime(item.set_main);
   }
   return getMenuItemCookTime(item);
 }
 
-/**
- * Ориентировочное время готовки заказа в минутах.
- *
- * Логика:
- *   ownTime — максимум cook_time по всем позициям этого заказа
- *             (блюда на кухне готовятся параллельно).
- *             Если в заказе только напитки/соусы/топпинги → 0.
- *
- *   Очередь на кухне — активные заказы (NEW + PREPARING).
- *   Считаем, сколько «партий» (batches) стоит впереди нас.
- *   Каждая партия = KITCHEN_LIMIT заказов.
- *
- *   Батч готовится за среднее время кухонных заказов в очереди
- *   (или fallback = 10 мин). Затем + ownTime.
- *
- *   Если очередь пуста, а ownTime = 0 — вернём 0 (номерок без ETA).
- */
 function estimateWaitMinutes(
   cart: CartItem[],
   menuItems: MenuItem[],
   activeOrders: Order[],
   kitchenLimit: number = KITCHEN_LIMIT
 ): number {
-  // 1) собственное время готовки
   let ownTime = 0;
   for (const c of cart) {
     if (c.is_removed) continue;
@@ -132,16 +117,12 @@ function estimateWaitMinutes(
     if (t > ownTime) ownTime = t;
   }
 
-  // 2) активные кухонные заказы впереди нас
   const activeKitchen = activeOrders.filter(
     (o) => o.status === 'NEW' || o.status === 'PREPARING'
   );
 
-  if (activeKitchen.length === 0) {
-    return ownTime;
-  }
+  if (activeKitchen.length === 0) return ownTime;
 
-  // 3) среднее время готовки по активным заказам
   let sumCook = 0;
   let counted = 0;
   for (const o of activeKitchen) {
@@ -159,15 +140,13 @@ function estimateWaitMinutes(
     }
   }
   const avgBatch = counted > 0 ? Math.round(sumCook / counted) : 10;
-
-  // 4) сколько полных партий впереди нашей
-  //    (наш заказ станет позицией activeKitchen.length + 1)
   const batchesAhead = Math.floor(activeKitchen.length / kitchenLimit);
-
-  // 5) итог: партии впереди * среднее_время_партии + ownTime
   return batchesAhead * avgBatch + ownTime;
 }
 
+// ============================================================
+// CASHIER PAGE
+// ============================================================
 export default function CashierPage() {
   const { t, lang } = useI18n();
 
@@ -195,6 +174,9 @@ export default function CashierPage() {
   const [layout, setLayout] = useLayoutSettings();
   const drinksWrapRef = useRef<HTMLDivElement>(null);
 
+  // ============================================================
+  // ПОДПИСКИ
+  // ============================================================
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
       setActiveOrders(snap.orders);
@@ -246,6 +228,9 @@ export default function CashierPage() {
     else action();
   };
 
+  // ============================================================
+  // ДОБАВЛЕНИЕ В КОРЗИНУ
+  // ============================================================
   const addToCart = (item: MenuItem) => {
     setCart((prev) => {
       const existing = prev.find(
@@ -273,6 +258,7 @@ export default function CashierPage() {
           options: [],
           is_removed: false,
           is_added_later: Boolean(editingOrder),
+          original_quantity: undefined,
         },
       ];
     });
@@ -298,6 +284,7 @@ export default function CashierPage() {
         options,
         is_removed: false,
         is_added_later: Boolean(editingOrder),
+        original_quantity: undefined,
       },
     ]);
   };
@@ -332,10 +319,15 @@ export default function CashierPage() {
     setBuilder({ item: setItem, variantId: variant.id });
   };
 
+  // ============================================================
+  // ИЗМЕНЕНИЕ КОЛИЧЕСТВА / УДАЛЕНИЕ
+  // ============================================================
   const incrementItem = (cartId: string) => {
     setCart((prev) =>
       prev.map((c) =>
-        c.id === cartId ? { ...c, quantity: c.quantity + 1 } : c
+        c.id === cartId
+          ? { ...c, quantity: c.quantity + 1, is_removed: false }
+          : c
       )
     );
   };
@@ -343,8 +335,21 @@ export default function CashierPage() {
   const decrementItem = (cartId: string) => {
     setCart((prev) =>
       prev
-        .map((c) => (c.id === cartId ? { ...c, quantity: c.quantity - 1 } : c))
-        .filter((c) => c.quantity > 0)
+        .map((c) => {
+          if (c.id !== cartId) return c;
+
+          // Позиция из оригинального заказа и дошли до нуля —
+          // помечаем как удалённую, оставляя в корзине
+          if (c.quantity <= 1) {
+            if (editingOrder && c.db_id) {
+              return { ...c, is_removed: true, quantity: 1 };
+            }
+            return { ...c, quantity: 0 };
+          }
+
+          return { ...c, quantity: c.quantity - 1 };
+        })
+        .filter((c) => c.quantity > 0 || c.is_removed)
     );
   };
 
@@ -352,15 +357,20 @@ export default function CashierPage() {
     setCart((prev) => {
       const item = prev.find((c) => c.id === cartId);
       if (!item) return prev;
-      if (editingOrder && !item.is_added_later) {
+      if (editingOrder && !item.is_added_later && item.db_id) {
         return prev.map((c) =>
-          c.id === cartId ? { ...c, is_removed: !c.is_removed } : c
+          c.id === cartId
+            ? { ...c, is_removed: !c.is_removed, quantity: 1 }
+            : c
         );
       }
       return prev.filter((c) => c.id !== cartId);
     });
   };
 
+  // ============================================================
+  // СОЗДАНИЕ ЗАКАЗА
+  // ============================================================
   const handleSendToKitchen = async () => {
     if (!hasActiveItems) return;
     setSending(true);
@@ -430,29 +440,32 @@ export default function CashierPage() {
           })),
       };
 
-      // ETA учитывает очередь на кухне: свой заказ + активные заказы
       const estimatedMinutes = estimateWaitMinutes(
         cart,
         menuItems,
         activeOrders
       );
 
-      // Сначала кухня — повара должны увидеть заказ.
-      // Затем клиентский номерок с ETA.
-      Promise.all([
-        printKitchenOrder(ticketOrder),
-        printCustomerTicket(ticketOrder, estimatedMinutes),
-      ]).then(([kitchenRes, customerRes]) => {
-        if (!kitchenRes.success) {
-          setPrintError(
-            kitchenRes.error ?? t('printerError')
-          );
-        } else if (!customerRes.success) {
-          setPrintError(
-            customerRes.error ?? t('printerError')
-          );
-        }
-      });
+      printKitchenOrder(ticketOrder)
+        .then((res) => {
+          if (!res.success && !res.skipped) {
+            setPrintError(res.error ?? t('printerError'));
+          }
+        })
+        .catch((e) => {
+          console.error('[cashier] kitchen print error:', e);
+          setPrintError(e instanceof Error ? e.message : t('printerError'));
+        });
+
+      printCustomerTicket(ticketOrder, estimatedMinutes)
+        .then((res) => {
+          if (!res.success && !res.skipped) {
+            setPrintError(res.error ?? t('printerError'));
+          }
+        })
+        .catch((e) => {
+          console.error('[cashier] customer print error:', e);
+        });
 
       setCart([]);
       setComment('');
@@ -464,38 +477,102 @@ export default function CashierPage() {
     }
   };
 
+  // ============================================================
+  // РЕДАКТИРОВАНИЕ ЗАКАЗА → DELTA-ЧЕК НА КУХНЮ
+  // ============================================================
   const handleSaveChanges = async () => {
     if (!editingOrder || !hasActiveItems) return;
     setSending(true);
     setError(null);
     setPrintError(null);
+
+    // Снимок для undo
+    const undoSnapshot = {
+      order_type: editingOrder.order_type,
+      total_amount: editingOrder.total_amount,
+      comment: editingOrder.comment ?? '',
+      order_items: (editingOrder.order_items ?? []).map((i) => ({
+        menu_item_id: i.menu_item_id,
+        name: i.name,
+        short_name: i.short_name,
+        variant: i.variant,
+        price: i.price,
+        quantity: i.quantity,
+        subtotal: i.subtotal,
+        is_removed: i.is_removed ?? false,
+        is_added_later: i.is_added_later ?? false,
+        options: (i.options ?? []).map((o) => ({
+          type: o.type,
+          name: o.name,
+          price: o.price,
+          quantity: o.quantity,
+        })),
+      })),
+    };
+
+    // ---- Собираем delta-чек ----
+    // Изменение комментария → помечаем первую активную позицию как "добавленную"
+    const commentChanged =
+      (editingOrder.comment ?? '') !== (comment ?? '');
+    let commentHandled = false;
+
+    const deltaItems: OrderItem[] = cart.map((c) => {
+      const qtyChanged =
+        !!c.db_id &&
+        c.original_quantity != null &&
+        c.quantity !== c.original_quantity &&
+        !c.is_removed;
+
+      const commentFlag =
+        commentChanged && !commentHandled && !c.is_removed && !!c.db_id;
+      if (commentFlag) commentHandled = true;
+
+      return {
+        id: c.db_id ?? 'temp',
+        order_id: editingOrder.id,
+        menu_item_id: c.menu_item_id,
+        name: c.name,
+        short_name: c.short_name,
+        variant: c.variant,
+        price: c.price,
+        quantity: c.quantity,
+        subtotal: c.is_removed
+          ? 0
+          : c.price * c.quantity +
+            c.options.reduce((s, o) => s + o.price * o.quantity, 0) *
+              c.quantity,
+        created_at: new Date().toISOString(),
+        is_removed: c.is_removed ?? false,
+        is_added_later:
+          (c.is_added_later || qtyChanged || commentFlag) ?? false,
+        options: c.options.map((o) => ({
+          id: 'temp',
+          order_item_id: 'temp',
+          type: o.type,
+          name: o.name,
+          price: o.price,
+          quantity: o.quantity,
+        })),
+      };
+    });
+
+    // Диагностика — видно в F12
+    console.log(
+      '[cashier] delta items:',
+      deltaItems.map((i) => ({
+        name: i.name,
+        qty: i.quantity,
+        is_removed: i.is_removed,
+        is_added_later: i.is_added_later,
+      }))
+    );
+
     try {
       pushUndo('cashier', {
         kind: 'edit',
         orderId: editingOrder.id,
         orderNumber: editingOrder.order_number,
-        snapshot: {
-          order_type: editingOrder.order_type,
-          total_amount: editingOrder.total_amount,
-          comment: editingOrder.comment ?? '',
-          order_items: (editingOrder.order_items ?? []).map((i) => ({
-            menu_item_id: i.menu_item_id,
-            name: i.name,
-            short_name: i.short_name,
-            variant: i.variant,
-            price: i.price,
-            quantity: i.quantity,
-            subtotal: i.subtotal,
-            is_removed: i.is_removed ?? false,
-            is_added_later: i.is_added_later ?? false,
-            options: (i.options ?? []).map((o) => ({
-              type: o.type,
-              name: o.name,
-              price: o.price,
-              quantity: o.quantity,
-            })),
-          })),
-        },
+        snapshot: undoSnapshot,
         timestamp: Date.now(),
       });
 
@@ -527,6 +604,30 @@ export default function CashierPage() {
         })),
       });
 
+      // ---- DELTA-ЧЕК НА КУХНЮ (не блокирует UI) ----
+      const deltaOrder: Order = {
+        ...editingOrder,
+        comment,
+        order_items: deltaItems,
+      };
+
+      printKitchenDelta(deltaOrder)
+        .then((res) => {
+          console.log('[cashier] delta result:', res);
+          if (!res.success && !res.skipped) {
+            setPrintError(res.error ?? t('printerError'));
+          } else if (res.skipped) {
+            console.log(
+              '[cashier] delta skipped:',
+              res.note ?? 'no-changes'
+            );
+          }
+        })
+        .catch((e) => {
+          console.error('[cashier] delta print exception:', e);
+          setPrintError(e instanceof Error ? e.message : t('printerError'));
+        });
+
       setCart([]);
       setComment('');
       setEditingOrder(null);
@@ -537,6 +638,9 @@ export default function CashierPage() {
     }
   };
 
+  // ============================================================
+  // РЕЖИМ РЕДАКТИРОВАНИЯ
+  // ============================================================
   const actuallyEditOrder = (order: Order) => {
     const restored: CartItem[] = (order.order_items ?? []).map((item) => {
       cartIdCounter.current += 1;
@@ -557,6 +661,7 @@ export default function CashierPage() {
         is_removed: item.is_removed ?? false,
         is_added_later: item.is_added_later ?? false,
         db_id: item.id,
+        original_quantity: item.quantity,
       };
     });
     setCart(restored);
@@ -589,6 +694,9 @@ export default function CashierPage() {
     setEditingOrder(null);
   };
 
+  // ============================================================
+  // UNDO
+  // ============================================================
   const askUndo = () => {
     const last = undoStack[undoStack.length - 1];
     if (!last) return;
@@ -617,7 +725,9 @@ export default function CashierPage() {
     }
   };
 
-  // ---------- Resize ----------
+  // ============================================================
+  // RESIZE
+  // ============================================================
   const startLayoutRef = useRef<typeof layout | null>(null);
 
   const beginResize = () => {
@@ -694,7 +804,7 @@ export default function CashierPage() {
   };
 
   // ============================================================
-  // GRID RENDER — без пустых ячеек, только карточки
+  // GRID RENDER
   // ============================================================
   const renderGrid = (
     space: CategorySpace,
@@ -765,6 +875,9 @@ export default function CashierPage() {
   const hasDrink = getSpaceItems(tops, 'drink').length > 0;
   const hasSauce = getSpaceItems(tops, 'sauce').length > 0;
 
+  // ============================================================
+  // RENDER
+  // ============================================================
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
       <div className="flex items-center gap-3 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
@@ -1069,15 +1182,23 @@ export default function CashierPage() {
             {cart.map((item) => {
               const removed = item.is_removed ?? false;
               const isNew = item.is_added_later ?? false;
+              const qtyChanged =
+                editingOrder &&
+                item.db_id &&
+                item.original_quantity != null &&
+                item.quantity !== item.original_quantity &&
+                !removed;
+
               const cardClass = removed
                 ? 'bg-red-50 border-red-300 opacity-70'
-                : isNew
+                : isNew || qtyChanged
                 ? 'bg-orange-50 border-orange-400 ring-1 ring-orange-300'
                 : 'bg-white border-gray-200';
               const lineTotal =
                 item.price * item.quantity +
                 item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
                   item.quantity;
+
               return (
                 <div
                   key={item.id}
@@ -1113,6 +1234,7 @@ export default function CashierPage() {
                       )}
                     </button>
                   </div>
+
                   {item.options.length > 0 && !removed && (
                     <div className="mb-1.5 space-y-0.5">
                       {item.options.map((opt, i) => (
@@ -1126,6 +1248,7 @@ export default function CashierPage() {
                       ))}
                     </div>
                   )}
+
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1">
                       <button
@@ -1136,7 +1259,7 @@ export default function CashierPage() {
                         <Minus className="w-3.5 h-3.5" />
                       </button>
                       <span className="text-sm font-bold w-6 text-center">
-                        {item.quantity}
+                        {removed ? 0 : item.quantity}
                       </span>
                       <button
                         onClick={() => incrementItem(item.id)}
@@ -1156,6 +1279,12 @@ export default function CashierPage() {
                       {removed ? formatYen(0) : formatYen(lineTotal)}
                     </span>
                   </div>
+
+                  {qtyChanged && (
+                    <div className="mt-1 text-[10px] text-orange-700 font-bold">
+                      Было: {item.original_quantity} → {item.quantity}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1174,10 +1303,10 @@ export default function CashierPage() {
           <div className="p-2 border-t border-gray-200 space-y-2 bg-white shrink-0">
             {printError && (
               <div className="p-2 bg-red-50 border border-red-300 rounded-lg text-red-700 text-[11px] flex items-center justify-between">
-                <span>{t('printerError')}</span>
+                <span className="truncate">{t('printerError')}</span>
                 <button
                   onClick={() => setPrintError(null)}
-                  className="text-red-600 font-bold underline"
+                  className="text-red-600 font-bold underline ml-2 shrink-0"
                 >
                   {t('retryPrint')}
                 </button>
@@ -1288,8 +1417,7 @@ export default function CashierPage() {
 }
 
 // ============================================================
-// PRODUCT CARD — визуал 1:1 с MenuProduct,
-// но БЕЗ drag, без стрелок, только клик
+// PRODUCT CARD
 // ============================================================
 const ProductCard = memo(function ProductCard({
   item,
