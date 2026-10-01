@@ -1,13 +1,14 @@
 import { randomUUID } from 'crypto';
 import db from './db.js';
 import { EventEmitter } from 'events';
+import { getHostUuid } from './host.js';
 
 // ============================================================
 // Значения по умолчанию для слота принтера
 // ============================================================
 const DEFAULT_SLOT = {
   enabled: false,
-  source: 'network', // 'network' | 'usb' | 'windows'
+  source: 'network',
   name: '',
   ip: '',
   port: 9100,
@@ -35,6 +36,34 @@ function normalizeSlot(raw) {
   return s;
 }
 
+// ============================================================
+// Парсинг options для свойства: приоритет options → options_json
+// ============================================================
+function parsePropertyOptions(p) {
+  const tryParse = (raw) => {
+    if (!raw) return null;
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  // 1) options (новая колонка)
+  const fromOptions = tryParse(p.options);
+  if (fromOptions && fromOptions.length > 0) return fromOptions;
+
+  // 2) options_json (старая колонка)
+  const fromJson = tryParse(p.options_json);
+  if (fromJson && fromJson.length > 0) return fromJson;
+
+  return [];
+}
+
 class Store extends EventEmitter {
   constructor() {
     super();
@@ -59,7 +88,9 @@ class Store extends EventEmitter {
   getAllOrders() {
     const orders = db
       .prepare(
-        `SELECT * FROM orders
+        `SELECT id, order_number, host_uuid, order_type, status,
+                total_amount, comment, created_at, updated_at, completed_at
+         FROM orders
          WHERE status IN ('NEW', 'PREPARING', 'READY')
          ORDER BY created_at ASC`
       )
@@ -67,7 +98,7 @@ class Store extends EventEmitter {
 
     return orders.map((o) => ({
       ...o,
-      synced: Boolean(o.synced),
+      synced: false,
       order_items: this.getOrderItems(o.id),
     }));
   }
@@ -107,18 +138,20 @@ class Store extends EventEmitter {
   createOrder = (order) => {
     const id = order.id || randomUUID();
     const number = order.order_number ?? this.nextOrderNumber++;
+    const hostUuid = getHostUuid();
     const now = new Date().toISOString();
 
     db.exec('BEGIN');
     try {
       db.prepare(
         `INSERT INTO orders
-         (id, order_number, order_type, status, total_amount, comment,
+         (id, order_number, host_uuid, order_type, status, total_amount, comment,
           created_at, updated_at, synced)
-         VALUES (?, ?, ?, 'NEW', ?, ?, ?, ?, 0)`
+         VALUES (?, ?, ?, ?, 'NEW', ?, ?, ?, ?, 0)`
       ).run(
         id,
         number,
+        hostUuid,
         order.order_type,
         order.total_amount ?? 0,
         order.comment ?? '',
@@ -296,12 +329,13 @@ class Store extends EventEmitter {
     try {
       db.prepare(
         `INSERT OR REPLACE INTO orders
-         (id, order_number, order_type, status, total_amount, comment,
+         (id, order_number, host_uuid, order_type, status, total_amount, comment,
           created_at, updated_at, completed_at, synced, sync_error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL)`
       ).run(
         orderData.id,
         orderData.order_number,
+        orderData.host_uuid ?? null,
         orderData.order_type,
         orderData.status,
         orderData.total_amount,
@@ -368,7 +402,12 @@ class Store extends EventEmitter {
       return;
     }
 
-    if (orderData.order_number >= this.nextOrderNumber) {
+    const myUuid = getHostUuid();
+    if (
+      myUuid &&
+      orderData.host_uuid === myUuid &&
+      orderData.order_number >= this.nextOrderNumber
+    ) {
       this.nextOrderNumber = orderData.order_number + 1;
     }
 
@@ -400,7 +439,15 @@ class Store extends EventEmitter {
     );
   }
 
-  getMaxOrderNumber() {
+  getMaxOrderNumber(hostUuid = null) {
+    if (hostUuid) {
+      const row = db
+        .prepare(
+          'SELECT MAX(order_number) as max_num FROM orders WHERE host_uuid = ?'
+        )
+        .get(hostUuid);
+      return row?.max_num ?? 0;
+    }
     const row = db
       .prepare('SELECT MAX(order_number) as max_num FROM orders')
       .get();
@@ -434,6 +481,7 @@ class Store extends EventEmitter {
     const itemsById = new Map();
     for (const it of rawItems) itemsById.set(it.id, it);
 
+    // ---- Свойства: парсим options (jsonb) с fallback на options_json ----
     const propsByItem = new Map();
     for (const p of rawProps) {
       const arr = propsByItem.get(p.item_id) ?? [];
@@ -441,6 +489,8 @@ class Store extends EventEmitter {
         id: p.id,
         item_id: p.item_id,
         name: p.name,
+        options: parsePropertyOptions(p),
+        required: Boolean(p.required),
         sort_order: p.sort_order,
       });
       propsByItem.set(p.item_id, arr);
@@ -620,12 +670,36 @@ class Store extends EventEmitter {
         );
       }
 
+      // ---------- Свойства: пишем И в options_json, И в options ----------
       const insProp = db.prepare(
-        `INSERT INTO menu_item_properties (id, item_id, name, sort_order)
-         VALUES (?, ?, ?, ?)`
+        `INSERT INTO menu_item_properties
+           (id, item_id, name, options_json, options, required, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
       for (const p of properties) {
-        insProp.run(p.id, p.item_id, p.name, p.sort_order ?? 0);
+        // Supabase может прислать options как массив (jsonb) или как строку.
+        let opts = [];
+        if (Array.isArray(p.options)) {
+          opts = p.options;
+        } else if (typeof p.options === 'string') {
+          try {
+            const parsed = JSON.parse(p.options);
+            if (Array.isArray(parsed)) opts = parsed;
+          } catch {
+            opts = [];
+          }
+        }
+        const optsJson = JSON.stringify(opts);
+
+        insProp.run(
+          p.id,
+          p.item_id,
+          p.name,
+          optsJson,
+          optsJson,
+          p.required ? 1 : 0,
+          p.sort_order ?? 0
+        );
       }
 
       const insSauce = db.prepare(

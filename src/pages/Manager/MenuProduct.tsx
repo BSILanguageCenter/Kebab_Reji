@@ -23,6 +23,7 @@ import { useI18n, type TranslationKey } from '@/locale';
 import { Resizer } from '@/components/Resizer';
 import { PanelSettings } from '@/components/PanelSettings';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { ImageCropDialog } from '@/components/ImageCropDialog';
 import {
   useLayoutSettings,
   clampLayout,
@@ -49,6 +50,7 @@ import {
   LayoutGrid,
   ChevronLeft,
   ChevronRight,
+  ImageIcon,
 } from 'lucide-react';
 
 // ============================================================
@@ -100,7 +102,6 @@ function hasSortConflicts(tops: MenuItem[]): boolean {
   return false;
 }
 
-// ---------- Сброс: dish single → dish group → set ----------
 function buildCategorizedOrder(
   tops: MenuItem[],
   colsBySpace: Partial<Record<CategorySpace, number>> = {}
@@ -121,7 +122,7 @@ function buildCategorizedOrder(
 
   const sortKeyOf = (it: MenuItem): number => {
     if (it.type === 'dish') return it.dish_kind === 'group' ? 1 : 0;
-    return 2; // set
+    return 2;
   };
 
   const dsItems = tops
@@ -165,7 +166,6 @@ function isRangeFree(
   return true;
 }
 
-// ---------- Проверка диапазона с исключением НЕСКОЛЬКИХ id (нужно для обмена местами) ----------
 function isRangeFreeMulti(
   spaceItems: MenuItem[],
   start: number,
@@ -184,7 +184,6 @@ function isRangeFreeMulti(
   return true;
 }
 
-// ---------- Влезает ли карточка в строку ----------
 function fitsInRow(start: number, width: number, cols: number): boolean {
   if (start < 0) return false;
   if (width >= cols) return start % cols === 0;
@@ -204,10 +203,6 @@ function isPlaceable(
   );
 }
 
-// ---------- Безопасная временная позиция для обмена местами ----------
-// Нужна, чтобы при свапе A<->B никогда не возникало двух карточек с
-// одинаковым sort_order одновременно (это может быть отклонено бэкендом,
-// если там есть уникальный индекс на sort_order в пределах пространства).
 function getSafeTempSlot(spaceItems: MenuItem[]): number {
   let maxEnd = 0;
   for (const it of spaceItems) {
@@ -216,7 +211,6 @@ function getSafeTempSlot(spaceItems: MenuItem[]): number {
   return maxEnd + 100000;
 }
 
-// ---------- Ближайшее свободное место (как на рабочем столе) ----------
 function findNearestFreeSlot(
   spaceItems: MenuItem[],
   target: number,
@@ -263,10 +257,7 @@ function useGridCols(
     const update = () => {
       const w = el.clientWidth;
       if (w <= 0) return;
-      const c = Math.max(
-        1,
-        Math.floor((w + GRID_GAP) / (size + GRID_GAP))
-      );
+      const c = Math.max(1, Math.floor((w + GRID_GAP) / (size + GRID_GAP)));
       setCols((prev) => (prev === c ? prev : c));
     };
     update();
@@ -289,15 +280,6 @@ type LayoutCell = {
   item: MenuItem | null;
 };
 
-// ============================================================
-// buildRenderLayout — slot = row * cols + col
-//
-// ВАЖНО: занятость ячеек считается по РЕАЛЬНО отрисованным
-// row/col карточки (с учётом переноса, если она не влезала в
-// строку по краю), а не по сырому диапазону sort_order..sort_order+w-1.
-// Раньше это приводило к тому, что первая ячейка следующей строки
-// иногда ошибочно помечалась занятой и "пропадала" из раскладки.
-// ============================================================
 function buildRenderLayout(
   items: MenuItem[],
   cols: number,
@@ -313,9 +295,8 @@ function buildRenderLayout(
 
     const row = Math.floor(it.sort_order / cols);
     let col = it.sort_order % cols;
-    if (col + span > cols) col = cols - span; // защита от старых/несовпадающих данных
+    if (col + span > cols) col = cols - span;
 
-    // помечаем занятыми РЕАЛЬНО отрисованные ячейки
     for (let k = 0; k < span; k++) {
       occupied.add(row * cols + (col + k));
     }
@@ -637,19 +618,56 @@ export function MenuProduct() {
     }
   };
 
-  const allTops = useMemo(
-    () => items.filter((i) => !i.parent_id),
-    [items]
-  );
+  const allTops = useMemo(() => items.filter((i) => !i.parent_id), [items]);
 
   // ============================================================
-  // DROP — как на рабочем столе Windows, плюс ОБМЕН МЕСТАМИ:
-  //   свободная ячейка → карточка встаёт ровно туда;
-  //   занятая карточкой → они меняются местами;
-  //   обмен невозможен (разная ширина не влезает на новом месте) →
-  //     перетаскиваемая карточка уходит в ближайшее свободное место,
-  //     а та, на которую бросили, остаётся на месте.
+  // История свойств — уникальные свойства по имени из всех товаров.
+  // Если одинаковое имя встречается у нескольких товаров — берём то,
+  // где больше вариантов (и/или где required=true).
   // ============================================================
+  const propertyHistory = useMemo<HydratedProperty[]>(() => {
+    const byName = new Map<string, HydratedProperty>();
+
+    for (const top of items) {
+      const variants = top.variants ?? [];
+      const sources: HydratedProperty[][] = [
+        top.properties ?? [],
+        ...variants.map((v) => v.properties ?? []),
+      ];
+      for (const list of sources) {
+        for (const p of list) {
+          const name = p.name.trim();
+          if (!name) continue;
+          const key = name.toLowerCase();
+          const prev = byName.get(key);
+          if (!prev) {
+            byName.set(key, {
+              ...p,
+              id: '',
+              item_id: '',
+            });
+            continue;
+          }
+          const prevScore =
+            prev.options.length * 10 + (prev.required ? 5 : 0);
+          const nextScore =
+            p.options.length * 10 + (p.required ? 5 : 0);
+          if (nextScore > prevScore) {
+            byName.set(key, {
+              ...p,
+              id: '',
+              item_id: '',
+            });
+          }
+        }
+      }
+    }
+
+    return [...byName.values()].sort((a, b) =>
+      a.name.localeCompare(b.name, 'ru')
+    );
+  }, [items]);
+
   const handleSlotDrop = useCallback(
     async (space: CategorySpace, targetSlot: number, cols: number) => {
       const fromId = draggedId;
@@ -668,7 +686,6 @@ export function MenuProduct() {
         (i) => i.sort_order === targetSlot && i.id !== fromItem.id
       );
 
-      // ---------- Бросок на занятую ячейку — ОБМЕН МЕСТАМИ ----------
       if (targetCard) {
         if (targetCard.sort_order === fromItem.sort_order) return;
 
@@ -685,9 +702,6 @@ export function MenuProduct() {
           isRangeFreeMulti(spaceItems, newTargetStart, wB, excludeIds);
 
         if (fromFits && targetFits) {
-          // Мгновенно показываем финальный результат обмена — без
-          // промежуточного "прыжка" на временную позицию, чтобы не
-          // подвисал UI на время сетевых запросов.
           setItems((prev) =>
             prev.map((it) => {
               if (it.id === fromItem.id) {
@@ -700,9 +714,6 @@ export function MenuProduct() {
             })
           );
 
-          // На бэкенд шлём через временный слот в фоне, последовательно,
-          // чтобы не столкнуться с уникальным индексом на sort_order —
-          // но локальный UI уже обновлён и не ждёт эти запросы.
           const tempSlot = getSafeTempSlot(spaceItems);
           (async () => {
             try {
@@ -714,18 +725,13 @@ export function MenuProduct() {
                 { id: fromItem.id, sort_order: newFromStart },
               ]);
             } catch (err) {
-              setError(
-                err instanceof Error ? err.message : 'reorder failed'
-              );
+              setError(err instanceof Error ? err.message : 'reorder failed');
               loadData();
             }
           })();
           return;
         }
 
-        // Обмен не влезает (например, группа другой ширины упирается
-        // в край строки) — перетаскиваемую карточку ставим в ближайшее
-        // свободное место, целевую не трогаем.
         const dest = findNearestFreeSlot(
           spaceItems,
           targetSlot,
@@ -738,7 +744,6 @@ export function MenuProduct() {
         return;
       }
 
-      // ---------- Бросок в свободную ячейку ----------
       let dest = targetSlot;
       if (!isPlaceable(spaceItems, dest, w, fromItem.id, cols)) {
         dest = findNearestFreeSlot(
@@ -758,9 +763,6 @@ export function MenuProduct() {
     [draggedId, items, allTops]
   );
 
-  // ============================================================
-  // КНОПКИ ◀ ▶ — сдвиг на ±1 ячейку
-  // ============================================================
   const canMoveItem = useCallback(
     (item: MenuItem, direction: -1 | 1, cols: number): boolean => {
       if (item.parent_id) return false;
@@ -787,9 +789,6 @@ export function MenuProduct() {
     [canMoveItem]
   );
 
-  // ============================================================
-  // СБРОС
-  // ============================================================
   const handleResetOrder = async () => {
     const updates = buildCategorizedOrder(allTops, colsRef.current);
     if (updates.length === 0) return;
@@ -821,9 +820,6 @@ export function MenuProduct() {
       .map((i) => ({ item: i, kind: 'set' as const })),
   ];
 
-  // ============================================================
-  // RESIZE HANDLERS
-  // ============================================================
   const startLayoutRef = useRef<typeof layout | null>(null);
 
   const beginResize = () => {
@@ -1168,6 +1164,7 @@ export function MenuProduct() {
           type={formType}
           item={editingItem}
           allItems={items}
+          propertyHistory={propertyHistory}
           onClose={() => {
             setFormType(null);
             setEditingItem(null);
@@ -1314,6 +1311,7 @@ const DraggableCard = memo(function DraggableCard({
   );
 
   if (!isGroup) {
+    const hasImage = Boolean(item.image_url);
     return (
       <div className="relative group" style={{ width: size }}>
         <div
@@ -1325,20 +1323,21 @@ const DraggableCard = memo(function DraggableCard({
           className="flex flex-col items-center select-none cursor-grab active:cursor-grabbing"
         >
           <div
-            className="relative rounded-xl overflow-hidden bg-gradient-to-br from-orange-500 to-red-500 border-2 border-gray-300 hover:border-orange-400 transition-all"
+            className={`relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 transition-all ${
+              hasImage
+                ? 'bg-white'
+                : 'bg-gradient-to-br from-orange-500 to-red-500'
+            }`}
             style={{ width: size, height: size }}
           >
-            {item.image_url ? (
-              <>
-                <img
-                  src={item.image_url}
-                  alt={item.name}
-                  className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                  loading="lazy"
-                  draggable={false}
-                />
-                <div className="absolute inset-0 bg-black/40" />
-              </>
+            {hasImage ? (
+              <img
+                src={item.image_url ?? ''}
+                alt={item.name}
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                loading="lazy"
+                draggable={false}
+              />
             ) : null}
             {!item.active && (
               <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
@@ -1350,7 +1349,7 @@ const DraggableCard = memo(function DraggableCard({
                 </span>
               </div>
             )}
-            {item.type === 'sauce' && item.color && (
+            {item.type === 'sauce' && item.color && !hasImage && (
               <div
                 className="absolute inset-0"
                 style={{ backgroundColor: item.color, opacity: 0.3 }}
@@ -1413,48 +1412,53 @@ const DraggableCard = memo(function DraggableCard({
         </button>
 
         <div className="flex items-stretch" style={{ gap: GRID_GAP }}>
-          {variants!.map((v) => (
-            <div
-              key={v.id}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (onVariantClick) onVariantClick(v);
-                else onEdit(v);
-              }}
-              style={{ width: size, flex: '0 0 auto' }}
-              className="flex flex-col items-center cursor-pointer active:scale-95 transition-transform"
-            >
+          {variants!.map((v) => {
+            const hasImage = Boolean(v.image_url);
+            const src = v.image_url || '';
+            return (
               <div
-                className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 bg-gradient-to-br from-orange-500 to-red-500 transition-all"
-                style={{ width: size, height: size }}
+                key={v.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onVariantClick) onVariantClick(v);
+                  else onEdit(v);
+                }}
+                style={{ width: size, flex: '0 0 auto' }}
+                className="flex flex-col items-center cursor-pointer active:scale-95 transition-transform"
               >
-                {(v.image_url || item.image_url) && (
-                  <>
+                <div
+                  className={`relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 transition-all ${
+                    hasImage
+                      ? 'bg-white'
+                      : 'bg-gradient-to-br from-orange-500 to-red-500'
+                  }`}
+                  style={{ width: size, height: size }}
+                >
+                  {hasImage && (
                     <img
-                      src={v.image_url || item.image_url || ''}
+                      src={src}
                       alt={v.name}
                       className="absolute inset-0 w-full h-full object-cover pointer-events-none"
                       loading="lazy"
                       draggable={false}
                     />
-                    <div className="absolute inset-0 bg-black/40" />
-                  </>
-                )}
+                  )}
+                </div>
+                <div
+                  className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+                  style={{ fontSize: nameSize }}
+                >
+                  {v.name}
+                </div>
+                <div
+                  className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+                  style={{ fontSize: priceSize }}
+                >
+                  {v.free ? '' : formatYen(v.price)}
+                </div>
               </div>
-              <div
-                className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
-                style={{ fontSize: nameSize }}
-              >
-                {v.name}
-              </div>
-              <div
-                className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
-                style={{ fontSize: priceSize }}
-              >
-                {v.free ? '' : formatYen(v.price)}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
       {leftBtn}
@@ -1575,6 +1579,7 @@ function ItemFormModal({
   type,
   item,
   allItems,
+  propertyHistory,
   onClose,
   onSaved,
   onDelete,
@@ -1582,6 +1587,7 @@ function ItemFormModal({
   type: MenuItemType;
   item: MenuItem | null;
   allItems: MenuItem[];
+  propertyHistory: HydratedProperty[];
   onClose: () => void;
   onSaved: () => void;
   onDelete?: () => void;
@@ -1645,7 +1651,11 @@ function ItemFormModal({
     > = {};
     if (item?.set_main?.variants) {
       for (const v of item.set_main.variants) {
-        out[v.id] = { price_override: v.price, image_override: null };
+        const hasOwnImage = Boolean(v.image_url);
+        out[v.id] = {
+          price_override: v.price,
+          image_override: hasOwnImage ? v.image_url ?? null : null,
+        };
       }
     }
     return out;
@@ -1675,6 +1685,78 @@ function ItemFormModal({
     | null
   >(null);
 
+  // ============================================================
+  // КРОП + СЧЁТЧИК АКТИВНЫХ ОПЕРАЦИЙ С ФОТО
+  // ============================================================
+  const [cropState, setCropState] = useState<{
+    file: File;
+    onDone: (url: string) => void;
+  } | null>(null);
+
+  const pendingOpsRef = useRef(0);
+  const waitersRef = useRef<Array<() => void>>([]);
+  const [pendingOpsCount, setPendingOpsCount] = useState(0);
+
+  const incPending = () => {
+    pendingOpsRef.current += 1;
+    setPendingOpsCount(pendingOpsRef.current);
+  };
+
+  const decPending = () => {
+    pendingOpsRef.current = Math.max(0, pendingOpsRef.current - 1);
+    setPendingOpsCount(pendingOpsRef.current);
+    if (pendingOpsRef.current === 0) {
+      const waiters = waitersRef.current;
+      waitersRef.current = [];
+      waiters.forEach((w) => {
+        try {
+          w();
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+  };
+
+  const waitForPending = () =>
+    new Promise<void>((resolve) => {
+      if (pendingOpsRef.current === 0) {
+        resolve();
+        return;
+      }
+      waitersRef.current.push(resolve);
+    });
+
+  const requestCrop = (file: File, onDone: (url: string) => void) => {
+    if (saving) return;
+    incPending();
+    setCropState({ file, onDone });
+  };
+
+  const cancelCrop = () => {
+    if (!cropState) return;
+    setCropState(null);
+    decPending();
+  };
+
+  const handleCropConfirm = async (croppedFile: File) => {
+    if (!cropState) return;
+    const { onDone } = cropState;
+    setCropState(null);
+    setUploading(true);
+    setError(null);
+    try {
+      const tempId = item?.id ?? crypto.randomUUID();
+      const url = await uploadItemImage(croppedFile, tempId);
+      if (url) onDone(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('failedToUploadImage'));
+    } finally {
+      setUploading(false);
+      decPending();
+    }
+  };
+
   const allSauces = allItems.filter((i) => i.type === 'sauce' && i.active);
   const allDishes = allItems.filter(
     (i) => i.type === 'dish' && !i.parent_id && i.active
@@ -1686,20 +1768,6 @@ function ItemFormModal({
       (i.type === 'drink' || i.type === 'topping' || i.type === 'dish')
   );
 
-  const handleUpload = async (file: File) => {
-    setUploading(true);
-    setError(null);
-    try {
-      const tempId = item?.id ?? crypto.randomUUID();
-      const url = await uploadItemImage(file, tempId);
-      if (url) setImageUrl(url);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t('failedToUploadImage'));
-    } finally {
-      setUploading(false);
-    }
-  };
-
   const addProperty = () => {
     setProperties((p) => [
       ...p,
@@ -1707,12 +1775,16 @@ function ItemFormModal({
         id: `new-${crypto.randomUUID()}`,
         item_id: item?.id ?? '',
         name: '',
+        options: [],
+        required: false,
         sort_order: p.length,
       },
     ]);
   };
-  const updateProperty = (idx: number, v: string) => {
-    setProperties((p) => p.map((x, i) => (i === idx ? { ...x, name: v } : x)));
+  const updateProperty = (idx: number, patch: Partial<HydratedProperty>) => {
+    setProperties((p) =>
+      p.map((x, i) => (i === idx ? { ...x, ...patch } : x))
+    );
   };
   const removeProperty = (idx: number) => {
     setProperties((p) => p.filter((_, i) => i !== idx));
@@ -1748,6 +1820,7 @@ function ItemFormModal({
   const removeVariant = (idx: number) => {
     setVariants((v) => v.filter((_, i) => i !== idx));
   };
+
   const addVariantProperty = (varIdx: number) => {
     setVariants((arr) =>
       arr.map((v, i) =>
@@ -1760,6 +1833,8 @@ function ItemFormModal({
                   id: `new-${crypto.randomUUID()}`,
                   item_id: '',
                   name: '',
+                  options: [],
+                  required: false,
                   sort_order: v.properties.length,
                 },
               ],
@@ -1771,7 +1846,7 @@ function ItemFormModal({
   const updateVariantProperty = (
     varIdx: number,
     propIdx: number,
-    val: string
+    patch: Partial<HydratedProperty>
   ) => {
     setVariants((arr) =>
       arr.map((v, i) =>
@@ -1779,7 +1854,7 @@ function ItemFormModal({
           ? {
               ...v,
               properties: v.properties.map((p, j) =>
-                j === propIdx ? { ...p, name: val } : p
+                j === propIdx ? { ...p, ...patch } : p
               ),
             }
           : v
@@ -1800,7 +1875,9 @@ function ItemFormModal({
     setExtraGroups((g) => [...g, { label: '', required: true, options: [] }]);
   };
   const updateExtraGroup = (idx: number, patch: Partial<ExtraGroupForm>) => {
-    setExtraGroups((g) => g.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
+    setExtraGroups((g) =>
+      g.map((x, i) => (i === idx ? { ...x, ...patch } : x))
+    );
   };
   const removeExtraGroup = (idx: number) => {
     setExtraGroups((g) => g.filter((_, i) => i !== idx));
@@ -1834,15 +1911,34 @@ function ItemFormModal({
     );
   };
 
+  // ============================================================
+  // СОХРАНЕНИЕ
+  // ============================================================
   const handleSave = async () => {
+    if (saving) return;
     setSaving(true);
     setError(null);
+
     try {
+      let guard = 0;
+      while (pendingOpsRef.current > 0 && guard < 60) {
+        if (pendingOpsRef.current > 0) {
+          console.log(
+            `[save] Жду загрузку фото: ${pendingOpsRef.current} операций`
+          );
+        }
+        await waitForPending();
+        guard++;
+        if (pendingOpsRef.current > 0) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+
       const base: SaveItemPayload = {
         type,
         name,
         short_name: shortName,
-        image_url: imageUrl || null,
+        image_url: type === 'set' ? null : imageUrl || null,
         price: type === 'set' ? 0 : free ? 0 : price,
         free: type === 'set' ? false : free,
         active,
@@ -1872,7 +1968,11 @@ function ItemFormModal({
             sauceMode === 'with' ? allowedSauceIds : [];
           base.properties = properties
             .filter((p) => p.name.trim())
-            .map((p) => ({ name: p.name }));
+            .map((p) => ({
+              name: p.name,
+              options: p.options ?? [],
+              required: p.required ?? false,
+            }));
         } else {
           base.variants = variants.map<VariantDraftPayload>((v) => ({
             id: v.id,
@@ -1886,7 +1986,11 @@ function ItemFormModal({
             sauce_mode: v.sauce_mode,
             properties: v.properties
               .filter((p) => p.name.trim())
-              .map((p) => ({ name: p.name })),
+              .map((p) => ({
+                name: p.name,
+                options: p.options ?? [],
+                required: p.required ?? false,
+              })),
             allowed_sauce_ids:
               v.sauce_mode === 'with' ? v.allowed_sauce_ids : [],
           }));
@@ -1936,21 +2040,45 @@ function ItemFormModal({
     return (item ? `${t('editItem')}: ` : `${t('newItemForm')}: `) + t(key);
   })();
 
+  const isBusy = saving || pendingOpsCount > 0;
+
+  const handleClose = () => {
+    if (isBusy) return;
+    onClose();
+  };
+
+  const handleBackdropClick = () => {
+    if (isBusy) return;
+    onClose();
+  };
+
   return (
     <>
       <div
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
-        onClick={onClose}
+        onClick={handleBackdropClick}
       >
         <div
-          className="bg-white rounded-2xl border border-gray-200 p-5 w-full max-w-3xl max-h-[92vh] overflow-y-auto m-4 shadow-2xl"
+          className="bg-white rounded-2xl border border-gray-200 p-5 w-full max-w-3xl max-h-[92vh] overflow-y-auto m-4 shadow-2xl relative"
           onClick={(e) => e.stopPropagation()}
         >
+          {pendingOpsCount > 0 && (
+            <div className="sticky top-0 z-10 -mx-5 -mt-5 mb-3 px-5 py-2 bg-orange-50 border-b border-orange-300 flex items-center gap-2">
+              <span className="inline-block w-3.5 h-3.5 border-2 border-orange-500/30 border-t-orange-500 rounded-full animate-spin shrink-0" />
+              <span className="text-xs font-bold text-orange-800">
+                Обрабатываю фото ({pendingOpsCount})… Сохранение подождёт
+                завершения.
+              </span>
+            </div>
+          )}
+
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-black text-gray-900">{title}</h3>
             <button
-              onClick={onClose}
-              className="text-gray-500 hover:text-gray-900"
+              onClick={handleClose}
+              disabled={isBusy}
+              className="text-gray-500 hover:text-gray-900 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={isBusy ? 'Дождитесь загрузки фото' : ''}
             >
               <X className="w-5 h-5" />
             </button>
@@ -1982,7 +2110,7 @@ function ItemFormModal({
                 <ImageUploader
                   imageUrl={imageUrl}
                   uploading={uploading}
-                  onUpload={handleUpload}
+                  onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
                   onClear={() => setImageUrl('')}
                   t={t}
                 />
@@ -2008,6 +2136,7 @@ function ItemFormModal({
               <Field label={t('properties')}>
                 <PropertiesEditor
                   properties={properties}
+                  history={propertyHistory}
                   onChange={updateProperty}
                   onAdd={addProperty}
                   onRemove={removeProperty}
@@ -2033,7 +2162,7 @@ function ItemFormModal({
                 <ImageUploader
                   imageUrl={imageUrl}
                   uploading={uploading}
-                  onUpload={handleUpload}
+                  onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
                   onClear={() => setImageUrl('')}
                   t={t}
                 />
@@ -2061,7 +2190,7 @@ function ItemFormModal({
                 <ImageUploader
                   imageUrl={imageUrl}
                   uploading={uploading}
-                  onUpload={handleUpload}
+                  onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
                   onClear={() => setImageUrl('')}
                   t={t}
                 />
@@ -2108,7 +2237,9 @@ function ItemFormModal({
                     <ImageUploader
                       imageUrl={imageUrl}
                       uploading={uploading}
-                      onUpload={handleUpload}
+                      onUpload={(f) =>
+                        requestCrop(f, (url) => setImageUrl(url))
+                      }
                       onClear={() => setImageUrl('')}
                       t={t}
                     />
@@ -2143,6 +2274,7 @@ function ItemFormModal({
                   <Field label={t('properties')}>
                     <PropertiesEditor
                       properties={properties}
+                      history={propertyHistory}
                       onChange={updateProperty}
                       onAdd={addProperty}
                       onRemove={removeProperty}
@@ -2259,17 +2391,11 @@ function ItemFormModal({
                           <ImageUploader
                             imageUrl={v.image_url}
                             uploading={false}
-                            onUpload={async (f) => {
-                              try {
-                                const url = await uploadItemImage(
-                                  f,
-                                  crypto.randomUUID()
-                                );
-                                if (url) updateVariant(i, 'image_url', url);
-                              } catch {
-                                /* ignore */
-                              }
-                            }}
+                            onUpload={(f) =>
+                              requestCrop(f, (url) =>
+                                updateVariant(i, 'image_url', url)
+                              )
+                            }
                             onClear={() => updateVariant(i, 'image_url', '')}
                             t={t}
                             compact
@@ -2316,8 +2442,9 @@ function ItemFormModal({
                         <Field label={t('properties')}>
                           <PropertiesEditor
                             properties={v.properties}
-                            onChange={(idx, val) =>
-                              updateVariantProperty(i, idx, val)
+                            history={propertyHistory}
+                            onChange={(idx, patch) =>
+                              updateVariantProperty(i, idx, patch)
                             }
                             onAdd={() => addVariantProperty(i)}
                             onRemove={(idx) => removeVariantProperty(i, idx)}
@@ -2396,17 +2523,10 @@ function ItemFormModal({
               />
               <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-800 font-medium leading-snug">
                 Цена сета определяется по выбранному варианту основного блюда
-                (переопределения ниже). Своей цены у сета нет.
+                (переопределения ниже). Своей цены у сета нет. Фото сета также
+                задаётся ниже — по каждому варианту.
               </div>
-              <Field label={t('image')}>
-                <ImageUploader
-                  imageUrl={imageUrl}
-                  uploading={uploading}
-                  onUpload={handleUpload}
-                  onClear={() => setImageUrl('')}
-                  t={t}
-                />
-              </Field>
+
               <Field label={t('mainProduct')}>
                 <select
                   value={setMainId}
@@ -2449,82 +2569,136 @@ function ItemFormModal({
 
               {(() => {
                 const main = allItems.find((i) => i.id === setMainId);
-                if (!main || main.dish_kind !== 'group' || !main.variants) {
-                  return null;
+                if (!main) return null;
+
+                if (main.dish_kind !== 'group' || !main.variants) {
+                  return (
+                    <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-800 leading-snug">
+                      Основное блюдо без вариантов — сет будет показывать{' '}
+                      <b>фото основного блюда</b> напрямую.
+                    </div>
+                  );
                 }
+
                 return (
-                  <Field label="Цена сета для каждого варианта">
+                  <Field label="Фото и цена сета по вариантам">
+                    <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800 leading-snug">
+                      Это фото <b>сета</b>, а не основного блюда. По умолчанию
+                      показывается фото блюда — загрузите своё, если у сета
+                      должно быть другое.
+                    </div>
+
                     <div className="space-y-2">
                       {main.variants.map((v) => {
                         const ov = mainOverrides[v.id] ?? {
                           price_override: null,
                           image_override: null,
                         };
+                        const effectiveImage =
+                          ov.image_override || v.image_url || null;
+                        const usingOverride = Boolean(ov.image_override);
+
                         return (
                           <div
                             key={v.id}
-                            className="grid grid-cols-12 gap-2 items-center border border-gray-200 rounded-lg p-2 bg-slate-50"
+                            className="border border-gray-200 rounded-lg p-2 bg-slate-50 space-y-2"
                           >
-                            <span className="col-span-5 text-xs font-bold text-gray-800 truncate">
-                              {v.name}
-                              <span className="ml-1 text-[10px] text-gray-400 font-normal">
-                                (база {formatYen(v.price)})
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-gray-800 truncate">
+                                {v.name}
+                                <span className="ml-1 text-[10px] text-gray-400 font-normal">
+                                  (база {formatYen(v.price)})
+                                </span>
                               </span>
-                            </span>
-                            <input
-                              type="number"
-                              value={ov.price_override ?? ''}
-                              onChange={(e) =>
-                                setMainOverrides((m) => ({
-                                  ...m,
-                                  [v.id]: {
-                                    ...ov,
-                                    price_override: e.target.value
-                                      ? Number(e.target.value)
-                                      : null,
-                                  },
-                                }))
-                              }
-                              className="form-input col-span-4 text-xs"
-                              placeholder={`${formatYen(v.price)}`}
-                            />
-                            <label className="col-span-3 cursor-pointer flex items-center gap-1.5">
-                              {ov.image_override ? (
-                                <img
-                                  src={ov.image_override}
-                                  className="w-8 h-8 rounded object-cover border border-gray-200"
-                                />
-                              ) : (
-                                <div className="w-8 h-8 rounded bg-gray-100 border border-gray-200 flex items-center justify-center">
-                                  <Upload className="w-3 h-3 text-gray-400" />
-                                </div>
+                              {usingOverride && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setMainOverrides((m) => ({
+                                      ...m,
+                                      [v.id]: {
+                                        ...ov,
+                                        image_override: null,
+                                      },
+                                    }))
+                                  }
+                                  className="text-[10px] text-orange-600 font-bold hover:underline shrink-0"
+                                >
+                                  Своё фото сбросить
+                                </button>
                               )}
+                            </div>
+
+                            <div className="grid grid-cols-12 gap-2 items-center">
                               <input
-                                type="file"
-                                accept="image/*"
-                                className="hidden"
-                                onChange={async (e) => {
-                                  const f = e.target.files?.[0];
-                                  if (!f) return;
-                                  try {
-                                    const url = await uploadItemImage(
-                                      f,
-                                      crypto.randomUUID()
-                                    );
-                                    if (url)
+                                type="number"
+                                value={ov.price_override ?? ''}
+                                onChange={(e) =>
+                                  setMainOverrides((m) => ({
+                                    ...m,
+                                    [v.id]: {
+                                      ...ov,
+                                      price_override: e.target.value
+                                        ? Number(e.target.value)
+                                        : null,
+                                    },
+                                  }))
+                                }
+                                className="form-input col-span-5 text-xs"
+                                placeholder={`Цена: ${formatYen(v.price)}`}
+                              />
+
+                              <label className="col-span-7 cursor-pointer flex items-center gap-2 p-1.5 rounded-lg border-2 border-dashed border-orange-300 hover:border-orange-500 hover:bg-orange-50 bg-white transition-colors">
+                                {effectiveImage ? (
+                                  <img
+                                    src={effectiveImage}
+                                    alt=""
+                                    className={`w-10 h-10 rounded object-cover border shrink-0 ${
+                                      usingOverride
+                                        ? 'border-orange-500 ring-2 ring-orange-200'
+                                        : 'border-gray-200 opacity-60'
+                                    }`}
+                                  />
+                                ) : (
+                                  <div className="w-10 h-10 rounded bg-gray-100 border border-gray-200 flex items-center justify-center shrink-0">
+                                    <Upload className="w-4 h-4 text-gray-400" />
+                                  </div>
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[11px] font-bold text-gray-800 truncate">
+                                    {usingOverride
+                                      ? 'Своё фото сета'
+                                      : effectiveImage
+                                      ? 'Сейчас фото блюда'
+                                      : 'Загрузить фото сета'}
+                                  </div>
+                                  <div className="text-[9px] text-gray-500 truncate">
+                                    {usingOverride
+                                      ? 'Нажмите, чтобы заменить'
+                                      : 'Нажмите, чтобы задать своё'}
+                                  </div>
+                                </div>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (!f) return;
+                                    requestCrop(f, (url) =>
                                       setMainOverrides((m) => ({
                                         ...m,
                                         [v.id]: {
                                           ...ov,
                                           image_override: url,
                                         },
-                                      }));
-                                  } catch {
-                                    /* ignore */
-                                  }
-                                }}
-                              />
-                            </label>
+                                      }))
+                                    );
+                                    e.target.value = '';
+                                  }}
+                                />
+                              </label>
+                            </div>
                           </div>
                         );
                       })}
@@ -2584,7 +2758,7 @@ function ItemFormModal({
                                   <img
                                     src={it.image_url}
                                     alt=""
-                                    className="w-8 h-8 rounded object-cover shrink-0"
+                                    className="w-8 h-8 rounded object-cover shrink-0 bg-white"
                                   />
                                 ) : (
                                   <div className="w-8 h-8 rounded bg-gray-100 shrink-0" />
@@ -2617,7 +2791,7 @@ function ItemFormModal({
                                 {o.image_override ? (
                                   <img
                                     src={o.image_override}
-                                    className="w-8 h-8 rounded object-cover border border-gray-200"
+                                    className="w-8 h-8 rounded object-cover border border-gray-200 bg-white"
                                   />
                                 ) : (
                                   <div className="w-8 h-8 rounded bg-gray-100 border border-gray-200 flex items-center justify-center">
@@ -2628,28 +2802,22 @@ function ItemFormModal({
                                   type="file"
                                   accept="image/*"
                                   className="hidden"
-                                  onChange={async (e) => {
+                                  onChange={(e) => {
                                     const f = e.target.files?.[0];
                                     if (!f) return;
-                                    try {
-                                      const url = await uploadItemImage(
-                                        f,
-                                        crypto.randomUUID()
-                                      );
-                                      if (url)
-                                        updateExtraGroup(gi, {
-                                          options: g.options.map((x, j) =>
-                                            j === oi
-                                              ? {
-                                                  ...x,
-                                                  image_override: url,
-                                                }
-                                              : x
-                                          ),
-                                        });
-                                    } catch {
-                                      /* ignore */
-                                    }
+                                    requestCrop(f, (url) =>
+                                      updateExtraGroup(gi, {
+                                        options: g.options.map((x, j) =>
+                                          j === oi
+                                            ? {
+                                                ...x,
+                                                image_override: url,
+                                              }
+                                            : x
+                                        ),
+                                      })
+                                    );
+                                    e.target.value = '';
                                   }}
                                 />
                               </label>
@@ -2706,26 +2874,47 @@ function ItemFormModal({
             {onDelete && (
               <button
                 onClick={onDelete}
-                className="px-4 py-2.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 text-sm font-semibold flex items-center gap-1.5"
+                disabled={isBusy}
+                className="px-4 py-2.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 text-sm font-semibold flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Trash2 className="w-4 h-4" />
                 {t('delete')}
               </button>
             )}
             <button
-              onClick={onClose}
-              className="flex-1 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold"
+              onClick={handleClose}
+              disabled={isBusy}
+              className="flex-1 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {t('cancel')}
             </button>
             <button
               onClick={handleSave}
-              disabled={saving || !name}
-              className="flex-1 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold disabled:opacity-40"
+              disabled={saving || !name || pendingOpsCount > 0}
+              className="flex-1 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
-              {saving ? t('saving') : t('save')}
+              {saving ? (
+                <>
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  {t('saving')}
+                </>
+              ) : pendingOpsCount > 0 ? (
+                <>
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Ждём фото…
+                </>
+              ) : (
+                t('save')
+              )}
             </button>
           </div>
+
+          {pendingOpsCount > 0 && (
+            <p className="mt-2 text-[10px] text-orange-700 text-center leading-snug flex items-center justify-center gap-1.5">
+              <ImageIcon className="w-3 h-3" />
+              Не закрывайте форму — фото загружается.
+            </p>
+          )}
         </div>
       </div>
 
@@ -2763,6 +2952,13 @@ function ItemFormModal({
           t={t}
         />
       )}
+
+      <ImageCropDialog
+        open={cropState !== null}
+        file={cropState?.file ?? null}
+        onCancel={cancelCrop}
+        onConfirm={handleCropConfirm}
+      />
     </>
   );
 }
@@ -2955,35 +3151,30 @@ function RadioCard({
 
 function PropertiesEditor({
   properties,
+  history,
   onChange,
   onAdd,
   onRemove,
   t,
 }: {
   properties: HydratedProperty[];
-  onChange: (idx: number, name: string) => void;
+  history: HydratedProperty[];
+  onChange: (idx: number, patch: Partial<HydratedProperty>) => void;
   onAdd: () => void;
   onRemove: (idx: number) => void;
   t: (k: TranslationKey) => string;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-3">
       {properties.map((p, i) => (
-        <div key={p.id ?? i} className="flex gap-2 items-center">
-          <input
-            value={p.name}
-            onChange={(e) => onChange(i, e.target.value)}
-            className="form-input flex-1 text-sm"
-            placeholder={t('propertyName')}
-          />
-          <button
-            type="button"
-            onClick={() => onRemove(i)}
-            className="p-2 text-gray-400 hover:text-red-600"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <PropertyEditor
+          key={p.id ?? i}
+          property={p}
+          history={history}
+          onChange={(patch) => onChange(i, patch)}
+          onRemove={() => onRemove(i)}
+          t={t}
+        />
       ))}
       <button
         type="button"
@@ -2992,6 +3183,213 @@ function PropertiesEditor({
       >
         <Plus className="w-3.5 h-3.5" /> {t('addProperty')}
       </button>
+    </div>
+  );
+}
+
+function PropertyEditor({
+  property,
+  history,
+  onChange,
+  onRemove,
+  t,
+}: {
+  property: HydratedProperty;
+  history: HydratedProperty[];
+  onChange: (patch: Partial<HydratedProperty>) => void;
+  onRemove: () => void;
+  t: (k: TranslationKey) => string;
+}) {
+  const [newOption, setNewOption] = useState('');
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const blurTimer = useRef<number | null>(null);
+
+  // ============================================================
+  // Подборки истории под текущее имя свойства.
+  // Пустое имя → показываем первые 12 из истории.
+  // Есть имя → фильтр по началу строки (кроме точного совпадения).
+  // ============================================================
+  const suggestions = useMemo(() => {
+    const q = property.name.trim().toLowerCase();
+    if (!q) return history.slice(0, 12);
+    return history
+      .filter((h) => h.name.toLowerCase().startsWith(q))
+      .filter((h) => h.name.toLowerCase() !== q)
+      .slice(0, 12);
+  }, [property.name, history]);
+
+  const addOption = () => {
+    const v = newOption.trim();
+    if (!v) return;
+    if (property.options.includes(v)) {
+      setNewOption('');
+      return;
+    }
+    onChange({ options: [...property.options, v] });
+    setNewOption('');
+  };
+
+  const applyFromHistory = (h: HydratedProperty) => {
+    setSuggestOpen(false);
+    onChange({
+      name: h.name,
+      options: [...h.options],
+      required: h.required,
+    });
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-xl p-3 bg-slate-50 space-y-2.5">
+      {/* Имя + удалить + дропдаун истории */}
+      <div className="relative">
+        <div className="flex items-center gap-2">
+          <input
+            value={property.name}
+            onChange={(e) => {
+              onChange({ name: e.target.value });
+              setSuggestOpen(true);
+            }}
+            onFocus={() => setSuggestOpen(true)}
+            onBlur={() => {
+              if (blurTimer.current) window.clearTimeout(blurTimer.current);
+              blurTimer.current = window.setTimeout(
+                () => setSuggestOpen(false),
+                180
+              );
+            }}
+            className="form-input flex-1 text-sm"
+            placeholder="Название свойства (например, Капуста)"
+          />
+          <button
+            type="button"
+            onClick={onRemove}
+            className="p-2 text-gray-400 hover:text-red-600 shrink-0"
+            title="Удалить свойство"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Дропдаун подсказок */}
+        {suggestOpen && suggestions.length > 0 && (
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="absolute left-0 right-12 z-30 mt-1 bg-white border-2 border-orange-300 rounded-xl shadow-2xl max-h-64 overflow-y-auto"
+          >
+            <div className="px-3 py-1.5 text-[10px] font-black text-orange-700 uppercase tracking-wider bg-orange-50 border-b border-orange-200 sticky top-0">
+              Из истории — {suggestions.length}
+            </div>
+            {suggestions.map((h, idx) => (
+              <button
+                key={`${h.name}-${idx}`}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  applyFromHistory(h);
+                }}
+                className="w-full text-left px-3 py-2 hover:bg-orange-50 active:bg-orange-100 transition-colors border-b border-gray-100 last:border-b-0"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-gray-900 truncate flex-1">
+                    {h.name}
+                  </span>
+                  {h.required && (
+                    <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">
+                      ОБЯЗ
+                    </span>
+                  )}
+                </div>
+                {h.options.length > 0 && (
+                  <div className="text-[10px] text-gray-500 mt-0.5 truncate">
+                    {h.options.join(' · ')}
+                  </div>
+                )}
+                {h.options.length === 0 && (
+                  <div className="text-[10px] text-gray-400 mt-0.5 italic">
+                    чекбокс Да / Нет
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Варианты — чипы */}
+      {property.options.length > 0 && (
+        <div>
+          <div className="text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1.5">
+            Варианты
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {property.options.map((opt, idx) => (
+              <span
+                key={`${opt}-${idx}`}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-gray-300 text-xs font-bold text-gray-800"
+              >
+                {opt}
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChange({
+                      options: property.options.filter((_, j) => j !== idx),
+                    })
+                  }
+                  className="text-gray-400 hover:text-red-600"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Добавление варианта */}
+      <div className="flex items-center gap-2">
+        <input
+          value={newOption}
+          onChange={(e) => setNewOption(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              addOption();
+            }
+          }}
+          className="form-input flex-1 text-sm"
+          placeholder={
+            property.options.length === 0
+              ? 'Первый вариант (Enter — добавить)'
+              : 'Ещё вариант (Enter — добавить)'
+          }
+        />
+        <button
+          type="button"
+          onClick={addOption}
+          disabled={!newOption.trim()}
+          className="flex items-center gap-1 px-3 py-2 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold disabled:opacity-40 shrink-0"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Вариант
+        </button>
+      </div>
+
+      {/* Обязательность */}
+      <label className="flex items-center gap-1.5 text-xs font-bold text-gray-700 select-none cursor-pointer">
+        <input
+          type="checkbox"
+          checked={property.required}
+          onChange={(e) => onChange({ required: e.target.checked })}
+          className="accent-orange-500"
+        />
+        Обязательное — нужно выбрать один вариант
+      </label>
+
+      {property.options.length === 0 && (
+        <p className="text-[10px] text-gray-500 leading-snug">
+          Без вариантов свойство работает как чекбокс «Да / Нет».
+        </p>
+      )}
     </div>
   );
 }
@@ -3016,10 +3414,13 @@ function ImageUploader({
       <div
         className={`${
           compact ? 'w-12 h-12' : 'w-20 h-20'
-        } rounded-lg overflow-hidden bg-gray-100 shrink-0 border border-gray-200 flex items-center justify-center`}
+        } rounded-lg overflow-hidden bg-white shrink-0 border border-gray-200 flex items-center justify-center`}
       >
         {imageUrl ? (
-          <img src={imageUrl} className="w-full h-full object-cover" />
+          <img
+            src={imageUrl}
+            className="w-full h-full object-cover bg-white"
+          />
         ) : (
           <Upload
             className={`${compact ? 'w-4 h-4' : 'w-6 h-6'} text-gray-400`}
@@ -3042,6 +3443,7 @@ function ImageUploader({
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) onUpload(f);
+              e.target.value = '';
             }}
           />
         </label>
@@ -3100,14 +3502,14 @@ function ItemPickerModal({
               onClick={() => onPick(it.id)}
               className="w-full flex items-center gap-3 p-3 rounded-xl border-2 border-gray-200 hover:border-orange-400 hover:bg-orange-50 transition-all text-left"
             >
-              <div className="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 shrink-0">
+              <div className="w-12 h-12 rounded-lg overflow-hidden bg-white shrink-0 border border-gray-200">
                 {it.image_url ? (
                   <img
                     src={it.image_url}
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <div className="w-full h-full bg-gray-200" />
+                  <div className="w-full h-full bg-gray-100" />
                 )}
               </div>
               <div className="flex-1 min-w-0">

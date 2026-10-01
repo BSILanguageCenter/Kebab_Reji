@@ -20,6 +20,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY,
     order_number INTEGER NOT NULL,
+    host_uuid TEXT,
     order_type TEXT NOT NULL,
     status TEXT NOT NULL,
     total_amount INTEGER NOT NULL DEFAULT 0,
@@ -78,10 +79,13 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS menu_item_properties (
-    id          TEXT PRIMARY KEY,
-    item_id     TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    sort_order  INTEGER NOT NULL DEFAULT 0,
+    id            TEXT PRIMARY KEY,
+    item_id       TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    options_json  TEXT NOT NULL DEFAULT '[]',
+    options       TEXT NOT NULL DEFAULT '[]',
+    required      INTEGER NOT NULL DEFAULT 0,
+    sort_order    INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (item_id) REFERENCES menu_items(id) ON DELETE CASCADE
   );
 
@@ -131,9 +135,6 @@ db.exec(`
     FOREIGN KEY (item_id)  REFERENCES menu_items(id) ON DELETE CASCADE
   );
 
-  -- ============================================================
-  -- НАСТРОЙКИ ПРИНТЕРОВ (JSON-схема)
-  -- ============================================================
   CREATE TABLE IF NOT EXISTS printer_settings (
     id            TEXT PRIMARY KEY,
     kitchen_json  TEXT NOT NULL DEFAULT '{}',
@@ -145,6 +146,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_orders_status        ON orders(status);
   CREATE INDEX IF NOT EXISTS idx_orders_synced        ON orders(synced);
   CREATE INDEX IF NOT EXISTS idx_orders_number        ON orders(order_number);
+  CREATE INDEX IF NOT EXISTS idx_orders_host_uuid     ON orders(host_uuid);
+  CREATE INDEX IF NOT EXISTS idx_orders_host_number   ON orders(host_uuid, order_number);
   CREATE INDEX IF NOT EXISTS idx_items_order          ON order_items(order_id);
   CREATE INDEX IF NOT EXISTS idx_options_item         ON order_item_options(order_item_id);
 
@@ -159,7 +162,7 @@ db.exec(`
 `);
 
 // ============================================================
-// МИГРАЦИЯ: старая схема printer_settings → JSON
+// МИГРАЦИЯ: printer_settings → JSON-схема
 // ============================================================
 try {
   const cols = db.prepare('PRAGMA table_info(printer_settings)').all();
@@ -178,6 +181,54 @@ try {
   }
 } catch (e) {
   console.warn('[db] Migration check failed:', e.message);
+}
+
+// ============================================================
+// МИГРАЦИЯ: orders → host_uuid
+// ============================================================
+try {
+  const cols = db.prepare('PRAGMA table_info(orders)').all();
+  if (cols.length > 0 && !cols.some((c) => c.name === 'host_uuid')) {
+    console.log('[db] Миграция orders → добавление host_uuid');
+    db.exec('ALTER TABLE orders ADD COLUMN host_uuid TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_orders_host_uuid ON orders(host_uuid)');
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_orders_host_number ON orders(host_uuid, order_number)'
+    );
+  }
+} catch (e) {
+  console.warn('[db] orders migration failed:', e.message);
+}
+
+// ============================================================
+// МИГРАЦИЯ: menu_item_properties → options_json + options + required
+// ============================================================
+try {
+  const cols = db.prepare('PRAGMA table_info(menu_item_properties)').all();
+  if (cols.length > 0) {
+    const has = (name) => cols.some((c) => c.name === name);
+
+    if (!has('options_json')) {
+      console.log('[db] Миграция menu_item_properties → options_json');
+      db.exec(
+        "ALTER TABLE menu_item_properties ADD COLUMN options_json TEXT NOT NULL DEFAULT '[]'"
+      );
+    }
+    if (!has('options')) {
+      console.log('[db] Миграция menu_item_properties → options');
+      db.exec(
+        "ALTER TABLE menu_item_properties ADD COLUMN options TEXT NOT NULL DEFAULT '[]'"
+      );
+    }
+    if (!has('required')) {
+      console.log('[db] Миграция menu_item_properties → required');
+      db.exec(
+        'ALTER TABLE menu_item_properties ADD COLUMN required INTEGER NOT NULL DEFAULT 0'
+      );
+    }
+  }
+} catch (e) {
+  console.warn('[db] menu_item_properties migration failed:', e.message);
 }
 
 export default db;

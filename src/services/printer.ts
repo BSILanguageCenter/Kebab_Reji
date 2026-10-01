@@ -162,16 +162,36 @@ function step(...args: unknown[]) {
 
 // ============================================================
 // Настройки
+//
+// ⚡ #6: кэш на 30 сек. Печать 5 чеков подряд = 1 запрос,
+// а не 5. Кэш инвалидируется при сохранении/тесте настроек
+// из PrinterSettingsPage.
 // ============================================================
+let settingsCache: PrinterSettings | null = null;
+let settingsCacheAt = 0;
+const SETTINGS_CACHE_TTL = 30_000;
+
+export function invalidatePrinterSettingsCache(): void {
+  settingsCache = null;
+  settingsCacheAt = 0;
+}
+
 async function getSettingsSafe(): Promise<PrinterSettings | null> {
+  const now = Date.now();
+  if (settingsCache && now - settingsCacheAt < SETTINGS_CACHE_TTL) {
+    return settingsCache;
+  }
   try {
     step('Запрашиваю настройки принтеров с сервера...');
     const s = await emitGetPrinterSettings();
     step('Настройки получены:', JSON.stringify(s));
+    settingsCache = s;
+    settingsCacheAt = Date.now();
     return s;
   } catch (e) {
     warn('Не удалось получить настройки:', e);
-    return null;
+    // Если есть старый кэш — отдаём его, чтобы печать не упала
+    return settingsCache;
   }
 }
 
