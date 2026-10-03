@@ -6,9 +6,6 @@ import {
 } from '@/lib/layoutSettings';
 import { RotateCcw, Maximize2, Minimize2, Sparkles } from 'lucide-react';
 
-// ============================================================
-// Пресеты
-// ============================================================
 type PresetName = 'compact' | 'normal' | 'large';
 
 const PRESETS: Record<PresetName, LayoutSettings> = {
@@ -20,7 +17,13 @@ const PRESETS: Record<PresetName, LayoutSettings> = {
     toppingCardSize: 60,
     drinkCardSize: 56,
     sauceCardSize: 56,
+    cardRadius: 8,
+    gridGap: 8,
+    ordersRowGap: 6,
+    cartItemGap: 4,
     itemTextSize: 10,
+    panelHeaderSize: 8,
+    orderNumberSize: 16,
     toppingsHeight: 120,
     drinksShare: 50,
   },
@@ -33,7 +36,13 @@ const PRESETS: Record<PresetName, LayoutSettings> = {
     toppingCardSize: 110,
     drinkCardSize: 100,
     sauceCardSize: 100,
+    cardRadius: 16,
+    gridGap: 16,
+    ordersRowGap: 12,
+    cartItemGap: 10,
     itemTextSize: 14,
+    panelHeaderSize: 11,
+    orderNumberSize: 22,
     toppingsHeight: 260,
     drinksShare: 50,
   },
@@ -105,7 +114,7 @@ export function PanelSettings() {
         </div>
       </div>
 
-      {/* Column widths */}
+      {/* Ширина колонок */}
       <Section title={t('sectionColumns')}>
         <SliderField
           label={t('colOrders')}
@@ -130,7 +139,7 @@ export function PanelSettings() {
         />
       </Section>
 
-      {/* Card sizes */}
+      {/* Размер карточек */}
       <Section title={t('sectionCards')}>
         <SliderField
           label={t('dishCardSize')}
@@ -160,9 +169,41 @@ export function PanelSettings() {
           max={160}
           onChange={(v) => set('sauceCardSize', v)}
         />
+        <SliderField
+          label={t('cardRadius')}
+          value={layout.cardRadius}
+          min={0}
+          max={32}
+          onChange={(v) => set('cardRadius', v)}
+        />
       </Section>
 
-      {/* Text */}
+      {/* Отступы (НОВОЕ) */}
+      <Section title={t('sectionSpacing')}>
+        <SliderField
+          label={t('gridGap')}
+          value={layout.gridGap}
+          min={0}
+          max={32}
+          onChange={(v) => set('gridGap', v)}
+        />
+        <SliderField
+          label={t('ordersRowGap')}
+          value={layout.ordersRowGap}
+          min={0}
+          max={24}
+          onChange={(v) => set('ordersRowGap', v)}
+        />
+        <SliderField
+          label={t('cartItemGap')}
+          value={layout.cartItemGap}
+          min={0}
+          max={20}
+          onChange={(v) => set('cartItemGap', v)}
+        />
+      </Section>
+
+      {/* Текст (расширено) */}
       <Section title={t('sectionText')}>
         <SliderField
           label={t('itemTextSize')}
@@ -171,9 +212,23 @@ export function PanelSettings() {
           max={20}
           onChange={(v) => set('itemTextSize', v)}
         />
+        <SliderField
+          label={t('panelHeaderSize')}
+          value={layout.panelHeaderSize}
+          min={7}
+          max={16}
+          onChange={(v) => set('panelHeaderSize', v)}
+        />
+        <SliderField
+          label={t('orderNumberSize')}
+          value={layout.orderNumberSize}
+          min={12}
+          max={32}
+          onChange={(v) => set('orderNumberSize', v)}
+        />
       </Section>
 
-      {/* Panel proportions */}
+      {/* Пропорции панелей */}
       <Section title={t('sectionProportions')}>
         <SliderField
           label={t('toppingsHeight')}
@@ -195,9 +250,6 @@ export function PanelSettings() {
   );
 }
 
-// ============================================================
-// Section
-// ============================================================
 function Section({
   title,
   children,
@@ -215,9 +267,6 @@ function Section({
   );
 }
 
-// ============================================================
-// SliderField
-// ============================================================
 function SliderField({
   label,
   value,

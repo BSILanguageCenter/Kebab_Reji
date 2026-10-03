@@ -28,6 +28,7 @@ import {
   useLayoutSettings,
   clampLayout,
   snapValue,
+  type LayoutSettings,
 } from '@/lib/layoutSettings';
 import type {
   MenuItem,
@@ -83,7 +84,6 @@ function getItemWidth(item: MenuItem): number {
   return 1;
 }
 
-const GRID_GAP = 12;
 const EMPTY_ROWS_AFTER = 3;
 
 // ============================================================
@@ -247,7 +247,8 @@ function findNearestFreeSlot(
 // ============================================================
 function useGridCols(
   ref: React.RefObject<HTMLDivElement | null>,
-  size: number
+  size: number,
+  gap: number
 ): number {
   const [cols, setCols] = useState(1);
 
@@ -257,14 +258,14 @@ function useGridCols(
     const update = () => {
       const w = el.clientWidth;
       if (w <= 0) return;
-      const c = Math.max(1, Math.floor((w + GRID_GAP) / (size + GRID_GAP)));
+      const c = Math.max(1, Math.floor((w + gap) / (size + gap)));
       setCols((prev) => (prev === c ? prev : c));
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ref, size]);
+  }, [ref, size, gap]);
 
   return cols;
 }
@@ -327,15 +328,13 @@ function GridSpace({
   allTops,
   draggedId,
   dragOverSlot,
-  setDragOverSlot,
-  handleSlotDrop,
   startEdit,
-  handleDragStart,
-  handleDragEnd,
+  startPointerDrag,
   canMoveItem,
   moveItemByOne,
   registerCols,
   textSize,
+  layout,
 }: {
   space: CategorySpace;
   size: number;
@@ -349,15 +348,15 @@ function GridSpace({
   ) => void;
   handleSlotDrop: (space: CategorySpace, slot: number, cols: number) => void;
   startEdit: (item: MenuItem) => void;
-  handleDragStart: (id: string) => void;
-  handleDragEnd: () => void;
+  startPointerDrag: (e: React.PointerEvent, id: string) => void;
   canMoveItem: (item: MenuItem, direction: -1 | 1, cols: number) => boolean;
   moveItemByOne: (item: MenuItem, direction: -1 | 1, cols: number) => void;
   registerCols: (space: CategorySpace, cols: number) => void;
   textSize: number;
+  layout: LayoutSettings;
 }) {
   const gridRef = useRef<HTMLDivElement | null>(null);
-  const cols = useGridCols(gridRef, size);
+  const cols = useGridCols(gridRef, size, layout.gridGap);
 
   useEffect(() => {
     registerCols(space, cols);
@@ -374,6 +373,7 @@ function GridSpace({
   );
 
   const cellH = compact ? size + 32 : size + 50;
+  const gap = layout.gridGap;
 
   const highlightSlot =
     dragOverSlot?.space === space ? dragOverSlot.slot : null;
@@ -390,7 +390,7 @@ function GridSpace({
         display: 'grid',
         gridTemplateColumns: `repeat(${cols}, ${size}px)`,
         gridAutoRows: `${cellH}px`,
-        gap: GRID_GAP,
+        gap,
       }}
     >
       {cells.map((cell) => {
@@ -406,38 +406,19 @@ function GridSpace({
           return (
             <div
               key={key}
-              onDragOver={(e) => {
-                if (!draggedId) return;
-                e.preventDefault();
-                if (
-                  dragOverSlot?.space !== space ||
-                  dragOverSlot?.slot !== cell.slot
-                ) {
-                  setDragOverSlot({ space, slot: cell.slot });
-                }
-              }}
-              onDragLeave={() => {
-                if (
-                  dragOverSlot?.space === space &&
-                  dragOverSlot?.slot === cell.slot
-                ) {
-                  setDragOverSlot(null);
-                }
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                handleSlotDrop(space, cell.slot, cols);
-              }}
+              data-slot-space={space}
+              data-slot-index={cell.slot}
               style={{
                 gridRowStart: cell.row + 1,
                 gridColumnStart: cell.col + 1,
                 gridColumnEnd: `span ${cell.width}`,
+                touchAction: 'manipulation',
+                borderRadius: layout.cardRadius,
               }}
-              className={`rounded-xl border-2 border-dashed transition-all ${
+              className={`border-2 border-dashed transition-all ${
                 isHighlightedEmpty
-                  ? 'border-orange-400 bg-orange-100'
-                  : 'border-gray-200 bg-gray-50/60'
+                  ? 'border-orange-400 bg-orange-100 scale-[1.03]'
+                  : 'border-slate-200/70 bg-transparent'
               }`}
             />
           );
@@ -445,6 +426,7 @@ function GridSpace({
 
         const card = cell.item;
         const isHighlighted = highlightSlot === card.sort_order;
+        const isDragged = draggedId === card.id;
 
         let variants: MenuItem[] | undefined;
         if (card.type === 'dish' && card.dish_kind === 'group') {
@@ -462,29 +444,8 @@ function GridSpace({
         return (
           <div
             key={key}
-            onDragOver={(e) => {
-              if (!draggedId) return;
-              e.preventDefault();
-              if (
-                dragOverSlot?.space !== space ||
-                dragOverSlot?.slot !== card.sort_order
-              ) {
-                setDragOverSlot({ space, slot: card.sort_order });
-              }
-            }}
-            onDragLeave={() => {
-              if (
-                dragOverSlot?.space === space &&
-                dragOverSlot?.slot === card.sort_order
-              ) {
-                setDragOverSlot(null);
-              }
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              handleSlotDrop(space, card.sort_order, cols);
-            }}
+            data-slot-space={space}
+            data-slot-index={card.sort_order}
             style={{
               gridRowStart: cell.row + 1,
               gridColumnStart: cell.col + 1,
@@ -492,8 +453,13 @@ function GridSpace({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              pointerEvents: isDragged ? 'none' : undefined,
+              touchAction: 'manipulation',
+              opacity: isDragged ? 0.4 : 1,
+              transform: isDragged ? 'scale(0.95) rotate(-2deg)' : undefined,
+              transition: 'opacity 0.15s, box-shadow 0.15s, transform 0.15s',
             }}
-            className={`rounded-xl transition-all ${
+            className={`${
               isHighlighted
                 ? 'ring-4 ring-orange-400 ring-offset-2 bg-orange-50/60'
                 : ''
@@ -507,8 +473,7 @@ function GridSpace({
                 if (card.type === 'dish') startEdit(v);
                 else startEdit(card);
               }}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
+              onPointerDragStart={startPointerDrag}
               onMoveLeft={() => moveItemByOne(card, -1, cols)}
               onMoveRight={() => moveItemByOne(card, 1, cols)}
               canMoveLeft={canLeft}
@@ -516,6 +481,7 @@ function GridSpace({
               size={size}
               textSize={textSize}
               compact={compact}
+              cardRadius={layout.cardRadius}
             />
           </div>
         );
@@ -536,6 +502,9 @@ export function MenuProduct() {
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [formType, setFormType] = useState<MenuItemType | null>(null);
 
+  const [query, setQuery] = useState('');
+  const [kindFilter, setKindFilter] = useState<'all' | 'dish' | 'set'>('all');
+
   const [pendingDelete, setPendingDelete] = useState<MenuItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
@@ -544,6 +513,17 @@ export function MenuProduct() {
   const [dragOverSlot, setDragOverSlot] = useState<{
     space: CategorySpace;
     slot: number;
+  } | null>(null);
+
+  const pointerDragRef = useRef<{
+    id: string | null;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    activated: boolean;
+    longPressTimer: number | null;
+    targetSpace: CategorySpace | null;
+    targetSlot: number | null;
   } | null>(null);
 
   const [layout, setLayout] = useLayoutSettings();
@@ -588,15 +568,6 @@ export function MenuProduct() {
     setEditingItem(null);
     setFormType(type);
     setPickingType(false);
-  };
-
-  const handleDragStart = (id: string) => {
-    setDraggedId(id);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedId(null);
-    setDragOverSlot(null);
   };
 
   const applyReorder = async (
@@ -665,6 +636,9 @@ export function MenuProduct() {
     );
   }, [items]);
 
+  // ============================================================
+  // DROP
+  // ============================================================
   const handleSlotDrop = useCallback(
     async (space: CategorySpace, targetSlot: number, cols: number) => {
       const fromId = draggedId;
@@ -760,6 +734,137 @@ export function MenuProduct() {
     [draggedId, items, allTops]
   );
 
+  // ============================================================
+  // POINTER DRAG (мышь + тач)
+  // ============================================================
+  const startPointerDrag = useCallback(
+    (e: React.PointerEvent, id: string) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('button')) return;
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const pointerId = e.pointerId;
+      const isTouch = e.pointerType !== 'mouse';
+
+      const state: NonNullable<typeof pointerDragRef.current> = {
+        id,
+        pointerId,
+        startX,
+        startY,
+        activated: false,
+        longPressTimer: null,
+        targetSpace: null,
+        targetSlot: null,
+      };
+      pointerDragRef.current = state;
+
+      const activate = () => {
+        state.activated = true;
+        state.longPressTimer = null;
+        setDraggedId(id);
+        try {
+          if ('vibrate' in navigator) navigator.vibrate(15);
+        } catch {
+          /* ignore */
+        }
+      };
+
+      if (isTouch) {
+        state.longPressTimer = window.setTimeout(activate, 350);
+      } else {
+        state.activated = true;
+        setDraggedId(id);
+      }
+
+      // Пока карточка захвачена — не даём браузеру прокручивать страницу
+      // и открывать контекстное меню (иначе тач-перетаскивание обрывается).
+      const blockScroll = (ev: TouchEvent) => {
+        if (state.activated && ev.cancelable) ev.preventDefault();
+      };
+      const blockMenu = (ev: Event) => ev.preventDefault();
+      document.addEventListener('touchmove', blockScroll, { passive: false });
+      document.addEventListener('contextmenu', blockMenu);
+
+      const cleanup = () => {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        document.removeEventListener('pointercancel', onUp);
+        document.removeEventListener('touchmove', blockScroll);
+        document.removeEventListener('contextmenu', blockMenu);
+      };
+
+      const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+
+        if (!state.activated) {
+          const dx = ev.clientX - startX;
+          const dy = ev.clientY - startY;
+          if (Math.hypot(dx, dy) > 10) {
+            if (state.longPressTimer) {
+              window.clearTimeout(state.longPressTimer);
+              state.longPressTimer = null;
+            }
+            pointerDragRef.current = null;
+            cleanup();
+          }
+          return;
+        }
+
+        ev.preventDefault();
+
+        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const cell = el?.closest('[data-slot-space]') as HTMLElement | null;
+
+        if (cell) {
+          const sp = cell.dataset.slotSpace as CategorySpace | undefined;
+          const sl = Number(cell.dataset.slotIndex);
+          if (sp && !Number.isNaN(sl)) {
+            state.targetSpace = sp;
+            state.targetSlot = sl;
+            setDragOverSlot({ space: sp, slot: sl });
+          }
+        } else {
+          state.targetSpace = null;
+          state.targetSlot = null;
+          setDragOverSlot(null);
+        }
+      };
+
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+
+        if (state.longPressTimer) {
+          window.clearTimeout(state.longPressTimer);
+          state.longPressTimer = null;
+        }
+
+        const shouldDrop =
+          state.activated &&
+          state.targetSpace !== null &&
+          state.targetSlot !== null;
+
+        if (shouldDrop) {
+          const sp = state.targetSpace!;
+          const sl = state.targetSlot!;
+          const cols = colsRef.current[sp] ?? 1;
+          void handleSlotDrop(sp, sl, cols);
+        } else {
+          setDraggedId(null);
+          setDragOverSlot(null);
+        }
+
+        pointerDragRef.current = null;
+        cleanup();
+      };
+
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onUp);
+    },
+    [handleSlotDrop]
+  );
+
   const canMoveItem = useCallback(
     (item: MenuItem, direction: -1 | 1, cols: number): boolean => {
       if (item.parent_id) return false;
@@ -806,6 +911,7 @@ export function MenuProduct() {
     }
   };
 
+  const q = query.trim().toLowerCase();
   const leftList: { item: MenuItem; kind: 'dish' | 'set' }[] = [
     ...allTops
       .filter((i) => i.type === 'dish')
@@ -815,7 +921,13 @@ export function MenuProduct() {
       .filter((i) => i.type === 'set')
       .sort((a, b) => a.sort_order - b.sort_order)
       .map((i) => ({ item: i, kind: 'set' as const })),
-  ];
+  ].filter(
+    ({ item, kind }) =>
+      (kindFilter === 'all' || kindFilter === kind) &&
+      (!q ||
+        item.name.toLowerCase().includes(q) ||
+        (item.short_name ?? '').toLowerCase().includes(q))
+  );
 
   const startLayoutRef = useRef<typeof layout | null>(null);
 
@@ -904,7 +1016,7 @@ export function MenuProduct() {
   const hasAny = allTops.length > 0;
 
   return (
-    <div className="h-full min-h-0 flex flex-col bg-slate-100">
+    <div className="h-full min-h-0 flex flex-col bg-slate-200/70">
       {error && (
         <div className="m-3 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm flex items-center justify-between">
           <span>{error}</span>
@@ -917,17 +1029,54 @@ export function MenuProduct() {
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* COLUMN 1: PRODUCTS LIST */}
         <div
-          className="shrink-0 bg-white border-r-2 border-gray-300 flex flex-col min-h-0"
+          className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.ordersWidth }}
         >
-          <div className="px-2 py-1 border-b-2 border-blue-300 shrink-0 bg-blue-50">
-            <h2 className="text-[9px] font-black text-blue-800 uppercase tracking-wider border-l-2 border-blue-500 pl-1.5 leading-none">
+          <div className="px-3 py-2 border-b border-blue-200 shrink-0 bg-blue-50">
+            <h2
+              className="font-black text-blue-800 tracking-wide border-l-4 border-blue-500 pl-2 leading-none"
+              style={{ fontSize: layout.panelHeaderSize }}
+            >
               {t('productsByCategory')}
             </h2>
           </div>
-          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5">
+
+          <div className="p-2 space-y-2 border-b border-slate-200 bg-white shrink-0">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="form-input !py-2 text-xs"
+              placeholder="Поиск…"
+            />
+            <div className="flex gap-1">
+              {(
+                [
+                  ['all', 'Все'],
+                  ['dish', 'Блюда'],
+                  ['set', 'Сеты'],
+                ] as const
+              ).map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setKindFilter(k)}
+                  className={`flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
+                    kindFilter === k
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div
+            className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col"
+            style={{ rowGap: layout.ordersRowGap }}
+          >
             {leftList.length === 0 && (
-              <p className="text-xs text-gray-400 text-center mt-4">
+              <p className="text-xs text-slate-400 text-center mt-4">
                 {t('noMenuItems')}
               </p>
             )}
@@ -935,14 +1084,16 @@ export function MenuProduct() {
               <button
                 key={item.id}
                 onClick={() => startEdit(item)}
-                className="w-full text-left p-2 rounded-lg border border-gray-200 hover:border-orange-400 hover:bg-orange-50 transition-colors"
+                className={`w-full text-left p-2.5 rounded-xl border border-slate-200 bg-white shadow-sm hover:shadow-md hover:border-orange-400 hover:bg-orange-50 transition-all shrink-0 ${
+                  !item.active ? 'opacity-50' : ''
+                }`}
               >
                 <div className="flex items-center justify-between gap-1">
-                  <span className="text-xs font-bold text-gray-900 truncate">
+                  <span className="text-xs font-bold text-slate-900 truncate">
                     {item.name}
                   </span>
                   <span
-                    className={`text-[8px] font-black px-1.5 py-0.5 rounded-full shrink-0 ${
+                    className={`text-[9px] font-black px-1.5 py-0.5 rounded-full shrink-0 ${
                       kind === 'set'
                         ? 'bg-orange-100 text-orange-700'
                         : 'bg-blue-100 text-blue-700'
@@ -951,7 +1102,7 @@ export function MenuProduct() {
                     {kind === 'set' ? 'SET' : 'DSH'}
                   </span>
                 </div>
-                <div className="text-[10px] text-gray-500 mt-0.5">
+                <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
                   {item.free ? '' : formatYen(item.price)}
                 </div>
               </button>
@@ -966,21 +1117,24 @@ export function MenuProduct() {
         />
 
         {/* COLUMN 2: БЛЮДА И СЕТЫ + ТОППИНГИ */}
-        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-50">
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="flex-1 min-w-0 px-2 py-1 rounded-md bg-orange-100 border-l-2 border-orange-500">
-                <h3 className="text-[9px] font-black text-orange-800 uppercase tracking-wider truncate leading-none">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-orange-100 border-l-4 border-orange-500">
+                <h3
+                  className="font-black text-orange-800 tracking-wide truncate leading-none"
+                  style={{ fontSize: layout.panelHeaderSize }}
+                >
                   {t('bludiAndSet')} · {t('dragHintShort')}
                 </h3>
               </div>
               <button
                 onClick={() => setResetConfirmOpen(true)}
                 disabled={!hasAny}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-[10px] font-bold active:scale-[0.97] transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-bold active:scale-[0.97] transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                 title={t('menuResetBtn')}
               >
-                <LayoutGrid className="w-3 h-3" />
+                <LayoutGrid className="w-3.5 h-3.5" />
                 {t('menuResetBtn')}
               </button>
             </div>
@@ -995,12 +1149,12 @@ export function MenuProduct() {
               setDragOverSlot={setDragOverSlot}
               handleSlotDrop={handleSlotDrop}
               startEdit={startEdit}
-              handleDragStart={handleDragStart}
-              handleDragEnd={handleDragEnd}
+              startPointerDrag={startPointerDrag}
               canMoveItem={canMoveItem}
               moveItemByOne={moveItemByOne}
               registerCols={registerCols}
               textSize={layout.itemTextSize}
+              layout={layout}
             />
           </div>
 
@@ -1013,10 +1167,13 @@ export function MenuProduct() {
                 onEnd={endResize}
               />
               <div
-                className="shrink-0 bg-white px-2 py-1 overflow-hidden border-t-2 border-purple-300"
+                className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
                 style={{ height: layout.toppingsHeight }}
               >
-                <h3 className="text-[9px] font-black text-purple-800 uppercase tracking-wider mb-1 border-l-2 border-purple-500 pl-1.5 leading-none">
+                <h3
+                  className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
+                  style={{ fontSize: layout.panelHeaderSize }}
+                >
                   {t('type_topping')}
                 </h3>
                 <div className="overflow-y-auto h-[calc(100%-16px)]">
@@ -1031,12 +1188,12 @@ export function MenuProduct() {
                     setDragOverSlot={setDragOverSlot}
                     handleSlotDrop={handleSlotDrop}
                     startEdit={startEdit}
-                    handleDragStart={handleDragStart}
-                    handleDragEnd={handleDragEnd}
+                    startPointerDrag={startPointerDrag}
                     canMoveItem={canMoveItem}
                     moveItemByOne={moveItemByOne}
                     registerCols={registerCols}
                     textSize={layout.itemTextSize}
+                    layout={layout}
                   />
                 </div>
               </div>
@@ -1053,15 +1210,18 @@ export function MenuProduct() {
         {/* COLUMN 3: НАПИТКИ + СОУСЫ */}
         <div
           ref={drinksWrapRef}
-          className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
+          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.menuRightWidth }}
         >
           <div
             className="flex flex-col border-b-2 border-cyan-300"
             style={{ height: `${layout.drinksShare}%` }}
           >
-            <div className="px-2 py-1 border-b border-cyan-300 shrink-0 bg-cyan-50">
-              <h3 className="text-[9px] font-black text-cyan-800 uppercase tracking-wider border-l-2 border-cyan-500 pl-1.5 leading-none">
+            <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
+              <h3
+                className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
+                style={{ fontSize: layout.panelHeaderSize }}
+              >
                 {t('type_drink')}
               </h3>
             </div>
@@ -1077,12 +1237,12 @@ export function MenuProduct() {
                 setDragOverSlot={setDragOverSlot}
                 handleSlotDrop={handleSlotDrop}
                 startEdit={startEdit}
-                handleDragStart={handleDragStart}
-                handleDragEnd={handleDragEnd}
+                startPointerDrag={startPointerDrag}
                 canMoveItem={canMoveItem}
                 moveItemByOne={moveItemByOne}
                 registerCols={registerCols}
                 textSize={layout.itemTextSize}
+                layout={layout}
               />
             </div>
           </div>
@@ -1095,8 +1255,11 @@ export function MenuProduct() {
           />
 
           <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-2 py-1 border-b border-red-300 shrink-0 bg-red-50">
-              <h3 className="text-[9px] font-black text-red-800 uppercase tracking-wider border-l-2 border-red-500 pl-1.5 leading-none">
+            <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
+              <h3
+                className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
+                style={{ fontSize: layout.panelHeaderSize }}
+              >
                 {t('type_sauce')}
               </h3>
             </div>
@@ -1112,12 +1275,12 @@ export function MenuProduct() {
                 setDragOverSlot={setDragOverSlot}
                 handleSlotDrop={handleSlotDrop}
                 startEdit={startEdit}
-                handleDragStart={handleDragStart}
-                handleDragEnd={handleDragEnd}
+                startPointerDrag={startPointerDrag}
                 canMoveItem={canMoveItem}
                 moveItemByOne={moveItemByOne}
                 registerCols={registerCols}
                 textSize={layout.itemTextSize}
+                layout={layout}
               />
             </div>
           </div>
@@ -1131,13 +1294,13 @@ export function MenuProduct() {
 
         {/* COLUMN 4: ADD BUTTON + PANEL SETTINGS */}
         <div
-          className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
+          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.cartWidth }}
         >
-          <div className="p-3 border-b-2 border-gray-300 shrink-0 bg-gray-50">
+          <div className="p-3 border-b border-slate-200 shrink-0 bg-slate-50">
             <button
               onClick={() => setPickingType(true)}
-              className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-xs font-black shadow-md shadow-orange-500/20 active:scale-[0.97] transition-all"
+              className="w-full flex items-center justify-center gap-2 px-3 py-3.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-black shadow-lg shadow-orange-500/30 active:scale-[0.97] transition-all"
             >
               <Plus className="w-4 h-4" />
               {t('addProduct')}
@@ -1227,8 +1390,7 @@ const DraggableCard = memo(function DraggableCard({
   variants,
   onEdit,
   onVariantClick,
-  onDragStart,
-  onDragEnd,
+  onPointerDragStart,
   onMoveLeft,
   onMoveRight,
   canMoveLeft,
@@ -1236,13 +1398,13 @@ const DraggableCard = memo(function DraggableCard({
   size,
   textSize,
   compact,
+  cardRadius,
 }: {
   item: MenuItem;
   variants?: MenuItem[];
   onEdit: (i: MenuItem) => void;
   onVariantClick?: (v: MenuItem) => void;
-  onDragStart: (id: string) => void;
-  onDragEnd: () => void;
+  onPointerDragStart: (e: React.PointerEvent, id: string) => void;
   onMoveLeft?: () => void;
   onMoveRight?: () => void;
   canMoveLeft?: boolean;
@@ -1250,6 +1412,7 @@ const DraggableCard = memo(function DraggableCard({
   size: number;
   textSize: number;
   compact?: boolean;
+  cardRadius: number;
 }) {
   const { t } = useI18n();
   const isGroup = (variants?.length ?? 0) > 0;
@@ -1264,19 +1427,18 @@ const DraggableCard = memo(function DraggableCard({
         e.preventDefault();
         onMoveLeft?.();
       }}
-      onMouseDown={(e) => e.stopPropagation()}
-      draggable={false}
+      onPointerDown={(e) => e.stopPropagation()}
       disabled={!canMoveLeft}
       className={`absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-20 w-7 h-7 rounded-full border-2 shadow-md flex items-center justify-center transition-all ${
         canMoveLeft
-          ? 'bg-white border-gray-300 opacity-0 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
-          : 'bg-gray-100 border-gray-200 opacity-0 group-hover:opacity-40 cursor-not-allowed'
+          ? 'bg-white border-slate-300 opacity-70 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
+          : 'bg-slate-100 border-slate-200 opacity-30 cursor-not-allowed'
       }`}
       title={canMoveLeft ? t('moveLeftTitle') : t('moveLeftBusy')}
     >
       <ChevronLeft
         className={`w-4 h-4 ${
-          canMoveLeft ? 'text-gray-700' : 'text-gray-400'
+          canMoveLeft ? 'text-slate-700' : 'text-slate-400'
         }`}
       />
     </button>
@@ -1290,43 +1452,52 @@ const DraggableCard = memo(function DraggableCard({
         e.preventDefault();
         onMoveRight?.();
       }}
-      onMouseDown={(e) => e.stopPropagation()}
-      draggable={false}
+      onPointerDown={(e) => e.stopPropagation()}
       disabled={!canMoveRight}
       className={`absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-20 w-7 h-7 rounded-full border-2 shadow-md flex items-center justify-center transition-all ${
         canMoveRight
-          ? 'bg-white border-gray-300 opacity-0 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
-          : 'bg-gray-100 border-gray-200 opacity-0 group-hover:opacity-40 cursor-not-allowed'
+          ? 'bg-white border-slate-300 opacity-70 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
+          : 'bg-slate-100 border-slate-200 opacity-30 cursor-not-allowed'
       }`}
       title={canMoveRight ? t('moveRightTitle') : t('moveRightBusy')}
     >
       <ChevronRight
         className={`w-4 h-4 ${
-          canMoveRight ? 'text-gray-700' : 'text-gray-400'
+          canMoveRight ? 'text-slate-700' : 'text-slate-400'
         }`}
       />
     </button>
   );
+
+  const dragProps = {
+    onPointerDown: (e: React.PointerEvent) => onPointerDragStart(e, item.id),
+    style: {
+      touchAction: 'manipulation' as const,
+      WebkitTouchCallout: 'none' as const,
+      userSelect: 'none' as const,
+    },
+  };
 
   if (!isGroup) {
     const hasImage = Boolean(item.image_url);
     return (
       <div className="relative group" style={{ width: size }}>
         <div
-          draggable
-          data-card-id={item.id}
-          onDragStart={() => onDragStart(item.id)}
-          onDragEnd={onDragEnd}
+          {...dragProps}
           onClick={() => onEdit(item)}
-          className="flex flex-col items-center select-none cursor-grab active:cursor-grabbing"
+          className="flex flex-col items-center select-none cursor-pointer"
         >
           <div
-            className={`relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 transition-all ${
+            className={`relative overflow-hidden border-2 border-white shadow-md hover:shadow-xl transition-all ${
               hasImage
                 ? 'bg-white'
                 : 'bg-gradient-to-br from-orange-500 to-red-500'
             }`}
-            style={{ width: size, height: size }}
+            style={{
+              width: size,
+              height: size,
+              borderRadius: cardRadius,
+            }}
           >
             {hasImage ? (
               <img
@@ -1338,9 +1509,9 @@ const DraggableCard = memo(function DraggableCard({
               />
             ) : null}
             {!item.active && (
-              <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+              <div className="absolute inset-0 bg-slate-900/70 backdrop-blur-[1px] flex items-center justify-center">
                 <span
-                  className="text-white font-black uppercase tracking-widest"
+                  className="text-white font-black tracking-widest"
                   style={{ fontSize: Math.max(8, nameSize - 2) }}
                 >
                   {t('menuInactiveBadge')}
@@ -1355,14 +1526,14 @@ const DraggableCard = memo(function DraggableCard({
             )}
           </div>
           <div
-            className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+            className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
             style={{ fontSize: nameSize }}
             title={item.name}
           >
             {item.short_name || item.name}
           </div>
           <div
-            className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+            className="mt-0.5 text-center font-black text-orange-600 w-full leading-none"
             style={{ fontSize: priceSize }}
           >
             {item.free ? '' : formatYen(item.price)}
@@ -1379,22 +1550,27 @@ const DraggableCard = memo(function DraggableCard({
   return (
     <div className="relative group" style={{ width: '100%' }}>
       <div
-        draggable
-        data-card-id={item.id}
-        onDragStart={() => onDragStart(item.id)}
-        onDragEnd={onDragEnd}
+        {...dragProps}
         style={{
           width: '100%',
           minHeight: headerH + size + nameSize * 2 + 4,
+          touchAction: 'manipulation',
+          WebkitTouchCallout: 'none',
+          userSelect: 'none',
         }}
-        className="rounded-xl bg-white transition-all select-none cursor-grab active:cursor-grabbing ring-2 ring-gray-400 hover:ring-orange-400 flex flex-col overflow-hidden"
+        className="bg-white transition-all select-none cursor-pointer shadow-md ring-1 ring-slate-300 hover:ring-orange-400 flex flex-col overflow-hidden"
       >
         <button
           onClick={() => onEdit(item)}
-          className="flex items-center justify-between w-full px-2 py-0.5 border-b border-gray-200 bg-gray-50 hover:bg-orange-50 transition-colors shrink-0 leading-none"
+          onPointerDown={(e) => e.stopPropagation()}
+          className="flex items-center justify-between w-full px-2 py-1 border-b border-slate-200 bg-slate-50 hover:bg-orange-50 transition-colors shrink-0 leading-none"
+          style={{
+            borderTopLeftRadius: cardRadius,
+            borderTopRightRadius: cardRadius,
+          }}
         >
           <span
-            className="font-black text-gray-900 uppercase tracking-wide truncate text-left leading-none"
+            className="font-black text-slate-900 tracking-wide truncate text-left leading-none"
             style={{ fontSize: nameSize }}
           >
             {item.name}
@@ -1409,7 +1585,7 @@ const DraggableCard = memo(function DraggableCard({
           )}
         </button>
 
-        <div className="flex items-stretch" style={{ gap: GRID_GAP }}>
+        <div className="flex items-stretch" style={{ gap: 8 }}>
           {variants!.map((v) => {
             const hasImage = Boolean(v.image_url);
             const src = v.image_url || '';
@@ -1421,16 +1597,21 @@ const DraggableCard = memo(function DraggableCard({
                   if (onVariantClick) onVariantClick(v);
                   else onEdit(v);
                 }}
+                onPointerDown={(e) => e.stopPropagation()}
                 style={{ width: size, flex: '0 0 auto' }}
                 className="flex flex-col items-center cursor-pointer active:scale-95 transition-transform"
               >
                 <div
-                  className={`relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 transition-all ${
+                  className={`relative overflow-hidden border-2 border-white shadow-md hover:shadow-xl transition-all ${
                     hasImage
                       ? 'bg-white'
                       : 'bg-gradient-to-br from-orange-500 to-red-500'
                   }`}
-                  style={{ width: size, height: size }}
+                  style={{
+                    width: size,
+                    height: size,
+                    borderRadius: cardRadius,
+                  }}
                 >
                   {hasImage && (
                     <img
@@ -1443,13 +1624,13 @@ const DraggableCard = memo(function DraggableCard({
                   )}
                 </div>
                 <div
-                  className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+                  className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
                   style={{ fontSize: nameSize }}
                 >
                   {v.name}
                 </div>
                 <div
-                  className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+                  className="mt-0.5 text-center font-black text-orange-600 w-full leading-none"
                   style={{ fontSize: priceSize }}
                 >
                   {v.free ? '' : formatYen(v.price)}
@@ -1511,16 +1692,16 @@ function TypePicker({
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-2xl p-5"
+        className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-black text-gray-900">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-xl font-black text-slate-900">
             {t('pickCategory')}
           </h3>
           <button
             onClick={onCancel}
-            className="text-gray-400 hover:text-gray-900"
+            className="text-slate-400 hover:text-slate-900"
           >
             <X className="w-5 h-5" />
           </button>
@@ -1530,12 +1711,12 @@ function TypePicker({
             <button
               key={tp.key}
               onClick={() => onPick(tp.key)}
-              className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-gray-200 hover:border-orange-400 hover:bg-orange-50 transition-all active:scale-[0.97]"
+              className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-slate-200 hover:border-orange-400 hover:bg-orange-50 hover:shadow-md transition-all active:scale-[0.97]"
             >
               <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-orange-500 to-red-600 text-white flex items-center justify-center shadow-md shadow-orange-500/20">
                 {tp.icon}
               </div>
-              <span className="text-sm font-bold text-gray-900">
+              <span className="text-sm font-bold text-slate-900">
                 {tp.label}
               </span>
             </button>
@@ -1683,9 +1864,6 @@ function ItemFormModal({
     | null
   >(null);
 
-  // ============================================================
-  // КРОП + СЧЁТЧИК АКТИВНЫХ ОПЕРАЦИЙ С ФОТО
-  // ============================================================
   const [cropState, setCropState] = useState<{
     file: File;
     onDone: (url: string) => void;
@@ -1907,9 +2085,6 @@ function ItemFormModal({
     );
   };
 
-  // ============================================================
-  // СОХРАНЕНИЕ
-  // ============================================================
   const handleSave = async () => {
     if (saving) return;
     setSaving(true);
@@ -2043,23 +2218,16 @@ function ItemFormModal({
     onClose();
   };
 
-  const handleBackdropClick = () => {
-    if (isBusy) return;
-    onClose();
-  };
-
   return (
     <>
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
-        onClick={handleBackdropClick}
-      >
+      {/* Закрытие только кнопками «×» и «Отмена» — клик по фону не сбрасывает ввод */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
         <div
-          className="bg-white rounded-2xl border border-gray-200 p-5 w-full max-w-3xl max-h-[92vh] overflow-y-auto m-4 shadow-2xl relative"
+          className="bg-white rounded-3xl border border-slate-200 w-full max-w-3xl max-h-[92vh] m-4 shadow-2xl relative flex flex-col overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
           {pendingOpsCount > 0 && (
-            <div className="sticky top-0 z-10 -mx-5 -mt-5 mb-3 px-5 py-2 bg-orange-50 border-b border-orange-300 flex items-center gap-2">
+            <div className="px-6 py-2 bg-orange-50 border-b border-orange-300 flex items-center gap-2 shrink-0">
               <span className="inline-block w-3.5 h-3.5 border-2 border-orange-500/30 border-t-orange-500 rounded-full animate-spin shrink-0" />
               <span className="text-xs font-bold text-orange-800">
                 {t('menuProcessingPhotos').replace(
@@ -2070,844 +2238,859 @@ function ItemFormModal({
             </div>
           )}
 
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-black text-gray-900">{title}</h3>
+          {/* ШАПКА */}
+          <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+            <h3 className="text-xl font-black text-slate-900">{title}</h3>
             <button
               onClick={handleClose}
               disabled={isBusy}
-              className="text-gray-500 hover:text-gray-900 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="text-slate-500 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed"
               title={isBusy ? t('menuDoNotClosePhoto') : ''}
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
-          {error && (
-            <div className="mb-3 p-2 bg-red-50 border border-red-300 rounded-lg text-red-700 text-sm">
-              {error}
-            </div>
-          )}
+          {/* ТЕЛО (прокручивается) */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-1">
+            {error && (
+              <div className="mb-3 p-2.5 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
+                {error}
+              </div>
+            )}
 
-          {type === 'topping' && (
-            <>
-              <NameAndShort
-                name={name}
-                shortName={shortName}
-                setName={setName}
-                setShortName={setShortName}
-                t={t}
-              />
-              <PriceAndFree
-                price={price}
-                free={free}
-                setPrice={setPrice}
-                setFree={setFree}
-                t={t}
-              />
-              <Field label={t('image')}>
-                <ImageUploader
-                  imageUrl={imageUrl}
-                  uploading={uploading}
-                  onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
-                  onClear={() => setImageUrl('')}
+            {type === 'topping' && (
+              <>
+                <NameAndShort
+                  name={name}
+                  shortName={shortName}
+                  setName={setName}
+                  setShortName={setShortName}
                   t={t}
                 />
-              </Field>
-              <Field label={t('station')}>
-                <StationPicker
-                  station={station}
-                  setStation={setStation}
+                <PriceAndFree
+                  price={price}
+                  free={free}
+                  setPrice={setPrice}
+                  setFree={setFree}
                   t={t}
                 />
-              </Field>
-              {station === 'kitchen' && (
-                <Field label={t('cookTimeMin')}>
-                  <input
-                    type="number"
-                    value={cookTimeMin}
-                    onChange={(e) => setCookTimeMin(Number(e.target.value))}
-                    className="form-input"
-                    placeholder="10"
-                  />
-                </Field>
-              )}
-              <Field label={t('properties')}>
-                <PropertiesEditor
-                  properties={properties}
-                  history={propertyHistory}
-                  onChange={updateProperty}
-                  onAdd={addProperty}
-                  onRemove={removeProperty}
-                  t={t}
-                />
-              </Field>
-            </>
-          )}
-
-          {type === 'sauce' && (
-            <>
-              <NameAndShort
-                name={name}
-                shortName={shortName}
-                setName={setName}
-                setShortName={setShortName}
-                t={t}
-              />
-              <Field label={t('sauceColor')}>
-                <ColorPicker color={color} setColor={setColor} />
-              </Field>
-              <Field label={t('image')}>
-                <ImageUploader
-                  imageUrl={imageUrl}
-                  uploading={uploading}
-                  onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
-                  onClear={() => setImageUrl('')}
-                  t={t}
-                />
-              </Field>
-              <PriceAndFree
-                price={price}
-                free={free}
-                setPrice={setPrice}
-                setFree={setFree}
-                t={t}
-              />
-            </>
-          )}
-
-          {type === 'drink' && (
-            <>
-              <NameAndShort
-                name={name}
-                shortName={shortName}
-                setName={setName}
-                setShortName={setShortName}
-                t={t}
-              />
-              <Field label={t('image')}>
-                <ImageUploader
-                  imageUrl={imageUrl}
-                  uploading={uploading}
-                  onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
-                  onClear={() => setImageUrl('')}
-                  t={t}
-                />
-              </Field>
-              <PriceAndFree
-                price={price}
-                free={free}
-                setPrice={setPrice}
-                setFree={setFree}
-                t={t}
-              />
-            </>
-          )}
-
-          {type === 'dish' && (
-            <>
-              <NameAndShort
-                name={name}
-                shortName={shortName}
-                setName={setName}
-                setShortName={setShortName}
-                t={t}
-              />
-              <Field label={t('dishKind')}>
-                <div className="grid grid-cols-2 gap-2">
-                  <RadioCard
-                    active={dishKind === 'single'}
-                    onClick={() => setDishKind('single')}
-                    title={t('dishKindSingle')}
-                    hint={t('dishKindSingleHint')}
-                  />
-                  <RadioCard
-                    active={dishKind === 'group'}
-                    onClick={() => setDishKind('group')}
-                    title={t('dishKindGroup')}
-                    hint={t('dishKindGroupHint')}
-                  />
-                </div>
-              </Field>
-
-              {dishKind === 'single' && (
-                <>
-                  <Field label={t('image')}>
-                    <ImageUploader
-                      imageUrl={imageUrl}
-                      uploading={uploading}
-                      onUpload={(f) =>
-                        requestCrop(f, (url) => setImageUrl(url))
-                      }
-                      onClear={() => setImageUrl('')}
-                      t={t}
-                    />
-                  </Field>
-                  <PriceAndFree
-                    price={price}
-                    free={free}
-                    setPrice={setPrice}
-                    setFree={setFree}
+                <Field label={t('image')}>
+                  <ImageUploader
+                    imageUrl={imageUrl}
+                    uploading={uploading}
+                    onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
+                    onClear={() => setImageUrl('')}
                     t={t}
                   />
-                  <Field label={t('station')}>
-                    <StationPicker
-                      station={station}
-                      setStation={setStation}
-                      t={t}
+                </Field>
+                <Field label={t('station')}>
+                  <StationPicker
+                    station={station}
+                    setStation={setStation}
+                    t={t}
+                  />
+                </Field>
+                {station === 'kitchen' && (
+                  <Field label={t('cookTimeMin')}>
+                    <input
+                      type="number"
+                      value={cookTimeMin}
+                      onChange={(e) => setCookTimeMin(Number(e.target.value))}
+                      className="form-input"
+                      placeholder="10"
                     />
                   </Field>
-                  {station === 'kitchen' && (
-                    <Field label={t('cookTimeMin')}>
-                      <input
-                        type="number"
-                        value={cookTimeMin}
-                        onChange={(e) =>
-                          setCookTimeMin(Number(e.target.value))
+                )}
+                <Field label={t('properties')}>
+                  <PropertiesEditor
+                    properties={properties}
+                    history={propertyHistory}
+                    onChange={updateProperty}
+                    onAdd={addProperty}
+                    onRemove={removeProperty}
+                    t={t}
+                  />
+                </Field>
+              </>
+            )}
+
+            {type === 'sauce' && (
+              <>
+                <NameAndShort
+                  name={name}
+                  shortName={shortName}
+                  setName={setName}
+                  setShortName={setShortName}
+                  t={t}
+                />
+                <Field label={t('sauceColor')}>
+                  <ColorPicker color={color} setColor={setColor} />
+                </Field>
+                <Field label={t('image')}>
+                  <ImageUploader
+                    imageUrl={imageUrl}
+                    uploading={uploading}
+                    onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
+                    onClear={() => setImageUrl('')}
+                    t={t}
+                  />
+                </Field>
+                <PriceAndFree
+                  price={price}
+                  free={free}
+                  setPrice={setPrice}
+                  setFree={setFree}
+                  t={t}
+                />
+              </>
+            )}
+
+            {type === 'drink' && (
+              <>
+                <NameAndShort
+                  name={name}
+                  shortName={shortName}
+                  setName={setName}
+                  setShortName={setShortName}
+                  t={t}
+                />
+                <Field label={t('image')}>
+                  <ImageUploader
+                    imageUrl={imageUrl}
+                    uploading={uploading}
+                    onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
+                    onClear={() => setImageUrl('')}
+                    t={t}
+                  />
+                </Field>
+                <PriceAndFree
+                  price={price}
+                  free={free}
+                  setPrice={setPrice}
+                  setFree={setFree}
+                  t={t}
+                />
+              </>
+            )}
+
+            {type === 'dish' && (
+              <>
+                <NameAndShort
+                  name={name}
+                  shortName={shortName}
+                  setName={setName}
+                  setShortName={setShortName}
+                  t={t}
+                />
+                <Field label={t('dishKind')}>
+                  <div className="grid grid-cols-2 gap-2">
+                    <RadioCard
+                      active={dishKind === 'single'}
+                      onClick={() => setDishKind('single')}
+                      title={t('dishKindSingle')}
+                      hint={t('dishKindSingleHint')}
+                    />
+                    <RadioCard
+                      active={dishKind === 'group'}
+                      onClick={() => setDishKind('group')}
+                      title={t('dishKindGroup')}
+                      hint={t('dishKindGroupHint')}
+                    />
+                  </div>
+                </Field>
+
+                {dishKind === 'single' && (
+                  <>
+                    <Field label={t('image')}>
+                      <ImageUploader
+                        imageUrl={imageUrl}
+                        uploading={uploading}
+                        onUpload={(f) =>
+                          requestCrop(f, (url) => setImageUrl(url))
                         }
-                        className="form-input"
-                        placeholder="10"
+                        onClear={() => setImageUrl('')}
+                        t={t}
                       />
                     </Field>
-                  )}
-                  <Field label={t('properties')}>
-                    <PropertiesEditor
-                      properties={properties}
-                      history={propertyHistory}
-                      onChange={updateProperty}
-                      onAdd={addProperty}
-                      onRemove={removeProperty}
+                    <PriceAndFree
+                      price={price}
+                      free={free}
+                      setPrice={setPrice}
+                      setFree={setFree}
                       t={t}
                     />
-                  </Field>
-                  <Field label={t('sauceMode')}>
-                    <div className="grid grid-cols-2 gap-2">
-                      <RadioCard
-                        active={sauceMode === 'none'}
-                        onClick={() => setSauceMode('none')}
-                        title={t('sauceNone')}
-                        hint=""
+                    <Field label={t('station')}>
+                      <StationPicker
+                        station={station}
+                        setStation={setStation}
+                        t={t}
                       />
-                      <RadioCard
-                        active={sauceMode === 'with'}
-                        onClick={() => setSauceMode('with')}
-                        title={t('sauceWith')}
-                        hint=""
+                    </Field>
+                    {station === 'kitchen' && (
+                      <Field label={t('cookTimeMin')}>
+                        <input
+                          type="number"
+                          value={cookTimeMin}
+                          onChange={(e) =>
+                            setCookTimeMin(Number(e.target.value))
+                          }
+                          className="form-input"
+                          placeholder="10"
+                        />
+                      </Field>
+                    )}
+                    <Field label={t('properties')}>
+                      <PropertiesEditor
+                        properties={properties}
+                        history={propertyHistory}
+                        onChange={updateProperty}
+                        onAdd={addProperty}
+                        onRemove={removeProperty}
+                        t={t}
                       />
-                    </div>
-                  </Field>
-                  {sauceMode === 'with' && (
-                    <Field label={t('allowedSauces')}>
+                    </Field>
+                    <Field label={t('sauceMode')}>
+                      <div className="grid grid-cols-2 gap-2">
+                        <RadioCard
+                          active={sauceMode === 'none'}
+                          onClick={() => setSauceMode('none')}
+                          title={t('sauceNone')}
+                          hint=""
+                        />
+                        <RadioCard
+                          active={sauceMode === 'with'}
+                          onClick={() => setSauceMode('with')}
+                          title={t('sauceWith')}
+                          hint=""
+                        />
+                      </div>
+                    </Field>
+                    {sauceMode === 'with' && (
+                      <Field label={t('allowedSauces')}>
+                        <button
+                          type="button"
+                          onClick={() => setPickingSaucesFor({ kind: 'main' })}
+                          className="w-full text-left form-input flex items-center justify-between"
+                        >
+                          <span className="text-sm text-slate-700">
+                            {allowedSauceIds.length > 0
+                              ? allowedSauceIds
+                                  .map(
+                                    (id) =>
+                                      allSauces.find((s) => s.id === id)
+                                        ?.name ?? '?'
+                                  )
+                                  .join(', ')
+                              : t('pickSauces')}
+                          </span>
+                          <span className="text-xs text-orange-600 font-bold shrink-0 ml-2">
+                            {t('edit')}
+                          </span>
+                        </button>
+                      </Field>
+                    )}
+                  </>
+                )}
+
+                {dishKind === 'group' && (
+                  <Field label={t('variants')}>
+                    <div className="space-y-3">
+                      {variants.map((v, i) => (
+                        <div
+                          key={i}
+                          className="border border-slate-200 rounded-2xl p-4 bg-slate-50/80 space-y-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-slate-500 tracking-wide">
+                              {t('variant')} #{i + 1}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeVariant(i)}
+                              className="text-slate-400 hover:text-red-600"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              value={v.name}
+                              onChange={(e) =>
+                                updateVariant(i, 'name', e.target.value)
+                              }
+                              className="form-input"
+                              placeholder={t('name')}
+                            />
+                            <input
+                              value={v.short_name}
+                              onChange={(e) =>
+                                updateVariant(i, 'short_name', e.target.value)
+                              }
+                              className="form-input"
+                              placeholder={t('shortName')}
+                            />
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              value={v.price}
+                              onChange={(e) =>
+                                updateVariant(
+                                  i,
+                                  'price',
+                                  Number(e.target.value)
+                                )
+                              }
+                              className="form-input flex-1"
+                              disabled={v.free}
+                              placeholder={t('price')}
+                            />
+                            <label className="flex items-center gap-1.5 text-xs font-bold whitespace-nowrap">
+                              <input
+                                type="checkbox"
+                                checked={v.free}
+                                onChange={(e) =>
+                                  updateVariant(i, 'free', e.target.checked)
+                                }
+                              />
+                              {t('free')}
+                            </label>
+                          </div>
+
+                          <Field label={t('image')}>
+                            <ImageUploader
+                              imageUrl={v.image_url}
+                              uploading={false}
+                              onUpload={(f) =>
+                                requestCrop(f, (url) =>
+                                  updateVariant(i, 'image_url', url)
+                                )
+                              }
+                              onClear={() =>
+                                updateVariant(i, 'image_url', '')
+                              }
+                              t={t}
+                              compact
+                            />
+                          </Field>
+
+                          <Field label={t('station')}>
+                            <div className="grid grid-cols-2 gap-2">
+                              <RadioCard
+                                active={v.station === 'ready'}
+                                onClick={() =>
+                                  updateVariant(i, 'station', 'ready')
+                                }
+                                title={t('stationReady')}
+                                hint=""
+                              />
+                              <RadioCard
+                                active={v.station === 'kitchen'}
+                                onClick={() =>
+                                  updateVariant(i, 'station', 'kitchen')
+                                }
+                                title={t('stationKitchen')}
+                                hint=""
+                              />
+                            </div>
+                          </Field>
+                          {v.station === 'kitchen' && (
+                            <Field label={t('cookTimeMin')}>
+                              <input
+                                type="number"
+                                value={v.cook_time_min}
+                                onChange={(e) =>
+                                  updateVariant(
+                                    i,
+                                    'cook_time_min',
+                                    Number(e.target.value)
+                                  )
+                                }
+                                className="form-input"
+                              />
+                            </Field>
+                          )}
+
+                          <Field label={t('properties')}>
+                            <PropertiesEditor
+                              properties={v.properties}
+                              history={propertyHistory}
+                              onChange={(idx, patch) =>
+                                updateVariantProperty(i, idx, patch)
+                              }
+                              onAdd={() => addVariantProperty(i)}
+                              onRemove={(idx) => removeVariantProperty(i, idx)}
+                              t={t}
+                            />
+                          </Field>
+
+                          <Field label={t('sauceMode')}>
+                            <div className="grid grid-cols-2 gap-2">
+                              <RadioCard
+                                active={v.sauce_mode === 'none'}
+                                onClick={() =>
+                                  updateVariant(i, 'sauce_mode', 'none')
+                                }
+                                title={t('sauceNone')}
+                                hint=""
+                              />
+                              <RadioCard
+                                active={v.sauce_mode === 'with'}
+                                onClick={() =>
+                                  updateVariant(i, 'sauce_mode', 'with')
+                                }
+                                title={t('sauceWith')}
+                                hint=""
+                              />
+                            </div>
+                          </Field>
+                          {v.sauce_mode === 'with' && (
+                            <Field label={t('allowedSauces')}>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPickingSaucesFor({
+                                    kind: 'variant',
+                                    index: i,
+                                  })
+                                }
+                                className="w-full text-left form-input flex items-center justify-between"
+                              >
+                                <span className="text-sm text-slate-700">
+                                  {v.allowed_sauce_ids.length > 0
+                                    ? `${v.allowed_sauce_ids.length} ${t(
+                                        'saucesShort'
+                                      )}`
+                                    : t('pickSauces')}
+                                </span>
+                                <span className="text-xs text-orange-600 font-bold shrink-0 ml-2">
+                                  {t('edit')}
+                                </span>
+                              </button>
+                            </Field>
+                          )}
+                        </div>
+                      ))}
                       <button
                         type="button"
-                        onClick={() => setPickingSaucesFor({ kind: 'main' })}
-                        className="w-full text-left form-input flex items-center justify-between"
+                        onClick={addVariant}
+                        className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold w-full justify-center"
                       >
-                        <span className="text-sm text-gray-700">
-                          {allowedSauceIds.length > 0
-                            ? allowedSauceIds
-                                .map(
-                                  (id) =>
-                                    allSauces.find((s) => s.id === id)?.name ??
-                                    '?'
-                                )
-                                .join(', ')
-                            : t('pickSauces')}
-                        </span>
-                        <span className="text-xs text-orange-600 font-bold shrink-0 ml-2">
-                          {t('edit')}
-                        </span>
+                        <Plus className="w-3.5 h-3.5" /> {t('addDishBtn')}
                       </button>
-                    </Field>
-                  )}
-                </>
-              )}
+                    </div>
+                  </Field>
+                )}
+              </>
+            )}
 
-              {dishKind === 'group' && (
-                <Field label={t('variants')}>
+            {type === 'set' && (
+              <>
+                <NameAndShort
+                  name={name}
+                  shortName={shortName}
+                  setName={setName}
+                  setShortName={setShortName}
+                  t={t}
+                />
+                <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-800 font-medium leading-snug">
+                  {t('menuSetPriceHint')}
+                </div>
+
+                <Field label={t('mainProduct')}>
+                  <select
+                    value={setMainId}
+                    onChange={(e) => {
+                      const newMainId = e.target.value;
+                      setSetMainId(newMainId);
+                      const newMain = allItems.find((i) => i.id === newMainId);
+                      if (newMain?.dish_kind === 'group' && newMain.variants) {
+                        const auto: Record<
+                          string,
+                          {
+                            price_override: number | null;
+                            image_override: string | null;
+                          }
+                        > = {};
+                        for (const v of newMain.variants) {
+                          auto[v.id] = {
+                            price_override: v.price,
+                            image_override: null,
+                          };
+                        }
+                        setMainOverrides(auto);
+                      } else {
+                        setMainOverrides({});
+                      }
+                    }}
+                    className="form-input"
+                  >
+                    <option value="">— {t('select')} —</option>
+                    {allDishes.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                        {d.dish_kind === 'group'
+                          ? ` (${d.variants?.length ?? 0} ${t(
+                              'variantsShort'
+                            )})`
+                          : ''}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                {(() => {
+                  const main = allItems.find((i) => i.id === setMainId);
+                  if (!main) return null;
+
+                  if (main.dish_kind !== 'group' || !main.variants) {
+                    return (
+                      <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-800 leading-snug">
+                        {t('menuSetNoVariantsHint')}
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <Field label={t('menuSetPhotoByVariant')}>
+                      <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800 leading-snug">
+                        {t('menuSetPhotoIsSetHint')}
+                      </div>
+
+                      <div className="space-y-2">
+                        {main.variants.map((v) => {
+                          const ov = mainOverrides[v.id] ?? {
+                            price_override: null,
+                            image_override: null,
+                          };
+                          const effectiveImage =
+                            ov.image_override || v.image_url || null;
+                          const usingOverride = Boolean(ov.image_override);
+
+                          return (
+                            <div
+                              key={v.id}
+                              className="border border-slate-200 rounded-xl p-2.5 bg-slate-50/80 space-y-2"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-bold text-slate-800 truncate">
+                                  {v.name}
+                                  <span className="ml-1 text-[10px] text-slate-400 font-normal">
+                                    (база {formatYen(v.price)})
+                                  </span>
+                                </span>
+                                {usingOverride && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setMainOverrides((m) => ({
+                                        ...m,
+                                        [v.id]: {
+                                          ...ov,
+                                          image_override: null,
+                                        },
+                                      }))
+                                    }
+                                    className="text-[10px] text-orange-600 font-bold hover:underline shrink-0"
+                                  >
+                                    {t('menuSetPhotoReset')}
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="grid grid-cols-12 gap-2 items-center">
+                                <input
+                                  type="number"
+                                  value={ov.price_override ?? ''}
+                                  onChange={(e) =>
+                                    setMainOverrides((m) => ({
+                                      ...m,
+                                      [v.id]: {
+                                        ...ov,
+                                        price_override: e.target.value
+                                          ? Number(e.target.value)
+                                          : null,
+                                      },
+                                    }))
+                                  }
+                                  className="form-input col-span-5 text-xs"
+                                  placeholder={`Цена: ${formatYen(v.price)}`}
+                                />
+
+                                <label className="col-span-7 cursor-pointer flex items-center gap-2 p-1.5 rounded-xl border-2 border-dashed border-orange-300 hover:border-orange-500 hover:bg-orange-50 bg-white transition-colors">
+                                  {effectiveImage ? (
+                                    <img
+                                      src={effectiveImage}
+                                      alt=""
+                                      className={`w-10 h-10 rounded object-cover border shrink-0 ${
+                                        usingOverride
+                                          ? 'border-orange-500 ring-2 ring-orange-200'
+                                          : 'border-slate-200 opacity-60'
+                                      }`}
+                                    />
+                                  ) : (
+                                    <div className="w-10 h-10 rounded bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
+                                      <Upload className="w-4 h-4 text-slate-400" />
+                                    </div>
+                                  )}
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-[11px] font-bold text-slate-800 truncate">
+                                      {usingOverride
+                                        ? t('menuSetOwnPhoto')
+                                        : effectiveImage
+                                        ? t('menuSetCurrentDishPhoto')
+                                        : t('menuSetUploadPhoto')}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 truncate">
+                                      {usingOverride
+                                        ? t('menuSetClickToReplace')
+                                        : t('menuSetClickToSet')}
+                                    </div>
+                                  </div>
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (!f) return;
+                                      requestCrop(f, (url) =>
+                                        setMainOverrides((m) => ({
+                                          ...m,
+                                          [v.id]: {
+                                            ...ov,
+                                            image_override: url,
+                                          },
+                                        }))
+                                      );
+                                      e.target.value = '';
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </Field>
+                  );
+                })()}
+
+                <Field label={t('extraGroups')}>
                   <div className="space-y-3">
-                    {variants.map((v, i) => (
+                    {extraGroups.map((g, gi) => (
                       <div
-                        key={i}
-                        className="border border-gray-200 rounded-xl p-3 bg-slate-50 space-y-2"
+                        key={gi}
+                        className="border border-slate-200 rounded-2xl p-4 bg-slate-50/80 space-y-2"
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-black text-gray-500 uppercase tracking-wider">
-                            {t('variant')} #{i + 1}
-                          </span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={g.label}
+                            onChange={(e) =>
+                              updateExtraGroup(gi, { label: e.target.value })
+                            }
+                            className="form-input flex-1"
+                            placeholder={t('groupLabel')}
+                          />
+                          <label className="flex items-center gap-1 text-xs font-bold whitespace-nowrap">
+                            <input
+                              type="checkbox"
+                              checked={g.required}
+                              onChange={(e) =>
+                                updateExtraGroup(gi, {
+                                  required: e.target.checked,
+                                })
+                              }
+                            />
+                            {t('required')}
+                          </label>
                           <button
                             type="button"
-                            onClick={() => removeVariant(i)}
-                            className="text-gray-400 hover:text-red-600"
+                            onClick={() => removeExtraGroup(gi)}
+                            className="p-1.5 text-slate-400 hover:text-red-600"
                           >
                             <X className="w-4 h-4" />
                           </button>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-2">
-                          <input
-                            value={v.name}
-                            onChange={(e) =>
-                              updateVariant(i, 'name', e.target.value)
-                            }
-                            className="form-input"
-                            placeholder={t('name')}
-                          />
-                          <input
-                            value={v.short_name}
-                            onChange={(e) =>
-                              updateVariant(i, 'short_name', e.target.value)
-                            }
-                            className="form-input"
-                            placeholder={t('shortName')}
-                          />
+                        <div className="space-y-1.5">
+                          {g.options.map((o, oi) => {
+                            const it = allItems.find((x) => x.id === o.item_id);
+                            if (!it) return null;
+                            return (
+                              <div
+                                key={oi}
+                                className="grid grid-cols-12 gap-2 items-center border border-slate-200 rounded-xl p-2 bg-white"
+                              >
+                                <div className="col-span-5 flex items-center gap-2 min-w-0">
+                                  {it.image_url ? (
+                                    <img
+                                      src={it.image_url}
+                                      alt=""
+                                      className="w-8 h-8 rounded object-cover shrink-0 bg-white"
+                                    />
+                                  ) : (
+                                    <div className="w-8 h-8 rounded bg-slate-100 shrink-0" />
+                                  )}
+                                  <span className="text-xs font-bold truncate">
+                                    {it.name}
+                                  </span>
+                                </div>
+                                <input
+                                  type="number"
+                                  value={o.price_override ?? ''}
+                                  onChange={(e) =>
+                                    updateExtraGroup(gi, {
+                                      options: g.options.map((x, j) =>
+                                        j === oi
+                                          ? {
+                                              ...x,
+                                              price_override: e.target.value
+                                                ? Number(e.target.value)
+                                                : null,
+                                            }
+                                          : x
+                                      ),
+                                    })
+                                  }
+                                  className="form-input col-span-3 text-xs"
+                                  placeholder="0"
+                                />
+                                <label className="col-span-3 cursor-pointer flex items-center gap-1.5">
+                                  {o.image_override ? (
+                                    <img
+                                      src={o.image_override}
+                                      className="w-8 h-8 rounded object-cover border border-slate-200 bg-white"
+                                    />
+                                  ) : (
+                                    <div className="w-8 h-8 rounded bg-slate-100 border border-slate-200 flex items-center justify-center">
+                                      <Upload className="w-3 h-3 text-slate-400" />
+                                    </div>
+                                  )}
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (!f) return;
+                                      requestCrop(f, (url) =>
+                                        updateExtraGroup(gi, {
+                                          options: g.options.map((x, j) =>
+                                            j === oi
+                                              ? {
+                                                  ...x,
+                                                  image_override: url,
+                                                }
+                                              : x
+                                          ),
+                                        })
+                                      );
+                                      e.target.value = '';
+                                    }}
+                                  />
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => removeOptionFromGroup(gi, oi)}
+                                  className="col-span-1 p-1 text-slate-400 hover:text-red-600 justify-self-end"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })}
+
+                          <button
+                            type="button"
+                            onClick={() => setPickingOption({ groupIndex: gi })}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-100 hover:bg-purple-200 text-purple-800 text-xs font-bold"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> {t('addOption')}
+                          </button>
                         </div>
-
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            value={v.price}
-                            onChange={(e) =>
-                              updateVariant(i, 'price', Number(e.target.value))
-                            }
-                            className="form-input flex-1"
-                            disabled={v.free}
-                            placeholder={t('price')}
-                          />
-                          <label className="flex items-center gap-1.5 text-xs font-bold whitespace-nowrap">
-                            <input
-                              type="checkbox"
-                              checked={v.free}
-                              onChange={(e) =>
-                                updateVariant(i, 'free', e.target.checked)
-                              }
-                            />
-                            {t('free')}
-                          </label>
-                        </div>
-
-                        <Field label={t('image')}>
-                          <ImageUploader
-                            imageUrl={v.image_url}
-                            uploading={false}
-                            onUpload={(f) =>
-                              requestCrop(f, (url) =>
-                                updateVariant(i, 'image_url', url)
-                              )
-                            }
-                            onClear={() => updateVariant(i, 'image_url', '')}
-                            t={t}
-                            compact
-                          />
-                        </Field>
-
-                        <Field label={t('station')}>
-                          <div className="grid grid-cols-2 gap-2">
-                            <RadioCard
-                              active={v.station === 'ready'}
-                              onClick={() =>
-                                updateVariant(i, 'station', 'ready')
-                              }
-                              title={t('stationReady')}
-                              hint=""
-                            />
-                            <RadioCard
-                              active={v.station === 'kitchen'}
-                              onClick={() =>
-                                updateVariant(i, 'station', 'kitchen')
-                              }
-                              title={t('stationKitchen')}
-                              hint=""
-                            />
-                          </div>
-                        </Field>
-                        {v.station === 'kitchen' && (
-                          <Field label={t('cookTimeMin')}>
-                            <input
-                              type="number"
-                              value={v.cook_time_min}
-                              onChange={(e) =>
-                                updateVariant(
-                                  i,
-                                  'cook_time_min',
-                                  Number(e.target.value)
-                                )
-                              }
-                              className="form-input"
-                            />
-                          </Field>
-                        )}
-
-                        <Field label={t('properties')}>
-                          <PropertiesEditor
-                            properties={v.properties}
-                            history={propertyHistory}
-                            onChange={(idx, patch) =>
-                              updateVariantProperty(i, idx, patch)
-                            }
-                            onAdd={() => addVariantProperty(i)}
-                            onRemove={(idx) => removeVariantProperty(i, idx)}
-                            t={t}
-                          />
-                        </Field>
-
-                        <Field label={t('sauceMode')}>
-                          <div className="grid grid-cols-2 gap-2">
-                            <RadioCard
-                              active={v.sauce_mode === 'none'}
-                              onClick={() =>
-                                updateVariant(i, 'sauce_mode', 'none')
-                              }
-                              title={t('sauceNone')}
-                              hint=""
-                            />
-                            <RadioCard
-                              active={v.sauce_mode === 'with'}
-                              onClick={() =>
-                                updateVariant(i, 'sauce_mode', 'with')
-                              }
-                              title={t('sauceWith')}
-                              hint=""
-                            />
-                          </div>
-                        </Field>
-                        {v.sauce_mode === 'with' && (
-                          <Field label={t('allowedSauces')}>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setPickingSaucesFor({
-                                  kind: 'variant',
-                                  index: i,
-                                })
-                              }
-                              className="w-full text-left form-input flex items-center justify-between"
-                            >
-                              <span className="text-sm text-gray-700">
-                                {v.allowed_sauce_ids.length > 0
-                                  ? `${v.allowed_sauce_ids.length} ${t(
-                                      'saucesShort'
-                                    )}`
-                                  : t('pickSauces')}
-                              </span>
-                              <span className="text-xs text-orange-600 font-bold shrink-0 ml-2">
-                                {t('edit')}
-                              </span>
-                            </button>
-                          </Field>
-                        )}
                       </div>
                     ))}
                     <button
                       type="button"
-                      onClick={addVariant}
-                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold w-full justify-center"
+                      onClick={addExtraGroup}
+                      className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold w-full justify-center"
                     >
-                      <Plus className="w-3.5 h-3.5" /> {t('addDishBtn')}
+                      <Plus className="w-3.5 h-3.5" /> {t('addExtraGroup')}
                     </button>
                   </div>
                 </Field>
-              )}
-            </>
-          )}
-
-          {type === 'set' && (
-            <>
-              <NameAndShort
-                name={name}
-                shortName={shortName}
-                setName={setName}
-                setShortName={setShortName}
-                t={t}
-              />
-              <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-800 font-medium leading-snug">
-                {t('menuSetPriceHint')}
-              </div>
-
-              <Field label={t('mainProduct')}>
-                <select
-                  value={setMainId}
-                  onChange={(e) => {
-                    const newMainId = e.target.value;
-                    setSetMainId(newMainId);
-                    const newMain = allItems.find((i) => i.id === newMainId);
-                    if (newMain?.dish_kind === 'group' && newMain.variants) {
-                      const auto: Record<
-                        string,
-                        {
-                          price_override: number | null;
-                          image_override: string | null;
-                        }
-                      > = {};
-                      for (const v of newMain.variants) {
-                        auto[v.id] = {
-                          price_override: v.price,
-                          image_override: null,
-                        };
-                      }
-                      setMainOverrides(auto);
-                    } else {
-                      setMainOverrides({});
-                    }
-                  }}
-                  className="form-input"
-                >
-                  <option value="">— {t('select')} —</option>
-                  {allDishes.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                      {d.dish_kind === 'group'
-                        ? ` (${d.variants?.length ?? 0} ${t('variantsShort')})`
-                        : ''}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              {(() => {
-                const main = allItems.find((i) => i.id === setMainId);
-                if (!main) return null;
-
-                if (main.dish_kind !== 'group' || !main.variants) {
-                  return (
-                    <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-800 leading-snug">
-                      {t('menuSetNoVariantsHint')}
-                    </div>
-                  );
-                }
-
-                return (
-                  <Field label={t('menuSetPhotoByVariant')}>
-                    <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800 leading-snug">
-                      {t('menuSetPhotoIsSetHint')}
-                    </div>
-
-                    <div className="space-y-2">
-                      {main.variants.map((v) => {
-                        const ov = mainOverrides[v.id] ?? {
-                          price_override: null,
-                          image_override: null,
-                        };
-                        const effectiveImage =
-                          ov.image_override || v.image_url || null;
-                        const usingOverride = Boolean(ov.image_override);
-
-                        return (
-                          <div
-                            key={v.id}
-                            className="border border-gray-200 rounded-lg p-2 bg-slate-50 space-y-2"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-xs font-bold text-gray-800 truncate">
-                                {v.name}
-                                <span className="ml-1 text-[10px] text-gray-400 font-normal">
-                                  (база {formatYen(v.price)})
-                                </span>
-                              </span>
-                              {usingOverride && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setMainOverrides((m) => ({
-                                      ...m,
-                                      [v.id]: {
-                                        ...ov,
-                                        image_override: null,
-                                      },
-                                    }))
-                                  }
-                                  className="text-[10px] text-orange-600 font-bold hover:underline shrink-0"
-                                >
-                                  {t('menuSetPhotoReset')}
-                                </button>
-                              )}
-                            </div>
-
-                            <div className="grid grid-cols-12 gap-2 items-center">
-                              <input
-                                type="number"
-                                value={ov.price_override ?? ''}
-                                onChange={(e) =>
-                                  setMainOverrides((m) => ({
-                                    ...m,
-                                    [v.id]: {
-                                      ...ov,
-                                      price_override: e.target.value
-                                        ? Number(e.target.value)
-                                        : null,
-                                    },
-                                  }))
-                                }
-                                className="form-input col-span-5 text-xs"
-                                placeholder={`Цена: ${formatYen(v.price)}`}
-                              />
-
-                              <label className="col-span-7 cursor-pointer flex items-center gap-2 p-1.5 rounded-lg border-2 border-dashed border-orange-300 hover:border-orange-500 hover:bg-orange-50 bg-white transition-colors">
-                                {effectiveImage ? (
-                                  <img
-                                    src={effectiveImage}
-                                    alt=""
-                                    className={`w-10 h-10 rounded object-cover border shrink-0 ${
-                                      usingOverride
-                                        ? 'border-orange-500 ring-2 ring-orange-200'
-                                        : 'border-gray-200 opacity-60'
-                                    }`}
-                                  />
-                                ) : (
-                                  <div className="w-10 h-10 rounded bg-gray-100 border border-gray-200 flex items-center justify-center shrink-0">
-                                    <Upload className="w-4 h-4 text-gray-400" />
-                                  </div>
-                                )}
-                                <div className="flex-1 min-w-0">
-                                  <div className="text-[11px] font-bold text-gray-800 truncate">
-                                    {usingOverride
-                                      ? t('menuSetOwnPhoto')
-                                      : effectiveImage
-                                      ? t('menuSetCurrentDishPhoto')
-                                      : t('menuSetUploadPhoto')}
-                                  </div>
-                                  <div className="text-[9px] text-gray-500 truncate">
-                                    {usingOverride
-                                      ? t('menuSetClickToReplace')
-                                      : t('menuSetClickToSet')}
-                                  </div>
-                                </div>
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  className="hidden"
-                                  onChange={(e) => {
-                                    const f = e.target.files?.[0];
-                                    if (!f) return;
-                                    requestCrop(f, (url) =>
-                                      setMainOverrides((m) => ({
-                                        ...m,
-                                        [v.id]: {
-                                          ...ov,
-                                          image_override: url,
-                                        },
-                                      }))
-                                    );
-                                    e.target.value = '';
-                                  }}
-                                />
-                              </label>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </Field>
-                );
-              })()}
-
-              <Field label={t('extraGroups')}>
-                <div className="space-y-3">
-                  {extraGroups.map((g, gi) => (
-                    <div
-                      key={gi}
-                      className="border border-gray-200 rounded-xl p-3 bg-slate-50 space-y-2"
-                    >
-                      <div className="flex items-center gap-2">
-                        <input
-                          value={g.label}
-                          onChange={(e) =>
-                            updateExtraGroup(gi, { label: e.target.value })
-                          }
-                          className="form-input flex-1"
-                          placeholder={t('groupLabel')}
-                        />
-                        <label className="flex items-center gap-1 text-xs font-bold whitespace-nowrap">
-                          <input
-                            type="checkbox"
-                            checked={g.required}
-                            onChange={(e) =>
-                              updateExtraGroup(gi, {
-                                required: e.target.checked,
-                              })
-                            }
-                          />
-                          {t('required')}
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => removeExtraGroup(gi)}
-                          className="p-1.5 text-gray-400 hover:text-red-600"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        {g.options.map((o, oi) => {
-                          const it = allItems.find((x) => x.id === o.item_id);
-                          if (!it) return null;
-                          return (
-                            <div
-                              key={oi}
-                              className="grid grid-cols-12 gap-2 items-center border border-gray-200 rounded-lg p-2 bg-white"
-                            >
-                              <div className="col-span-5 flex items-center gap-2 min-w-0">
-                                {it.image_url ? (
-                                  <img
-                                    src={it.image_url}
-                                    alt=""
-                                    className="w-8 h-8 rounded object-cover shrink-0 bg-white"
-                                  />
-                                ) : (
-                                  <div className="w-8 h-8 rounded bg-gray-100 shrink-0" />
-                                )}
-                                <span className="text-xs font-bold truncate">
-                                  {it.name}
-                                </span>
-                              </div>
-                              <input
-                                type="number"
-                                value={o.price_override ?? ''}
-                                onChange={(e) =>
-                                  updateExtraGroup(gi, {
-                                    options: g.options.map((x, j) =>
-                                      j === oi
-                                        ? {
-                                            ...x,
-                                            price_override: e.target.value
-                                              ? Number(e.target.value)
-                                              : null,
-                                          }
-                                        : x
-                                    ),
-                                  })
-                                }
-                                className="form-input col-span-3 text-xs"
-                                placeholder="0"
-                              />
-                              <label className="col-span-3 cursor-pointer flex items-center gap-1.5">
-                                {o.image_override ? (
-                                  <img
-                                    src={o.image_override}
-                                    className="w-8 h-8 rounded object-cover border border-gray-200 bg-white"
-                                  />
-                                ) : (
-                                  <div className="w-8 h-8 rounded bg-gray-100 border border-gray-200 flex items-center justify-center">
-                                    <Upload className="w-3 h-3 text-gray-400" />
-                                  </div>
-                                )}
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  className="hidden"
-                                  onChange={(e) => {
-                                    const f = e.target.files?.[0];
-                                    if (!f) return;
-                                    requestCrop(f, (url) =>
-                                      updateExtraGroup(gi, {
-                                        options: g.options.map((x, j) =>
-                                          j === oi
-                                            ? {
-                                                ...x,
-                                                image_override: url,
-                                              }
-                                            : x
-                                        ),
-                                      })
-                                    );
-                                    e.target.value = '';
-                                  }}
-                                />
-                              </label>
-                              <button
-                                type="button"
-                                onClick={() => removeOptionFromGroup(gi, oi)}
-                                className="col-span-1 p-1 text-gray-400 hover:text-red-600 justify-self-end"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          );
-                        })}
-
-                        <button
-                          type="button"
-                          onClick={() => setPickingOption({ groupIndex: gi })}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-100 hover:bg-purple-200 text-purple-800 text-xs font-bold"
-                        >
-                          <Plus className="w-3.5 h-3.5" /> {t('addOption')}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={addExtraGroup}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold w-full justify-center"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> {t('addExtraGroup')}
-                  </button>
-                </div>
-              </Field>
-            </>
-          )}
-
-          <Field label={t('active')}>
-            <button
-              type="button"
-              onClick={() => setActive(!active)}
-              className={`relative w-12 h-6 rounded-full transition-colors ${
-                active ? 'bg-orange-500' : 'bg-gray-300'
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform shadow ${
-                  active ? 'translate-x-6' : ''
-                }`}
-              />
-            </button>
-          </Field>
-
-          <div className="flex gap-2 mt-4">
-            {onDelete && (
-              <button
-                onClick={onDelete}
-                disabled={isBusy}
-                className="px-4 py-2.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 text-sm font-semibold flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Trash2 className="w-4 h-4" />
-                {t('delete')}
-              </button>
+              </>
             )}
-            <button
-              onClick={handleClose}
-              disabled={isBusy}
-              className="flex-1 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {t('cancel')}
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving || !name || pendingOpsCount > 0}
-              className="flex-1 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {saving ? (
-                <>
-                  <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  {t('saving')}
-                </>
-              ) : pendingOpsCount > 0 ? (
-                <>
-                  <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  {t('menuWaitingPhoto')}
-                </>
-              ) : (
-                t('save')
-              )}
-            </button>
+
+            <Field label={t('active')}>
+              <button
+                type="button"
+                onClick={() => setActive(!active)}
+                className={`relative w-14 h-7 rounded-full transition-colors ${
+                  active ? 'bg-orange-500' : 'bg-slate-300'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white transition-transform shadow ${
+                    active ? 'translate-x-7' : ''
+                  }`}
+                />
+              </button>
+            </Field>
           </div>
 
-          {pendingOpsCount > 0 && (
-            <p className="mt-2 text-[10px] text-orange-700 text-center leading-snug flex items-center justify-center gap-1.5">
-              <ImageIcon className="w-3 h-3" />
-              {t('menuDoNotClosePhoto')}
-            </p>
-          )}
+          {/* ПОДВАЛ (всегда виден) */}
+          <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 shrink-0">
+            <div className="flex gap-2">
+              {onDelete && (
+                <button
+                  onClick={onDelete}
+                  disabled={isBusy}
+                  className="px-4 py-3 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 text-sm font-semibold flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {t('delete')}
+                </button>
+              )}
+              <button
+                onClick={handleClose}
+                disabled={isBusy}
+                className="flex-1 py-3 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {t('cancel')}
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving || !name || pendingOpsCount > 0}
+                className="flex-1 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold shadow-md shadow-orange-500/30 disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {saving ? (
+                  <>
+                    <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    {t('saving')}
+                  </>
+                ) : pendingOpsCount > 0 ? (
+                  <>
+                    <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    {t('menuWaitingPhoto')}
+                  </>
+                ) : (
+                  t('save')
+                )}
+              </button>
+            </div>
+
+            {pendingOpsCount > 0 && (
+              <p className="mt-2 text-[10px] text-orange-700 text-center leading-snug flex items-center justify-center gap-1.5">
+                <ImageIcon className="w-3 h-3" />
+                {t('menuDoNotClosePhoto')}
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -3084,10 +3267,10 @@ function ColorPicker({
           key={c}
           type="button"
           onClick={() => setColor(c)}
-          className={`w-8 h-8 rounded-full border-2 transition-transform active:scale-95 ${
+          className={`w-9 h-9 rounded-full border-2 transition-transform active:scale-90 ${
             color === c
-              ? 'border-gray-900 ring-2 ring-orange-400'
-              : 'border-gray-300'
+              ? 'border-slate-900 ring-2 ring-orange-400 scale-110'
+              : 'border-slate-300'
           }`}
           style={{ backgroundColor: c }}
         />
@@ -3105,7 +3288,7 @@ function Field({
 }) {
   return (
     <div className="mb-3">
-      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase tracking-wider">
+      <label className="block text-xs font-bold text-slate-500 mb-1.5">
         {label}
       </label>
       {children}
@@ -3130,13 +3313,13 @@ function RadioCard({
       onClick={onClick}
       className={`flex flex-col items-start gap-1 p-3 rounded-xl border-2 text-left transition-all ${
         active
-          ? 'bg-orange-50 border-orange-500'
-          : 'bg-white border-gray-200 hover:border-gray-300'
+          ? 'bg-orange-50 border-orange-500 shadow-sm ring-2 ring-orange-200'
+          : 'bg-white border-slate-200 hover:border-slate-300'
       }`}
     >
-      <span className="text-sm font-bold text-gray-900">{title}</span>
+      <span className="text-sm font-bold text-slate-900">{title}</span>
       {hint && (
-        <span className="text-[10px] text-gray-500 leading-tight">{hint}</span>
+        <span className="text-[11px] text-slate-500 leading-tight">{hint}</span>
       )}
     </button>
   );
@@ -3172,7 +3355,7 @@ function PropertiesEditor({
       <button
         type="button"
         onClick={onAdd}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-bold"
+        className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold"
       >
         <Plus className="w-3.5 h-3.5" /> {t('addProperty')}
       </button>
@@ -3227,7 +3410,7 @@ function PropertyEditor({
   };
 
   return (
-    <div className="border border-gray-200 rounded-xl p-3 bg-slate-50 space-y-2.5">
+    <div className="border border-slate-200 rounded-2xl p-3 bg-slate-50/80 space-y-2.5">
       <div className="relative">
         <div className="flex items-center gap-2">
           <input
@@ -3250,7 +3433,7 @@ function PropertyEditor({
           <button
             type="button"
             onClick={onRemove}
-            className="p-2 text-gray-400 hover:text-red-600 shrink-0"
+            className="p-2 text-slate-400 hover:text-red-600 shrink-0"
             title={t('menuPropertyDeleteTitle')}
           >
             <X className="w-4 h-4" />
@@ -3262,7 +3445,7 @@ function PropertyEditor({
             onMouseDown={(e) => e.stopPropagation()}
             className="absolute left-0 right-12 z-30 mt-1 bg-white border-2 border-orange-300 rounded-xl shadow-2xl max-h-64 overflow-y-auto"
           >
-            <div className="px-3 py-1.5 text-[10px] font-black text-orange-700 uppercase tracking-wider bg-orange-50 border-b border-orange-200 sticky top-0">
+            <div className="px-3 py-1.5 text-[11px] font-black text-orange-700 bg-orange-50 border-b border-orange-200 sticky top-0">
               {t('menuPropertyFromHistory').replace(
                 '{n}',
                 String(suggestions.length)
@@ -3276,25 +3459,25 @@ function PropertyEditor({
                   e.preventDefault();
                   applyFromHistory(h);
                 }}
-                className="w-full text-left px-3 py-2 hover:bg-orange-50 active:bg-orange-100 transition-colors border-b border-gray-100 last:border-b-0"
+                className="w-full text-left px-3 py-2 hover:bg-orange-50 active:bg-orange-100 transition-colors border-b border-slate-100 last:border-b-0"
               >
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-gray-900 truncate flex-1">
+                  <span className="text-sm font-bold text-slate-900 truncate flex-1">
                     {h.name}
                   </span>
                   {h.required && (
-                    <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">
+                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">
                       {t('menuPropertyRequiredBadge')}
                     </span>
                   )}
                 </div>
                 {h.options.length > 0 && (
-                  <div className="text-[10px] text-gray-500 mt-0.5 truncate">
+                  <div className="text-[11px] text-slate-500 mt-0.5 truncate">
                     {h.options.join(' · ')}
                   </div>
                 )}
                 {h.options.length === 0 && (
-                  <div className="text-[10px] text-gray-400 mt-0.5 italic">
+                  <div className="text-[11px] text-slate-400 mt-0.5 italic">
                     {t('menuPropertyCheckboxBadge')}
                   </div>
                 )}
@@ -3306,14 +3489,14 @@ function PropertyEditor({
 
       {property.options.length > 0 && (
         <div>
-          <div className="text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1.5">
+          <div className="text-[11px] font-black text-slate-500 mb-1.5">
             {t('menuPropertyVariants')}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {property.options.map((opt, idx) => (
               <span
                 key={`${opt}-${idx}`}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-gray-300 text-xs font-bold text-gray-800"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-300 text-xs font-bold text-slate-800"
               >
                 {opt}
                 <button
@@ -3323,7 +3506,7 @@ function PropertyEditor({
                       options: property.options.filter((_, j) => j !== idx),
                     })
                   }
-                  className="text-gray-400 hover:text-red-600"
+                  className="text-slate-400 hover:text-red-600"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -3354,14 +3537,14 @@ function PropertyEditor({
           type="button"
           onClick={addOption}
           disabled={!newOption.trim()}
-          className="flex items-center gap-1 px-3 py-2 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold disabled:opacity-40 shrink-0"
+          className="flex items-center gap-1 px-3 py-2.5 rounded-xl bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold disabled:opacity-40 shrink-0"
         >
           <Plus className="w-3.5 h-3.5" />
           {t('menuPropertyVariantBtn')}
         </button>
       </div>
 
-      <label className="flex items-center gap-1.5 text-xs font-bold text-gray-700 select-none cursor-pointer">
+      <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 select-none cursor-pointer">
         <input
           type="checkbox"
           checked={property.required}
@@ -3372,7 +3555,7 @@ function PropertyEditor({
       </label>
 
       {property.options.length === 0 && (
-        <p className="text-[10px] text-gray-500 leading-snug">
+        <p className="text-[11px] text-slate-500 leading-snug">
           {t('menuPropertyCheckboxHint')}
         </p>
       )}
@@ -3400,7 +3583,7 @@ function ImageUploader({
       <div
         className={`${
           compact ? 'w-12 h-12' : 'w-20 h-20'
-        } rounded-lg overflow-hidden bg-white shrink-0 border border-gray-200 flex items-center justify-center`}
+        } rounded-xl overflow-hidden bg-white shrink-0 border border-slate-200 flex items-center justify-center`}
       >
         {imageUrl ? (
           <img
@@ -3409,7 +3592,7 @@ function ImageUploader({
           />
         ) : (
           <Upload
-            className={`${compact ? 'w-4 h-4' : 'w-6 h-6'} text-gray-400`}
+            className={`${compact ? 'w-4 h-4' : 'w-6 h-6'} text-slate-400`}
           />
         )}
       </div>
@@ -3418,7 +3601,7 @@ function ImageUploader({
           <span
             className={`block ${
               compact ? 'py-1.5 text-xs' : 'py-2 text-sm'
-            } px-3 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-center transition-colors`}
+            } px-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-center transition-colors`}
           >
             {uploading ? t('uploading') : t('uploadImage')}
           </span>
@@ -3437,7 +3620,7 @@ function ImageUploader({
           <button
             type="button"
             onClick={onClear}
-            className="py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-xs font-bold"
+            className="py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold"
           >
             {t('removeCover')}
           </button>
@@ -3464,21 +3647,21 @@ function ItemPickerModal({
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
+        className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between p-4 border-b border-gray-200">
-          <h3 className="text-lg font-black text-gray-900">{t('pickItem')}</h3>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h3 className="text-lg font-black text-slate-900">{t('pickItem')}</h3>
           <button
             onClick={onCancel}
-            className="text-gray-400 hover:text-gray-900"
+            className="text-slate-400 hover:text-slate-900"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
           {items.length === 0 && (
-            <p className="text-center text-sm text-gray-400 py-6">
+            <p className="text-center text-sm text-slate-400 py-6">
               {t('noItemsInCategory')}
             </p>
           )}
@@ -3486,23 +3669,23 @@ function ItemPickerModal({
             <button
               key={it.id}
               onClick={() => onPick(it.id)}
-              className="w-full flex items-center gap-3 p-3 rounded-xl border-2 border-gray-200 hover:border-orange-400 hover:bg-orange-50 transition-all text-left"
+              className="w-full flex items-center gap-3 p-3 rounded-xl border-2 border-slate-200 hover:border-orange-400 hover:bg-orange-50 transition-all text-left"
             >
-              <div className="w-12 h-12 rounded-lg overflow-hidden bg-white shrink-0 border border-gray-200">
+              <div className="w-12 h-12 rounded-lg overflow-hidden bg-white shrink-0 border border-slate-200">
                 {it.image_url ? (
                   <img
                     src={it.image_url}
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <div className="w-full h-full bg-gray-100" />
+                  <div className="w-full h-full bg-slate-100" />
                 )}
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold text-gray-900 truncate">
+                <div className="text-sm font-bold text-slate-900 truncate">
                   {it.name}
                 </div>
-                <div className="text-xs text-gray-500">
+                <div className="text-xs text-slate-500">
                   {t(`type_${it.type}` as TranslationKey)}
                   {!it.free && ` · ${formatYen(it.price)}`}
                 </div>
@@ -3545,23 +3728,23 @@ function SaucePickerModal({
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
+        className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between p-4 border-b border-gray-200">
-          <h3 className="text-lg font-black text-gray-900">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h3 className="text-lg font-black text-slate-900">
             {t('pickSauces')}
           </h3>
           <button
             onClick={onCancel}
-            className="text-gray-400 hover:text-gray-900"
+            className="text-slate-400 hover:text-slate-900"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
           {sauces.length === 0 && (
-            <p className="text-center text-sm text-gray-400 py-6">
+            <p className="text-center text-sm text-slate-400 py-6">
               {t('noSauces')}
             </p>
           )}
@@ -3574,14 +3757,14 @@ function SaucePickerModal({
                 className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-all text-left ${
                   on
                     ? 'bg-orange-50 border-orange-500'
-                    : 'bg-white border-gray-200'
+                    : 'bg-white border-slate-200 hover:border-slate-300'
                 }`}
               >
                 <div
-                  className="w-8 h-8 rounded-full border border-gray-200 shrink-0"
+                  className="w-8 h-8 rounded-full border border-slate-200 shrink-0"
                   style={{ backgroundColor: s.color ?? '#e5e7eb' }}
                 />
-                <span className="flex-1 text-sm font-bold text-gray-900">
+                <span className="flex-1 text-sm font-bold text-slate-900">
                   {s.name}
                 </span>
                 {on && <span className="text-orange-500 font-black">✓</span>}
@@ -3589,16 +3772,16 @@ function SaucePickerModal({
             );
           })}
         </div>
-        <div className="p-3 border-t border-gray-200 flex gap-2">
+        <div className="p-3 border-t border-slate-200 flex gap-2">
           <button
             onClick={onCancel}
-            className="flex-1 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold"
+            className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold"
           >
             {t('cancel')}
           </button>
           <button
             onClick={() => onSave([...sel])}
-            className="flex-1 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold"
+            className="flex-1 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold"
           >
             {t('save')}
           </button>

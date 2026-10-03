@@ -50,3 +50,60 @@ body {
 * {
   -webkit-overflow-scrolling: touch;
 }
+
+/* ============================================================ */
+/* ТАЧ-ОПТИМИЗАЦИЯ */
+/* ============================================================ */
+
+/* Все интерактивные элементы реагируют на тап без задержки 300ms,
+   и не дают браузеру самому решать — zoom или scroll */
+button,
+[role='button'],
+input,
+select,
+textarea,
+a {
+  touch-action: manipulation;
+}
+
+/* Убираем подсветку тапа (сине-серый прямоугольник на Android/iOS) */
+button,
+[role='button'],
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Активное состояние для тач-устройств (без :hover) */
+@media (hover: none) and (pointer: coarse) {
+  /* Скрываем hover-эффекты */
+  .group:hover .group-hover\:opacity-100 {
+    opacity: 1;
+  }
+  /* Увеличиваем активный отклик на тап */
+  button:active,
+  [role='button']:active {
+    transition: transform 0.06s ease-out;
+  }
+}
+
+/* Не даём iOS Safari зуммить при двойном тапе */
+html {
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+}
+
+/* Скроллбары больше — удобнее для пальцев */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+  background-clip: padding-box;
+}
