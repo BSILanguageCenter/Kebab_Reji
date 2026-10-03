@@ -2,6 +2,15 @@ import net from 'net';
 import { printViaBridge } from './printer-bridge-client.js';
 
 // ============================================================
+// ⚙️ НАЗВАНИЯ НА ЧЕКАХ — меняй здесь
+// ============================================================
+/** Название заведения на клиентском чеке (рулон и A4, тест) */
+const RECEIPT_TITLE = 'Kebab Fast';
+
+/** Заголовок кухонного чека (рулон + A4) */
+const KITCHEN_TITLE = 'K I T C H E N';
+
+// ============================================================
 // ESC/POS
 // ============================================================
 const ESC = 0x1b;
@@ -94,7 +103,7 @@ export function buildKitchenBuffer(order, width, encoding) {
   chunks.push(cmdInit(), cmdCodePage(encoding), cmdAlign('center'));
   chunks.push(cmdBold(true));
   chunks.push(textLine(divH, encoding));
-  chunks.push(textLine('K I T C H E N', encoding));
+  chunks.push(textLine(KITCHEN_TITLE, encoding));
   chunks.push(textLine(divH, encoding));
   chunks.push(cmdBold(false), textLine('', encoding));
 
@@ -242,7 +251,7 @@ export function buildCustomerBuffer(order, etaMinutes, width, encoding) {
   chunks.push(cmdInit(), cmdCodePage(encoding), cmdAlign('center'));
   chunks.push(cmdBold(true));
   chunks.push(textLine(divH, encoding));
-  chunks.push(textLine('KEBAB POS', encoding));
+  chunks.push(textLine(RECEIPT_TITLE, encoding));
   chunks.push(textLine(divH, encoding));
   chunks.push(cmdBold(false));
   chunks.push(textLine('', encoding), textLine('', encoding));
@@ -288,7 +297,7 @@ export function buildKitchenA4Buffer(order, encoding = 'cp1251') {
   const chunks = [];
 
   chunks.push(a4Line(divH, encoding));
-  chunks.push(a4Line(a4Center('К У Х Н Я', W), encoding));
+  chunks.push(a4Line(a4Center(KITCHEN_TITLE, W), encoding));
   chunks.push(a4Line(divH, encoding));
   chunks.push(a4Line('', encoding));
   chunks.push(
@@ -435,7 +444,7 @@ function buildTestBuffer(target, settings) {
     const label = target === 'kitchen' ? 'ПРИНТЕР КУХНИ' : 'ПРИНТЕР КАССЫ';
     const lines = [
       divH,
-      a4Center('KEBAB POS', W),
+      a4Center(RECEIPT_TITLE, W),
       divH,
       '',
       a4Center(label, W),
@@ -462,7 +471,7 @@ function buildTestBuffer(target, settings) {
     cmdAlign('center'),
     cmdBold(true),
     textLine(divH, encoding),
-    textLine('KEBAB POS', encoding),
+    textLine(RECEIPT_TITLE, encoding),
     textLine(divH, encoding),
     cmdBold(false),
     textLine('', encoding),
@@ -624,7 +633,7 @@ export function buildCustomerA4Buffer(order, etaMinutes, encoding = 'cp1251') {
   const chunks = [];
 
   chunks.push(a4Line(divH, encoding));
-  chunks.push(a4Line(a4Center('K E B A B   P O S', W), encoding));
+  chunks.push(a4Line(a4Center(RECEIPT_TITLE, W), encoding));
   chunks.push(a4Line(divH, encoding));
   chunks.push(a4Line('', encoding));
   chunks.push(a4Line('', encoding));

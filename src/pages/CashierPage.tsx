@@ -1487,7 +1487,7 @@ const ProductCard = memo(function ProductCard({
                 draggable={false}
               />
               {item.type !== 'sauce' && (
-                <div className="absolute inset-0 bg-black/40" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/25 via-transparent to-transparent" />
               )}
             </>
           ) : item.type === 'sauce' ? (
@@ -1574,7 +1574,7 @@ const ProductCard = memo(function ProductCard({
                     loading="lazy"
                     draggable={false}
                   />
-                  <div className="absolute inset-0 bg-black/40" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/25 via-transparent to-transparent" />
                 </>
               )}
             </div>

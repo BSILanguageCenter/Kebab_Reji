@@ -395,6 +395,23 @@ export const translationKeys = [
   'serverNotStartedInTime',
   'hostNotResponding',
   'hostNotSpecified',
+
+  // ---------- ImageCropDialog ----------
+  'cropTitle',
+  'cropScale',
+  'cropOriginal',
+  'cropAfter',
+  'cropReset',
+  'cropInfo',
+  'cropFrameFrom',
+  'cropUpscaleWarning',
+  'cropHint',
+  'cropWhiteGapHint',
+  'cropFitTitle',
+  'cropFillTitle',
+  'cropDone',
+  'cropProcessing',
+  'cropCalculating',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];
