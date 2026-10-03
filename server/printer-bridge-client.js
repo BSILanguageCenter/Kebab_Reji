@@ -3,15 +3,6 @@ import http from 'http';
 const BRIDGE_HOST = '127.0.0.1';
 const BRIDGE_PORT = 9999;
 
-/**
- * Универсальный HTTP-запрос к Python-бриджу.
- *
- * @param {string} method   GET / POST
- * @param {string} path     /health, /printers, /print
- * @param {object} headers  заголовки
- * @param {Buffer|null} body
- * @param {number} timeoutMs — ЧИСЛО (не объект!)
- */
 function httpRequest(method, path, headers = {}, body = null, timeoutMs = 5000) {
   const safeTimeout =
     typeof timeoutMs === 'number' && Number.isFinite(timeoutMs)
@@ -50,9 +41,6 @@ function httpRequest(method, path, headers = {}, body = null, timeoutMs = 5000) 
   });
 }
 
-// ============================================================
-// Проверка доступности бриджа
-// ============================================================
 export async function isBridgeAvailable() {
   try {
     const res = await httpRequest('GET', '/health', {}, null, 1500);
@@ -62,9 +50,6 @@ export async function isBridgeAvailable() {
   }
 }
 
-// ============================================================
-// Список принтеров Windows
-// ============================================================
 export async function listBridgePrinters() {
   const res = await httpRequest('GET', '/printers', {}, null, 4000);
   if (res.status !== 200 || !res.json?.ok) {
@@ -73,16 +58,6 @@ export async function listBridgePrinters() {
   return res.json.printers ?? [];
 }
 
-// ============================================================
-// Печать
-//
-// @param {string} printerName — имя принтера в Windows
-// @param {Buffer} buffer      — сырые байты
-// @param {object} opts
-//   opts.datatype = 'RAW'  — для ESC/POS (Xprinter, Epson TM)
-//   opts.datatype = 'TEXT' — для A4-документа (Epson L4160)
-//   opts.timeoutMs
-// ============================================================
 export async function printViaBridge(printerName, buffer, opts = {}) {
   const datatype =
     typeof opts.datatype === 'string' ? opts.datatype : 'RAW';

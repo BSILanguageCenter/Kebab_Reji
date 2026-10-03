@@ -9,14 +9,12 @@
 
 import { ru } from './ru';
 import { en } from './en';
-import { ja } from './ja';
 // import { uz } from './uz';           // ← UZ: раскомментировать
 
 
 export const translations = {
   ru,
   en,
-  ja,
   // uz,                                  // ← UZ: раскомментировать
 };
 
@@ -24,7 +22,6 @@ export const translations = {
 export const languageLabels: Record<keyof typeof translations, string> = {
   ru: 'RU',
   en: 'EN',
-  ja: 'JA',
   // uz: "O'z",                           // ← UZ: раскомментировать
 };
 

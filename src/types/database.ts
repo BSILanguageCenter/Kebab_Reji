@@ -124,9 +124,7 @@ export interface HydratedProperty {
   id: string;
   item_id: string;
   name: string;
-  /** Варианты выбора. Пусто → обычный чекбокс (вкл/выкл). */
   options: string[];
-  /** Обязательно ли выбрать вариант. */
   required: boolean;
   sort_order: number;
 }
@@ -205,7 +203,7 @@ export interface PrinterSlot {
   enabled: boolean;
   source: PrinterSource;
   name: string;
-  /** 'roll' — рулон 80mm (ESC/POS). 'a4' — полный лист (Windows-драйвер). */
+  /** 'roll' — рулон 80mm. 'a4' — полный лист. */
   paper: 'roll' | 'a4';
   // network
   ip: string;

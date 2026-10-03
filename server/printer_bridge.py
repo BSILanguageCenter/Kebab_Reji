@@ -1,17 +1,10 @@
 """
 Kebab POS — Windows USB Printer Bridge.
 
-Мини-HTTP-сервер, который принимает RAW-байты ESC/POS от Node.js
-и пишет их в установленный Windows-принтер через win32print
-(Windows spooler). Обходит проблему WebUSB с драйверами.
+Принимает RAW-байты ESC/POS или текстовый документ от Node.js
+и пишет их в установленный Windows-принтер через win32print.
 
-Поддерживает два режима печати (заголовок X-Datatype):
-    RAW  — сырые ESC/POS байты (POS-принтеры, рулон 80mm)
-    TEXT — текстовый документ, драйвер сам верстает A4 (L4160 и т.п.)
-
-Установка:
-    pip install pywin32
-
+Установка: pip install pywin32
 Запускается автоматически из server/index.js.
 Вручную: python server/printer_bridge.py
 """
@@ -52,7 +45,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    # ---------- GET ----------
     def do_GET(self):
         path = urlparse(self.path).path
 
@@ -72,12 +64,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     default_name = ""
                 result = []
                 for p in printers:
-                    result.append({
-                        "name": p["pPrinterName"],
-                        "port": p.get("pPortName", ""),
-                        "driver": p.get("pDriverName", ""),
-                        "is_default": p["pPrinterName"] == default_name,
-                    })
+                    result.append(
+                        {
+                            "name": p["pPrinterName"],
+                            "port": p.get("pPortName", ""),
+                            "driver": p.get("pDriverName", ""),
+                            "is_default": p["pPrinterName"] == default_name,
+                        }
+                    )
                 return self._json(200, {"ok": True, "printers": result})
             except Exception as e:
                 traceback.print_exc()
@@ -85,7 +79,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         return self._json(404, {"ok": False, "error": "not found"})
 
-    # ---------- POST ----------
     def do_POST(self):
         path = urlparse(self.path).path
         if path != "/print":
@@ -100,13 +93,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
             printer_name = self.headers.get("X-Printer-Name") or ""
             if not printer_name:
                 printer_name = win32print.GetDefaultPrinter()
-
             if not printer_name:
-                return self._json(400, {"ok": False, "error": "no printer name"})
+                return self._json(
+                    400, {"ok": False, "error": "no printer name"}
+                )
 
-            # ---- Тип данных: RAW (ESC/POS) или TEXT (Windows-драйвер) ----
-            raw_datatype = (self.headers.get("X-Datatype") or "RAW").strip().upper()
-            datatype = raw_datatype if raw_datatype in ALLOWED_DATATYPES else "RAW"
+            raw_dt = (self.headers.get("X-Datatype") or "RAW").strip().upper()
+            datatype = raw_dt if raw_dt in ALLOWED_DATATYPES else "RAW"
 
             print(
                 f"[bridge] print -> '{printer_name}' "
@@ -145,7 +138,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
 def main():
     print("[bridge] Windows USB Printer Bridge", flush=True)
     print(f"[bridge] Слушаю http://{HOST}:{PORT}", flush=True)
-    print("[bridge] Endpoints:", flush=True)
     print("[bridge]   GET  /health", flush=True)
     print("[bridge]   GET  /printers", flush=True)
     print("[bridge]   POST /print   (X-Printer-Name + X-Datatype)", flush=True)
