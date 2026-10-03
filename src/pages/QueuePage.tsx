@@ -55,13 +55,6 @@ export default function QueuePage() {
 
   const { kitchen, waiting, ready } = splitOrders(orders);
 
-  // ============================================================
-  // Последний приготовленный заказ для правой панели
-  // Приоритет:
-  //   1. Самый новый READY (по updated_at)
-  //   2. Если READY пусто — самый новый PREPARING (по updated_at)
-  //   3. Если совсем пусто — null
-  // ============================================================
   const focusOrder = useMemo(() => {
     if (ready.length > 0) {
       return [...ready].sort(

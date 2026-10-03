@@ -62,9 +62,6 @@ export function PrinterSettingsPage() {
     null
   );
 
-  // ============================================================
-  // Загрузка настроек
-  // ============================================================
   const loadSettings = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -86,9 +83,6 @@ export function PrinterSettingsPage() {
     loadSettings();
   }, [loadSettings]);
 
-  // ============================================================
-  // Первичное обнаружение
-  // ============================================================
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -108,9 +102,6 @@ export function PrinterSettingsPage() {
     };
   }, []);
 
-  // ============================================================
-  // Сканирование
-  // ============================================================
   const scan = useCallback(async () => {
     setScanning(true);
     setScanError(null);
@@ -125,9 +116,6 @@ export function PrinterSettingsPage() {
     }
   }, []);
 
-  // ============================================================
-  // Добавить USB-принтер
-  // ============================================================
   const addUsbPrinter = async () => {
     const d = await requestUsbPrinter();
     if (d) {
@@ -138,9 +126,6 @@ export function PrinterSettingsPage() {
     }
   };
 
-  // ============================================================
-  // Назначение
-  // ============================================================
   const assign = (target: 'kitchen' | 'cashier', p: DiscoveredPrinter) => {
     setMsg(null);
     setSettings((prev) => {
@@ -191,9 +176,6 @@ export function PrinterSettingsPage() {
     setMsg(null);
   };
 
-  // ============================================================
-  // Сохранение
-  // ============================================================
   const save = async () => {
     setSaving(true);
     setMsg(null);
@@ -215,9 +197,6 @@ export function PrinterSettingsPage() {
     }
   };
 
-  // ============================================================
-  // Тест
-  // ============================================================
   const test = async (target: 'kitchen' | 'cashier') => {
     setTesting(target);
     setMsg(null);
@@ -236,7 +215,6 @@ export function PrinterSettingsPage() {
         return;
       }
 
-      // ---------- USB через WebUSB ----------
       if (slot.source === 'usb') {
         if (!hasWebUsb()) {
           setMsg({ kind: 'err', text: t('webUsbNotSupported') });
@@ -268,7 +246,6 @@ export function PrinterSettingsPage() {
         return;
       }
 
-      // ---------- Network / Windows через сервер ----------
       const res: PrinterResult = await emitTestPrinter(target, saved);
       if (res.success || res.skipped) {
         setMsg({ kind: 'ok', text: t('printerTestSuccess') });
@@ -290,7 +267,6 @@ export function PrinterSettingsPage() {
   return (
     <div className="h-full min-h-0 overflow-y-auto p-4">
       <div className="max-w-4xl mx-auto space-y-4">
-        {/* HINT */}
         <div className="flex items-start gap-3 p-3 rounded-xl bg-blue-50 border border-blue-200">
           <Lightbulb className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
           <p className="text-xs text-blue-800 leading-snug">
@@ -349,7 +325,6 @@ export function PrinterSettingsPage() {
           </div>
         )}
 
-        {/* НАЗНАЧЕНО */}
         <div className="bg-white rounded-2xl border border-gray-200 p-4">
           <h3 className="text-xs font-black text-gray-500 uppercase tracking-wider mb-3">
             {t('assignedPrinters')}
@@ -379,7 +354,6 @@ export function PrinterSettingsPage() {
           </div>
         </div>
 
-        {/* НАЙДЕННЫЕ */}
         <div className="bg-white rounded-2xl border border-gray-200 p-4">
           <div className="flex items-center gap-2 mb-3">
             <h3 className="text-xs font-black text-gray-500 uppercase tracking-wider flex-1">
@@ -447,7 +421,6 @@ export function PrinterSettingsPage() {
           </div>
         </div>
 
-        {/* КОДИРОВКА + СОХРАНИТЬ */}
         <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-4">
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
@@ -486,9 +459,6 @@ export function PrinterSettingsPage() {
   );
 }
 
-// ============================================================
-// НАЗНАЧЕННЫЙ СЛОТ
-// ============================================================
 function AssignedSlot({
   label,
   slot,
@@ -572,7 +542,6 @@ function AssignedSlot({
             )}
           </div>
 
-          {/* ---- Тип бумаги ---- */}
           {slot.source !== 'usb' && (
             <div>
               <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
@@ -634,9 +603,6 @@ function AssignedSlot({
   );
 }
 
-// ============================================================
-// СТРОКА НАЙДЕННОГО ПРИНТЕРА
-// ============================================================
 function PrinterRow({
   printer,
   onAssignKitchen,

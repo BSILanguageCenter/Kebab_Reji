@@ -10,7 +10,7 @@ const DEFAULT_SLOT = {
   enabled: false,
   source: 'network',
   name: '',
-  paper: 'roll',       // 'roll' (рулон 80mm) | 'a4' (полный лист)
+  paper: 'roll',
   ip: '',
   port: 9100,
   width: 32,

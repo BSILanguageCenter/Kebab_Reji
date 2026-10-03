@@ -4,10 +4,7 @@ import { printViaBridge } from './printer-bridge-client.js';
 // ============================================================
 // ⚙️ НАЗВАНИЯ НА ЧЕКАХ — меняй здесь
 // ============================================================
-/** Название заведения на клиентском чеке (рулон и A4, тест) */
 const RECEIPT_TITLE = 'Kebab Fast';
-
-/** Заголовок кухонного чека (рулон + A4) */
 const KITCHEN_TITLE = 'K I T C H E N';
 
 // ============================================================
@@ -27,7 +24,6 @@ const cmdBold = (on) => Buffer.from([ESC, 0x45, on ? 1 : 0]);
 const cmdDoubleSize = (on) => Buffer.from([ESC, 0x21, on ? 0x30 : 0x00]);
 const cmdFeed = (lines = 3) => Buffer.from([ESC, 0x64, Math.min(255, lines)]);
 const cmdCut = () => Buffer.from([GS, 0x56, 0x00]);
-
 const cmdUnderline = (on) => Buffer.from([ESC, 0x2d, on ? 1 : 0]);
 
 // ============================================================
@@ -83,9 +79,6 @@ function formatTime(iso) {
   return `${h}:${m}`;
 }
 
-// ============================================================
-// Хелперы delta
-// ============================================================
 function splitDelta(items) {
   const removed = (items ?? []).filter((i) => i.is_removed);
   const added = (items ?? []).filter((i) => i.is_added_later && !i.is_removed);
@@ -151,15 +144,9 @@ export function buildKitchenBuffer(order, width, encoding) {
   return Buffer.concat(chunks);
 }
 
-// ============================================================
-// DELTA — рулон
-// ============================================================
 export function buildKitchenDeltaBuffer(order, width, encoding) {
   const { removed, added } = splitDelta(order.order_items);
-
-  if (removed.length === 0 && added.length === 0) {
-    return null;
-  }
+  if (removed.length === 0 && added.length === 0) return null;
 
   const chunks = [];
   const div = '-'.repeat(width);
@@ -179,28 +166,23 @@ export function buildKitchenDeltaBuffer(order, width, encoding) {
   chunks.push(textLine('', encoding));
   chunks.push(textLine(formatTime(new Date().toISOString()), encoding));
   chunks.push(textLine('', encoding));
-
   chunks.push(cmdAlign('left'), textLine(div, encoding));
 
   if (removed.length > 0) {
     chunks.push(cmdBold(true));
     chunks.push(textLine('УБРАТЬ:', encoding));
     chunks.push(cmdBold(false));
-
     for (const item of removed) {
       let name = item.name;
       if (item.variant) name += ` [${item.variant}]`;
-
       chunks.push(cmdUnderline(true), cmdBold(true));
       chunks.push(textLine(`  ${item.quantity}x ${name}`, encoding));
       chunks.push(cmdBold(false));
-
       for (const opt of item.options ?? []) {
         if (opt.type === 'variant') continue;
         const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
         chunks.push(textLine(`      + ${opt.name}${q}`, encoding));
       }
-
       chunks.push(cmdUnderline(false));
     }
     chunks.push(textLine('', encoding));
@@ -210,15 +192,12 @@ export function buildKitchenDeltaBuffer(order, width, encoding) {
     chunks.push(cmdBold(true));
     chunks.push(textLine('ДОБАВИТЬ:', encoding));
     chunks.push(cmdBold(false));
-
     for (const item of added) {
       let name = item.name;
       if (item.variant) name += ` [${item.variant}]`;
-
       chunks.push(cmdBold(true));
       chunks.push(textLine(`  ${item.quantity}x ${name}`, encoding));
       chunks.push(cmdBold(false));
-
       for (const opt of item.options ?? []) {
         if (opt.type === 'variant') continue;
         const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
@@ -300,9 +279,7 @@ export function buildKitchenA4Buffer(order, encoding = 'cp1251') {
   chunks.push(a4Line(a4Center(KITCHEN_TITLE, W), encoding));
   chunks.push(a4Line(divH, encoding));
   chunks.push(a4Line('', encoding));
-  chunks.push(
-    a4Line(a4Center(`ЗАКАЗ  # ${order.order_number}`, W), encoding)
-  );
+  chunks.push(a4Line(a4Center(`ЗАКАЗ  # ${order.order_number}`, W), encoding));
   chunks.push(a4Line('', encoding));
   chunks.push(
     a4Line(
@@ -320,7 +297,6 @@ export function buildKitchenA4Buffer(order, encoding = 'cp1251') {
   chunks.push(a4Line('', encoding));
 
   const active = (order.order_items ?? []).filter((i) => !i.is_removed);
-
   if (active.length === 0) {
     chunks.push(a4Line(a4Center('(пусто)', W), encoding));
   } else {
@@ -338,14 +314,12 @@ export function buildKitchenA4Buffer(order, encoding = 'cp1251') {
   }
 
   chunks.push(a4Line(div, encoding));
-
   if (order.comment && order.comment.trim()) {
     chunks.push(a4Line('', encoding));
     chunks.push(a4Line(`ПРИМЕЧАНИЕ:  ${order.comment}`, encoding));
     chunks.push(a4Line('', encoding));
     chunks.push(a4Line(div, encoding));
   }
-
   chunks.push(a4Line('', encoding));
   chunks.push(a4Line(divH, encoding));
   chunks.push(a4Line('', encoding));
@@ -356,10 +330,7 @@ export function buildKitchenA4Buffer(order, encoding = 'cp1251') {
 
 export function buildKitchenA4DeltaBuffer(order, encoding = 'cp1251') {
   const { removed, added } = splitDelta(order.order_items);
-
-  if (removed.length === 0 && added.length === 0) {
-    return null;
-  }
+  if (removed.length === 0 && added.length === 0) return null;
 
   const W = 80;
   const div = '-'.repeat(W);
@@ -370,12 +341,8 @@ export function buildKitchenA4DeltaBuffer(order, encoding = 'cp1251') {
   chunks.push(a4Line(a4Center('*** ИЗМЕНЕНИЕ ЗАКАЗА ***', W), encoding));
   chunks.push(a4Line(divH, encoding));
   chunks.push(a4Line('', encoding));
-  chunks.push(
-    a4Line(a4Center(`ЗАКАЗ  # ${order.order_number}`, W), encoding)
-  );
-  chunks.push(
-    a4Line(a4Center(formatTime(new Date().toISOString()), W), encoding)
-  );
+  chunks.push(a4Line(a4Center(`ЗАКАЗ  # ${order.order_number}`, W), encoding));
+  chunks.push(a4Line(a4Center(formatTime(new Date().toISOString()), W), encoding));
   chunks.push(a4Line('', encoding));
   chunks.push(a4Line(div, encoding));
   chunks.push(a4Line('', encoding));
@@ -385,15 +352,11 @@ export function buildKitchenA4DeltaBuffer(order, encoding = 'cp1251') {
     for (const item of removed) {
       let name = item.name;
       if (item.variant) name += `  [${item.variant}]`;
-      chunks.push(
-        a4Line(`   ${item.quantity} x   ${strikeText(name)}`, encoding)
-      );
+      chunks.push(a4Line(`   ${item.quantity} x   ${strikeText(name)}`, encoding));
       for (const opt of item.options ?? []) {
         if (opt.type === 'variant') continue;
         const q = opt.quantity > 1 ? ` x${opt.quantity}` : '';
-        chunks.push(
-          a4Line(`         + ${strikeText(opt.name + q)}`, encoding)
-        );
+        chunks.push(a4Line(`         + ${strikeText(opt.name + q)}`, encoding));
       }
     }
     chunks.push(a4Line('', encoding));
@@ -415,14 +378,42 @@ export function buildKitchenA4DeltaBuffer(order, encoding = 'cp1251') {
   }
 
   chunks.push(a4Line(div, encoding));
-
   if (order.comment && order.comment.trim()) {
     chunks.push(a4Line('', encoding));
     chunks.push(a4Line(`ПРИМЕЧАНИЕ:  ${order.comment}`, encoding));
     chunks.push(a4Line('', encoding));
     chunks.push(a4Line(div, encoding));
   }
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(Buffer.from([0x0c]));
 
+  return Buffer.concat(chunks);
+}
+
+export function buildCustomerA4Buffer(order, etaMinutes, encoding = 'cp1251') {
+  const W = 80;
+  const divH = '='.repeat(W);
+  const chunks = [];
+
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line(a4Center(RECEIPT_TITLE, W), encoding));
+  chunks.push(a4Line(divH, encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line(a4Center(`Ваш номер:  #${order.order_number}`, W), encoding));
+  chunks.push(a4Line('', encoding));
+  if (etaMinutes && etaMinutes > 0) {
+    chunks.push(
+      a4Line(a4Center(`Примерное время: ~${etaMinutes} мин`, W), encoding)
+    );
+  }
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
+  chunks.push(a4Line('', encoding));
   chunks.push(a4Line('', encoding));
   chunks.push(a4Line(divH, encoding));
   chunks.push(a4Line('', encoding));
@@ -583,9 +574,7 @@ async function printToSlot(slot, buffer, target, settings, opts = {}) {
 // Публичный API
 // ============================================================
 export async function printKitchenTicket(order, settings) {
-  console.log(
-    `[printer] printKitchenTicket #${order?.order_number ?? '?'}`
-  );
+  console.log(`[printer] printKitchenTicket #${order?.order_number ?? '?'}`);
   const slot = settings.kitchen;
   const isA4 = slot?.paper === 'a4';
   const encoding = isA4 ? 'cp1251' : settings.encoding || 'cp866';
@@ -600,9 +589,7 @@ export async function printKitchenTicket(order, settings) {
 }
 
 export async function printKitchenDelta(order, settings) {
-  console.log(
-    `[printer] printKitchenDelta #${order?.order_number ?? '?'}`
-  );
+  console.log(`[printer] printKitchenDelta #${order?.order_number ?? '?'}`);
 
   const slot = settings.kitchen;
   if (!slot || !slot.enabled) {
@@ -625,40 +612,6 @@ export async function printKitchenDelta(order, settings) {
   return printToSlot(slot, buffer, 'kitchen-delta', settings, {
     datatype: isA4 ? 'TEXT' : 'RAW',
   });
-}
-
-export function buildCustomerA4Buffer(order, etaMinutes, encoding = 'cp1251') {
-  const W = 80;
-  const divH = '='.repeat(W);
-  const chunks = [];
-
-  chunks.push(a4Line(divH, encoding));
-  chunks.push(a4Line(a4Center(RECEIPT_TITLE, W), encoding));
-  chunks.push(a4Line(divH, encoding));
-  chunks.push(a4Line('', encoding));
-  chunks.push(a4Line('', encoding));
-  chunks.push(a4Line('', encoding));
-  chunks.push(a4Line('', encoding));
-  chunks.push(
-    a4Line(a4Center(`Ваш номер:  #${order.order_number}`, W), encoding)
-  );
-  chunks.push(a4Line('', encoding));
-
-  if (etaMinutes && etaMinutes > 0) {
-    chunks.push(
-      a4Line(a4Center(`Примерное время: ~${etaMinutes} мин`, W), encoding)
-    );
-  }
-
-  chunks.push(a4Line('', encoding));
-  chunks.push(a4Line('', encoding));
-  chunks.push(a4Line('', encoding));
-  chunks.push(a4Line('', encoding));
-  chunks.push(a4Line(divH, encoding));
-  chunks.push(a4Line('', encoding));
-  chunks.push(Buffer.from([0x0c]));
-
-  return Buffer.concat(chunks);
 }
 
 export async function printCustomerTicket(order, etaMinutes, settings) {
@@ -693,9 +646,6 @@ export async function testPrinter(target, settings) {
   });
 }
 
-// ============================================================
-// base64 для WebUSB
-// ============================================================
 export function buildTicketBase64(target, order, etaMinutes, settings) {
   const slot = target === 'kitchen' ? settings.kitchen : settings.cashier;
   const width = slot?.width || 32;
