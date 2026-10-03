@@ -177,7 +177,7 @@ export const en: Record<TranslationKey, string> = {
   type_topping: 'Topping',
   noCategory: 'No category',
 
-  // ---------- Variants (dish-group) ----------
+  // ---------- Variants ----------
   variants: 'Variants',
   addVariant: 'Add variant',
   variantName: 'Name',
@@ -352,4 +352,63 @@ export const en: Record<TranslationKey, string> = {
   assignToCashier: 'Assign to cashier',
   toKitchen: 'Kitchen',
   toCashier: 'Cashier',
+
+  // ---------- Printers v3 (paper) ----------
+  printerPaper: 'Paper type',
+  printerPaperRoll: 'Roll 80mm',
+  printerPaperA4: 'A4 sheet',
+  webUsbNotSupported:
+    'WebUSB is not supported. Use Chrome or select a Windows printer.',
+  usbPrinterNotFound:
+    'USB printer not found. Allow access or use a Windows printer.',
+  failedToBuildTest: 'Failed to build test ticket',
+  webUsbNotSupportedBrowser: 'WebUSB is not supported by the browser',
+  loadFailedShort: 'Load error',
+
+  // ---------- MenuProduct v2 ----------
+  menuResetConfirm:
+    'Lay out all products by category? The order will be reset.',
+  menuResetBtn: 'Reset',
+  menuInactiveBadge: 'inactive',
+  menuProcessingPhotos:
+    'Processing photo ({n})… Saving will wait for it to finish.',
+  menuWaitingPhoto: 'Waiting for photo…',
+  menuDoNotClosePhoto: 'Do not close the form — the photo is uploading.',
+  menuSetPriceHint:
+    'Set price is determined by the selected main dish variant (overrides below). The set has no price of its own. Set photo is also set below — per variant.',
+  menuSetNoVariantsHint:
+    'Main dish has no variants — the set will show the main dish photo directly.',
+  menuSetPhotoByVariant: 'Set photo and price by variant',
+  menuSetPhotoIsSetHint:
+    'This is the set photo, not the main dish photo. By default the dish photo is shown — upload your own if the set should look different.',
+  menuSetPhotoReset: 'Reset own photo',
+  menuSetOwnPhoto: 'Own set photo',
+  menuSetCurrentDishPhoto: 'Currently the dish photo',
+  menuSetUploadPhoto: 'Upload set photo',
+  menuSetClickToReplace: 'Click to replace',
+  menuSetClickToSet: 'Click to set your own',
+  menuPropertyNamePlaceholder: 'Property name (e.g. Cabbage)',
+  menuPropertyVariants: 'Variants',
+  menuPropertyFirstOptionPlaceholder: 'First variant (Enter to add)',
+  menuPropertyNextOptionPlaceholder: 'Another variant (Enter to add)',
+  menuPropertyVariantBtn: 'Variant',
+  menuPropertyRequiredLabel: 'Required — one variant must be chosen',
+  menuPropertyCheckboxHint:
+    'Without variants, the property works as a Yes / No checkbox.',
+  menuPropertyDeleteTitle: 'Delete property',
+  menuPropertyFromHistory: 'From history — {n}',
+  menuPropertyRequiredBadge: 'REQ',
+  menuPropertyCheckboxBadge: 'Yes / No checkbox',
+  moveLeftTitle: 'Move 1 cell left',
+  moveLeftBusy: 'Left side is occupied',
+  moveRightTitle: 'Move 1 cell right',
+  moveRightBusy: 'Right side is occupied',
+
+  // ---------- Cashier v3 ----------
+  qtyChangedFromTo: 'Was: {from} → {to}',
+
+  // ---------- App v2 ----------
+  serverNotStartedInTime: 'Server did not start within {sec} seconds',
+  hostNotResponding: 'Host {host}:3001 did not respond within {sec} seconds',
+  hostNotSpecified: 'Host IP is not specified. Change mode.',
 };

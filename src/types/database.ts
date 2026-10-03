@@ -205,6 +205,8 @@ export interface PrinterSlot {
   enabled: boolean;
   source: PrinterSource;
   name: string;
+  /** 'roll' — рулон 80mm (ESC/POS). 'a4' — полный лист (Windows-драйвер). */
+  paper: 'roll' | 'a4';
   // network
   ip: string;
   port: number;
@@ -253,6 +255,7 @@ export const DEFAULT_PRINTER_SLOT: PrinterSlot = {
   enabled: false,
   source: 'network',
   name: '',
+  paper: 'roll',
   ip: '',
   port: 9100,
   width: 32,

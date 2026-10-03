@@ -1,7 +1,3 @@
-// ============================================================
-// СПИСОК КЛЮЧЕЙ ПЕРЕВОДА
-// ============================================================
-
 export const translationKeys = [
   // ---------- App ----------
   'appName',
@@ -176,7 +172,7 @@ export const translationKeys = [
   'type_topping',
   'noCategory',
 
-  // ---------- Variants (dish-group) ----------
+  // ---------- Variants ----------
   'variants',
   'addVariant',
   'variantName',
@@ -348,6 +344,57 @@ export const translationKeys = [
   'assignToCashier',
   'toKitchen',
   'toCashier',
+
+  // ---------- Printers v3 (paper) ----------
+  'printerPaper',
+  'printerPaperRoll',
+  'printerPaperA4',
+  'webUsbNotSupported',
+  'usbPrinterNotFound',
+  'failedToBuildTest',
+  'webUsbNotSupportedBrowser',
+  'loadFailedShort',
+
+  // ---------- MenuProduct v2 ----------
+  'menuResetConfirm',
+  'menuResetBtn',
+  'menuInactiveBadge',
+  'menuProcessingPhotos',
+  'menuWaitingPhoto',
+  'menuDoNotClosePhoto',
+  'menuSetPriceHint',
+  'menuSetNoVariantsHint',
+  'menuSetPhotoByVariant',
+  'menuSetPhotoIsSetHint',
+  'menuSetPhotoReset',
+  'menuSetOwnPhoto',
+  'menuSetCurrentDishPhoto',
+  'menuSetUploadPhoto',
+  'menuSetClickToReplace',
+  'menuSetClickToSet',
+  'menuPropertyNamePlaceholder',
+  'menuPropertyVariants',
+  'menuPropertyFirstOptionPlaceholder',
+  'menuPropertyNextOptionPlaceholder',
+  'menuPropertyVariantBtn',
+  'menuPropertyRequiredLabel',
+  'menuPropertyCheckboxHint',
+  'menuPropertyDeleteTitle',
+  'menuPropertyFromHistory',
+  'menuPropertyRequiredBadge',
+  'menuPropertyCheckboxBadge',
+  'moveLeftTitle',
+  'moveLeftBusy',
+  'moveRightTitle',
+  'moveRightBusy',
+
+  // ---------- Cashier v3 ----------
+  'qtyChangedFromTo',
+
+  // ---------- App v2 ----------
+  'serverNotStartedInTime',
+  'hostNotResponding',
+  'hostNotSpecified',
 ] as const;
 
 export type TranslationKey = (typeof translationKeys)[number];

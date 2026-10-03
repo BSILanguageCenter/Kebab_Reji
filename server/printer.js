@@ -19,7 +19,6 @@ const cmdDoubleSize = (on) => Buffer.from([ESC, 0x21, on ? 0x30 : 0x00]);
 const cmdFeed = (lines = 3) => Buffer.from([ESC, 0x64, Math.min(255, lines)]);
 const cmdCut = () => Buffer.from([GS, 0x56, 0x00]);
 
-// ESC - n — подчёркивание: 0=выкл, 1=вкл, 2=двойное
 const cmdUnderline = (on) => Buffer.from([ESC, 0x2d, on ? 1 : 0]);
 
 // ============================================================
@@ -145,7 +144,6 @@ export function buildKitchenBuffer(order, width, encoding) {
 
 // ============================================================
 // DELTA — рулон
-// Удалённые позиции печатаем ПОДЧЁРКНУТЫМИ (эффект «зачёркнуто»)
 // ============================================================
 export function buildKitchenDeltaBuffer(order, width, encoding) {
   const { removed, added } = splitDelta(order.order_items);
@@ -175,7 +173,6 @@ export function buildKitchenDeltaBuffer(order, width, encoding) {
 
   chunks.push(cmdAlign('left'), textLine(div, encoding));
 
-  // ---------- УБРАТЬ (зачёркнуто = подчёркнуто) ----------
   if (removed.length > 0) {
     chunks.push(cmdBold(true));
     chunks.push(textLine('УБРАТЬ:', encoding));
@@ -185,7 +182,6 @@ export function buildKitchenDeltaBuffer(order, width, encoding) {
       let name = item.name;
       if (item.variant) name += ` [${item.variant}]`;
 
-      // Включаем подчёркивание
       chunks.push(cmdUnderline(true), cmdBold(true));
       chunks.push(textLine(`  ${item.quantity}x ${name}`, encoding));
       chunks.push(cmdBold(false));
@@ -196,13 +192,11 @@ export function buildKitchenDeltaBuffer(order, width, encoding) {
         chunks.push(textLine(`      + ${opt.name}${q}`, encoding));
       }
 
-      // Выключаем подчёркивание
       chunks.push(cmdUnderline(false));
     }
     chunks.push(textLine('', encoding));
   }
 
-  // ---------- ДОБАВИТЬ ----------
   if (added.length > 0) {
     chunks.push(cmdBold(true));
     chunks.push(textLine('ДОБАВИТЬ:', encoding));
@@ -283,11 +277,7 @@ function a4Center(text, width) {
   return ' '.repeat(pad) + text;
 }
 
-// «Псевдо-зачёркивание» для A4:
-// обычный текст → добавляем пробелы между буквами и поверх — не получится,
-// поэтому используем префикс [X] и всё равно подчёркиваем подчёркиваниями.
 function strikeText(text) {
-  // Простой визуальный акцент: [~~~] текст [~~~]
   return `[~УДАЛЕНО~] ${text}`;
 }
 
@@ -355,10 +345,6 @@ export function buildKitchenA4Buffer(order, encoding = 'cp1251') {
   return Buffer.concat(chunks);
 }
 
-// ============================================================
-// DELTA — A4 (текстовый режим Windows-драйвера).
-// "Зачёркивание" эмулируем префиксом [~УДАЛЕНО~]
-// ============================================================
 export function buildKitchenA4DeltaBuffer(order, encoding = 'cp1251') {
   const { removed, added } = splitDelta(order.order_items);
 

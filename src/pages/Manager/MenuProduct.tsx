@@ -621,9 +621,7 @@ export function MenuProduct() {
   const allTops = useMemo(() => items.filter((i) => !i.parent_id), [items]);
 
   // ============================================================
-  // История свойств — уникальные свойства по имени из всех товаров.
-  // Если одинаковое имя встречается у нескольких товаров — берём то,
-  // где больше вариантов (и/или где required=true).
+  // История свойств
   // ============================================================
   const propertyHistory = useMemo<HydratedProperty[]>(() => {
     const byName = new Map<string, HydratedProperty>();
@@ -650,8 +648,7 @@ export function MenuProduct() {
           }
           const prevScore =
             prev.options.length * 10 + (prev.required ? 5 : 0);
-          const nextScore =
-            p.options.length * 10 + (p.required ? 5 : 0);
+          const nextScore = p.options.length * 10 + (p.required ? 5 : 0);
           if (nextScore > prevScore) {
             byName.set(key, {
               ...p,
@@ -981,10 +978,10 @@ export function MenuProduct() {
                 onClick={() => setResetConfirmOpen(true)}
                 disabled={!hasAny}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-[10px] font-bold active:scale-[0.97] transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Разложить по категориям"
+                title={t('menuResetBtn')}
               >
                 <LayoutGrid className="w-3 h-3" />
-                Сброс
+                {t('menuResetBtn')}
               </button>
             </div>
             <GridSpace
@@ -1207,7 +1204,7 @@ export function MenuProduct() {
       <ConfirmDialog
         open={resetConfirmOpen}
         title={t('confirmTitle')}
-        message="Разложить все товары по категориям? Порядок будет сброшен."
+        message={t('menuResetConfirm')}
         confirmLabel={t('yes')}
         cancelLabel={t('cancel')}
         variant="yellow"
@@ -1254,6 +1251,7 @@ const DraggableCard = memo(function DraggableCard({
   textSize: number;
   compact?: boolean;
 }) {
+  const { t } = useI18n();
   const isGroup = (variants?.length ?? 0) > 0;
   const nameSize = compact ? Math.max(8, textSize - 2) : textSize;
   const priceSize = compact ? Math.max(8, textSize - 2) : textSize;
@@ -1274,7 +1272,7 @@ const DraggableCard = memo(function DraggableCard({
           ? 'bg-white border-gray-300 opacity-0 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
           : 'bg-gray-100 border-gray-200 opacity-0 group-hover:opacity-40 cursor-not-allowed'
       }`}
-      title={canMoveLeft ? 'Сдвинуть на 1 влево' : 'Слева занято'}
+      title={canMoveLeft ? t('moveLeftTitle') : t('moveLeftBusy')}
     >
       <ChevronLeft
         className={`w-4 h-4 ${
@@ -1300,7 +1298,7 @@ const DraggableCard = memo(function DraggableCard({
           ? 'bg-white border-gray-300 opacity-0 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
           : 'bg-gray-100 border-gray-200 opacity-0 group-hover:opacity-40 cursor-not-allowed'
       }`}
-      title={canMoveRight ? 'Сдвинуть на 1 вправо' : 'Справа занято'}
+      title={canMoveRight ? t('moveRightTitle') : t('moveRightBusy')}
     >
       <ChevronRight
         className={`w-4 h-4 ${
@@ -1345,7 +1343,7 @@ const DraggableCard = memo(function DraggableCard({
                   className="text-white font-black uppercase tracking-widest"
                   style={{ fontSize: Math.max(8, nameSize - 2) }}
                 >
-                  inactive
+                  {t('menuInactiveBadge')}
                 </span>
               </div>
             )}
@@ -1782,9 +1780,7 @@ function ItemFormModal({
     ]);
   };
   const updateProperty = (idx: number, patch: Partial<HydratedProperty>) => {
-    setProperties((p) =>
-      p.map((x, i) => (i === idx ? { ...x, ...patch } : x))
-    );
+    setProperties((p) => p.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
   };
   const removeProperty = (idx: number) => {
     setProperties((p) => p.filter((_, i) => i !== idx));
@@ -2066,8 +2062,10 @@ function ItemFormModal({
             <div className="sticky top-0 z-10 -mx-5 -mt-5 mb-3 px-5 py-2 bg-orange-50 border-b border-orange-300 flex items-center gap-2">
               <span className="inline-block w-3.5 h-3.5 border-2 border-orange-500/30 border-t-orange-500 rounded-full animate-spin shrink-0" />
               <span className="text-xs font-bold text-orange-800">
-                Обрабатываю фото ({pendingOpsCount})… Сохранение подождёт
-                завершения.
+                {t('menuProcessingPhotos').replace(
+                  '{n}',
+                  String(pendingOpsCount)
+                )}
               </span>
             </div>
           )}
@@ -2078,7 +2076,7 @@ function ItemFormModal({
               onClick={handleClose}
               disabled={isBusy}
               className="text-gray-500 hover:text-gray-900 disabled:opacity-40 disabled:cursor-not-allowed"
-              title={isBusy ? 'Дождитесь загрузки фото' : ''}
+              title={isBusy ? t('menuDoNotClosePhoto') : ''}
             >
               <X className="w-5 h-5" />
             </button>
@@ -2522,9 +2520,7 @@ function ItemFormModal({
                 t={t}
               />
               <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-800 font-medium leading-snug">
-                Цена сета определяется по выбранному варианту основного блюда
-                (переопределения ниже). Своей цены у сета нет. Фото сета также
-                задаётся ниже — по каждому варианту.
+                {t('menuSetPriceHint')}
               </div>
 
               <Field label={t('mainProduct')}>
@@ -2574,18 +2570,15 @@ function ItemFormModal({
                 if (main.dish_kind !== 'group' || !main.variants) {
                   return (
                     <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-800 leading-snug">
-                      Основное блюдо без вариантов — сет будет показывать{' '}
-                      <b>фото основного блюда</b> напрямую.
+                      {t('menuSetNoVariantsHint')}
                     </div>
                   );
                 }
 
                 return (
-                  <Field label="Фото и цена сета по вариантам">
+                  <Field label={t('menuSetPhotoByVariant')}>
                     <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800 leading-snug">
-                      Это фото <b>сета</b>, а не основного блюда. По умолчанию
-                      показывается фото блюда — загрузите своё, если у сета
-                      должно быть другое.
+                      {t('menuSetPhotoIsSetHint')}
                     </div>
 
                     <div className="space-y-2">
@@ -2624,7 +2617,7 @@ function ItemFormModal({
                                   }
                                   className="text-[10px] text-orange-600 font-bold hover:underline shrink-0"
                                 >
-                                  Своё фото сбросить
+                                  {t('menuSetPhotoReset')}
                                 </button>
                               )}
                             </div>
@@ -2667,15 +2660,15 @@ function ItemFormModal({
                                 <div className="flex-1 min-w-0">
                                   <div className="text-[11px] font-bold text-gray-800 truncate">
                                     {usingOverride
-                                      ? 'Своё фото сета'
+                                      ? t('menuSetOwnPhoto')
                                       : effectiveImage
-                                      ? 'Сейчас фото блюда'
-                                      : 'Загрузить фото сета'}
+                                      ? t('menuSetCurrentDishPhoto')
+                                      : t('menuSetUploadPhoto')}
                                   </div>
                                   <div className="text-[9px] text-gray-500 truncate">
                                     {usingOverride
-                                      ? 'Нажмите, чтобы заменить'
-                                      : 'Нажмите, чтобы задать своё'}
+                                      ? t('menuSetClickToReplace')
+                                      : t('menuSetClickToSet')}
                                   </div>
                                 </div>
                                 <input
@@ -2901,7 +2894,7 @@ function ItemFormModal({
               ) : pendingOpsCount > 0 ? (
                 <>
                   <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Ждём фото…
+                  {t('menuWaitingPhoto')}
                 </>
               ) : (
                 t('save')
@@ -2912,7 +2905,7 @@ function ItemFormModal({
           {pendingOpsCount > 0 && (
             <p className="mt-2 text-[10px] text-orange-700 text-center leading-snug flex items-center justify-center gap-1.5">
               <ImageIcon className="w-3 h-3" />
-              Не закрывайте форму — фото загружается.
+              {t('menuDoNotClosePhoto')}
             </p>
           )}
         </div>
@@ -3204,11 +3197,6 @@ function PropertyEditor({
   const [suggestOpen, setSuggestOpen] = useState(false);
   const blurTimer = useRef<number | null>(null);
 
-  // ============================================================
-  // Подборки истории под текущее имя свойства.
-  // Пустое имя → показываем первые 12 из истории.
-  // Есть имя → фильтр по началу строки (кроме точного совпадения).
-  // ============================================================
   const suggestions = useMemo(() => {
     const q = property.name.trim().toLowerCase();
     if (!q) return history.slice(0, 12);
@@ -3240,7 +3228,6 @@ function PropertyEditor({
 
   return (
     <div className="border border-gray-200 rounded-xl p-3 bg-slate-50 space-y-2.5">
-      {/* Имя + удалить + дропдаун истории */}
       <div className="relative">
         <div className="flex items-center gap-2">
           <input
@@ -3258,26 +3245,28 @@ function PropertyEditor({
               );
             }}
             className="form-input flex-1 text-sm"
-            placeholder="Название свойства (например, Капуста)"
+            placeholder={t('menuPropertyNamePlaceholder')}
           />
           <button
             type="button"
             onClick={onRemove}
             className="p-2 text-gray-400 hover:text-red-600 shrink-0"
-            title="Удалить свойство"
+            title={t('menuPropertyDeleteTitle')}
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Дропдаун подсказок */}
         {suggestOpen && suggestions.length > 0 && (
           <div
             onMouseDown={(e) => e.stopPropagation()}
             className="absolute left-0 right-12 z-30 mt-1 bg-white border-2 border-orange-300 rounded-xl shadow-2xl max-h-64 overflow-y-auto"
           >
             <div className="px-3 py-1.5 text-[10px] font-black text-orange-700 uppercase tracking-wider bg-orange-50 border-b border-orange-200 sticky top-0">
-              Из истории — {suggestions.length}
+              {t('menuPropertyFromHistory').replace(
+                '{n}',
+                String(suggestions.length)
+              )}
             </div>
             {suggestions.map((h, idx) => (
               <button
@@ -3295,7 +3284,7 @@ function PropertyEditor({
                   </span>
                   {h.required && (
                     <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">
-                      ОБЯЗ
+                      {t('menuPropertyRequiredBadge')}
                     </span>
                   )}
                 </div>
@@ -3306,7 +3295,7 @@ function PropertyEditor({
                 )}
                 {h.options.length === 0 && (
                   <div className="text-[10px] text-gray-400 mt-0.5 italic">
-                    чекбокс Да / Нет
+                    {t('menuPropertyCheckboxBadge')}
                   </div>
                 )}
               </button>
@@ -3315,11 +3304,10 @@ function PropertyEditor({
         )}
       </div>
 
-      {/* Варианты — чипы */}
       {property.options.length > 0 && (
         <div>
           <div className="text-[10px] font-black text-gray-500 uppercase tracking-wider mb-1.5">
-            Варианты
+            {t('menuPropertyVariants')}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {property.options.map((opt, idx) => (
@@ -3345,7 +3333,6 @@ function PropertyEditor({
         </div>
       )}
 
-      {/* Добавление варианта */}
       <div className="flex items-center gap-2">
         <input
           value={newOption}
@@ -3359,8 +3346,8 @@ function PropertyEditor({
           className="form-input flex-1 text-sm"
           placeholder={
             property.options.length === 0
-              ? 'Первый вариант (Enter — добавить)'
-              : 'Ещё вариант (Enter — добавить)'
+              ? t('menuPropertyFirstOptionPlaceholder')
+              : t('menuPropertyNextOptionPlaceholder')
           }
         />
         <button
@@ -3370,11 +3357,10 @@ function PropertyEditor({
           className="flex items-center gap-1 px-3 py-2 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold disabled:opacity-40 shrink-0"
         >
           <Plus className="w-3.5 h-3.5" />
-          Вариант
+          {t('menuPropertyVariantBtn')}
         </button>
       </div>
 
-      {/* Обязательность */}
       <label className="flex items-center gap-1.5 text-xs font-bold text-gray-700 select-none cursor-pointer">
         <input
           type="checkbox"
@@ -3382,12 +3368,12 @@ function PropertyEditor({
           onChange={(e) => onChange({ required: e.target.checked })}
           className="accent-orange-500"
         />
-        Обязательное — нужно выбрать один вариант
+        {t('menuPropertyRequiredLabel')}
       </label>
 
       {property.options.length === 0 && (
         <p className="text-[10px] text-gray-500 leading-snug">
-          Без вариантов свойство работает как чекбокс «Да / Нет».
+          {t('menuPropertyCheckboxHint')}
         </p>
       )}
     </div>
