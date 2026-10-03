@@ -10,6 +10,7 @@ const DEFAULT_SLOT = {
   enabled: false,
   source: 'network',
   name: '',
+  paper: 'roll',       // 'roll' (рулон 80mm) | 'a4' (полный лист)
   ip: '',
   port: 9100,
   width: 32,
@@ -24,6 +25,7 @@ function normalizeSlot(raw) {
   s.enabled = Boolean(s.enabled);
   if (s.source !== 'usb' && s.source !== 'windows') s.source = 'network';
   s.name = String(s.name || '');
+  s.paper = s.paper === 'a4' ? 'a4' : 'roll';
   s.ip = String(s.ip || '').trim();
   s.port = Number(s.port) || 9100;
   s.width = Number(s.width) || 32;
@@ -53,11 +55,9 @@ function parsePropertyOptions(p) {
     return null;
   };
 
-  // 1) options (новая колонка)
   const fromOptions = tryParse(p.options);
   if (fromOptions && fromOptions.length > 0) return fromOptions;
 
-  // 2) options_json (старая колонка)
   const fromJson = tryParse(p.options_json);
   if (fromJson && fromJson.length > 0) return fromJson;
 
@@ -481,7 +481,6 @@ class Store extends EventEmitter {
     const itemsById = new Map();
     for (const it of rawItems) itemsById.set(it.id, it);
 
-    // ---- Свойства: парсим options (jsonb) с fallback на options_json ----
     const propsByItem = new Map();
     for (const p of rawProps) {
       const arr = propsByItem.get(p.item_id) ?? [];
@@ -670,14 +669,12 @@ class Store extends EventEmitter {
         );
       }
 
-      // ---------- Свойства: пишем И в options_json, И в options ----------
       const insProp = db.prepare(
         `INSERT INTO menu_item_properties
            (id, item_id, name, options_json, options, required, sort_order)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
       for (const p of properties) {
-        // Supabase может прислать options как массив (jsonb) или как строку.
         let opts = [];
         if (Array.isArray(p.options)) {
           opts = p.options;

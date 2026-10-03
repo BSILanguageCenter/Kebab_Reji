@@ -177,7 +177,7 @@ export const ru: Record<TranslationKey, string> = {
   type_topping: 'Топпинг',
   noCategory: 'Без категории',
 
-  // ---------- Variants (dish-group) ----------
+  // ---------- Variants ----------
   variants: 'Варианты',
   addVariant: 'Добавить вариант',
   variantName: 'Название',
@@ -353,4 +353,64 @@ export const ru: Record<TranslationKey, string> = {
   assignToCashier: 'Назначить на кассу',
   toKitchen: 'Кухня',
   toCashier: 'Касса',
+
+  // ---------- Printers v3 (paper) ----------
+  printerPaper: 'Тип бумаги',
+  printerPaperRoll: 'Рулон 80mm',
+  printerPaperA4: 'A4 лист',
+  webUsbNotSupported:
+    'WebUSB не поддерживается. Используйте Chrome или выберите Windows-принтер.',
+  usbPrinterNotFound:
+    'USB-принтер не найден. Разрешите доступ или используйте Windows-принтер.',
+  failedToBuildTest: 'Не удалось собрать тест',
+  webUsbNotSupportedBrowser: 'WebUSB не поддерживается браузером',
+  loadFailedShort: 'Ошибка загрузки',
+
+  // ---------- MenuProduct v2 ----------
+  menuResetConfirm:
+    'Разложить все товары по категориям? Порядок будет сброшен.',
+  menuResetBtn: 'Сброс',
+  menuInactiveBadge: 'неактивно',
+  menuProcessingPhotos:
+    'Обрабатываю фото ({n})… Сохранение подождёт завершения.',
+  menuWaitingPhoto: 'Ждём фото…',
+  menuDoNotClosePhoto: 'Не закрывайте форму — фото загружается.',
+  menuSetPriceHint:
+    'Цена сета определяется по выбранному варианту основного блюда (переопределения ниже). Своей цены у сета нет. Фото сета также задаётся ниже — по каждому варианту.',
+  menuSetNoVariantsHint:
+    'Основное блюдо без вариантов — сет будет показывать фото основного блюда напрямую.',
+  menuSetPhotoByVariant: 'Фото и цена сета по вариантам',
+  menuSetPhotoIsSetHint:
+    'Это фото сета, а не основного блюда. По умолчанию показывается фото блюда — загрузите своё, если у сета должно быть другое.',
+  menuSetPhotoReset: 'Своё фото сбросить',
+  menuSetOwnPhoto: 'Своё фото сета',
+  menuSetCurrentDishPhoto: 'Сейчас фото блюда',
+  menuSetUploadPhoto: 'Загрузить фото сета',
+  menuSetClickToReplace: 'Нажмите, чтобы заменить',
+  menuSetClickToSet: 'Нажмите, чтобы задать своё',
+  menuPropertyNamePlaceholder: 'Название свойства (например, Капуста)',
+  menuPropertyVariants: 'Варианты',
+  menuPropertyFirstOptionPlaceholder: 'Первый вариант (Enter — добавить)',
+  menuPropertyNextOptionPlaceholder: 'Ещё вариант (Enter — добавить)',
+  menuPropertyVariantBtn: 'Вариант',
+  menuPropertyRequiredLabel:
+    'Обязательное — нужно выбрать один вариант',
+  menuPropertyCheckboxHint:
+    'Без вариантов свойство работает как чекбокс «Да / Нет».',
+  menuPropertyDeleteTitle: 'Удалить свойство',
+  menuPropertyFromHistory: 'Из истории — {n}',
+  menuPropertyRequiredBadge: 'ОБЯЗ',
+  menuPropertyCheckboxBadge: 'чекбокс Да / Нет',
+  moveLeftTitle: 'Сдвинуть на 1 влево',
+  moveLeftBusy: 'Слева занято',
+  moveRightTitle: 'Сдвинуть на 1 вправо',
+  moveRightBusy: 'Справа занято',
+
+  // ---------- Cashier v3 ----------
+  qtyChangedFromTo: 'Было: {from} → {to}',
+
+  // ---------- App v2 ----------
+  serverNotStartedInTime: 'Сервер не запустился за {sec} секунд',
+  hostNotResponding: 'Хост {host}:3001 не отвечает за {sec} секунд',
+  hostNotSpecified: 'Не указан IP хоста. Смените режим.',
 };

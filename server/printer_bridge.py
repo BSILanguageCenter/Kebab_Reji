@@ -5,6 +5,10 @@ Kebab POS — Windows USB Printer Bridge.
 и пишет их в установленный Windows-принтер через win32print
 (Windows spooler). Обходит проблему WebUSB с драйверами.
 
+Поддерживает два режима печати (заголовок X-Datatype):
+    RAW  — сырые ESC/POS байты (POS-принтеры, рулон 80mm)
+    TEXT — текстовый документ, драйвер сам верстает A4 (L4160 и т.п.)
+
 Установка:
     pip install pywin32
 
@@ -26,6 +30,8 @@ except ImportError:
 
 HOST = "127.0.0.1"
 PORT = 9999
+
+ALLOWED_DATATYPES = {"RAW", "TEXT", "XPS_PASS", "EMF"}
 
 
 class ReusableHTTPServer(HTTPServer):
@@ -98,12 +104,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if not printer_name:
                 return self._json(400, {"ok": False, "error": "no printer name"})
 
-            print(f"[bridge] RAW print -> '{printer_name}' ({len(body)} bytes)", flush=True)
+            # ---- Тип данных: RAW (ESC/POS) или TEXT (Windows-драйвер) ----
+            raw_datatype = (self.headers.get("X-Datatype") or "RAW").strip().upper()
+            datatype = raw_datatype if raw_datatype in ALLOWED_DATATYPES else "RAW"
+
+            print(
+                f"[bridge] print -> '{printer_name}' "
+                f"({len(body)} bytes, datatype={datatype})",
+                flush=True,
+            )
 
             hprinter = win32print.OpenPrinter(printer_name)
             try:
                 win32print.StartDocPrinter(
-                    hprinter, 1, ("Kebab POS Ticket", None, "RAW")
+                    hprinter, 1, ("Kebab POS Ticket", None, datatype)
                 )
                 try:
                     win32print.StartPagePrinter(hprinter)
@@ -116,7 +130,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
             return self._json(
                 200,
-                {"ok": True, "bytes": len(body), "printer": printer_name},
+                {
+                    "ok": True,
+                    "bytes": len(body),
+                    "printer": printer_name,
+                    "datatype": datatype,
+                },
             )
         except Exception as e:
             traceback.print_exc()
@@ -129,7 +148,7 @@ def main():
     print("[bridge] Endpoints:", flush=True)
     print("[bridge]   GET  /health", flush=True)
     print("[bridge]   GET  /printers", flush=True)
-    print("[bridge]   POST /print   (raw ESC/POS bytes, X-Printer-Name header)", flush=True)
+    print("[bridge]   POST /print   (X-Printer-Name + X-Datatype)", flush=True)
     print("", flush=True)
     try:
         server = ReusableHTTPServer((HOST, PORT), BridgeHandler)

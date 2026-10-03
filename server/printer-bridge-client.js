@@ -13,7 +13,6 @@ const BRIDGE_PORT = 9999;
  * @param {number} timeoutMs — ЧИСЛО (не объект!)
  */
 function httpRequest(method, path, headers = {}, body = null, timeoutMs = 5000) {
-  // Защита: если случайно пришёл объект вместо числа — ставим дефолт
   const safeTimeout =
     typeof timeoutMs === 'number' && Number.isFinite(timeoutMs)
       ? timeoutMs
@@ -85,7 +84,6 @@ export async function listBridgePrinters() {
 //   opts.timeoutMs
 // ============================================================
 export async function printViaBridge(printerName, buffer, opts = {}) {
-  // Явная деструктуризация — избегаем передачи объекта целиком
   const datatype =
     typeof opts.datatype === 'string' ? opts.datatype : 'RAW';
   const timeoutMs =

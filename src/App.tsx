@@ -40,14 +40,8 @@ const MODE_KEY = 'kebab-pos-mode';
 const HOST_IP_KEY = 'kebab-pos-host-ip';
 const LOCAL_IP_KEY = 'kebab-pos-local-ip';
 
-// ============================================================
-// Общий таймаут ожидания сервера (сек)
-// ============================================================
 const SERVER_WAIT_TIMEOUT_MS = 10_000;
 
-// ============================================================
-// Копирование в буфер обмена с fallback
-// ============================================================
 function copyToClipboard(text: string): Promise<void> {
   if (navigator.clipboard && window.isSecureContext) {
     return navigator.clipboard.writeText(text);
@@ -69,13 +63,6 @@ function copyToClipboard(text: string): Promise<void> {
   });
 }
 
-// ============================================================
-// Ожидание готовности сервера (макс. timeoutMs)
-//
-// initialDelayMs — пауза перед первым запросом.
-// Экспоненциальный backoff:
-//   400 → 600 → 900 → 1350 → 2000 (cap) → 2000 → ...
-// ============================================================
 async function waitForServer(
   host: string,
   port: number,
@@ -99,7 +86,7 @@ async function waitForServer(
       clearTimeout(timeoutId);
       if (res.ok) return true;
     } catch {
-      // Сервер ещё не готов — это ожидаемо на старте.
+      /* not ready yet */
     }
 
     if (Date.now() - start + delay >= timeoutMs) break;
@@ -110,10 +97,6 @@ async function waitForServer(
   return false;
 }
 
-// ============================================================
-// Одиночный быстрый probe: сервер уже работает?
-// Одна попытка, без retry-цикла — минимум «красного» в консоли.
-// ============================================================
 async function probeServer(
   host: string,
   port: number,
@@ -148,10 +131,6 @@ export default function App() {
   const [serverReady, setServerReady] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
 
-  // ============================================================
-  // Подписка на количество подключённых устройств.
-  // Инициализируем socket ТОЛЬКО после serverReady.
-  // ============================================================
   useEffect(() => {
     if (!serverReady) return;
     const unsubscribe = subscribeClientsCount(setClientsCount);
@@ -159,9 +138,6 @@ export default function App() {
     return unsubscribe;
   }, [serverReady]);
 
-  // ============================================================
-  // Синхронизация layout host ↔ client
-  // ============================================================
   useEffect(() => {
     if (!serverReady) return;
     return onLocalLayoutChange((s) => {
@@ -169,9 +145,6 @@ export default function App() {
     });
   }, [serverReady]);
 
-  // ============================================================
-  // Bootstrap
-  // ============================================================
   useEffect(() => {
     if (!mode) return;
 
@@ -184,18 +157,15 @@ export default function App() {
         if (mode === 'host') {
           console.log('[app] Режим host — проверяю сервер...');
 
-          // 1. Одиночный probe: сервер уже работает?
           const alreadyUp = await probeServer('localhost', 3001, 500);
 
           if (!alreadyUp) {
-            // 2. Прибиваем возможный зависший процесс
             try {
               await fetch('/api/server/stop', { method: 'POST' });
             } catch {
               /* ignore */
             }
 
-            // 3. Запускаем
             const startRes = await fetch('/api/server/start', {
               method: 'POST',
             });
@@ -204,8 +174,6 @@ export default function App() {
               throw new Error(startData.error || 'Server start failed');
             }
 
-            // 4. Ждём готовности МАКСИМУМ 10 секунд.
-            //    Первая пауза 2500 мс — Node успевает поднять Express.
             console.log(
               `[app] Ждём сервер до ${SERVER_WAIT_TIMEOUT_MS / 1000} сек...`
             );
@@ -217,7 +185,10 @@ export default function App() {
             );
             if (!ready) {
               throw new Error(
-                `Сервер не запустился за ${SERVER_WAIT_TIMEOUT_MS / 1000} секунд`
+                t('serverNotStartedInTime').replace(
+                  '{sec}',
+                  String(SERVER_WAIT_TIMEOUT_MS / 1000)
+                )
               );
             }
             console.log('[app] ✓ Сервер готов');
@@ -225,7 +196,6 @@ export default function App() {
 
           if (cancelled) return;
 
-          // 5. Забираем локальный IP
           try {
             const ipRes = await fetch('/api/server/ip');
             const ipData = await ipRes.json();
@@ -242,7 +212,7 @@ export default function App() {
           // ---------- CLIENT ----------
           const hostIp = window.localStorage.getItem(HOST_IP_KEY);
           if (!hostIp || !hostIp.trim()) {
-            throw new Error('Не указан IP хоста. Смените режим.');
+            throw new Error(t('hostNotSpecified'));
           }
 
           console.log('[app] Режим client — проверяю хост', hostIp);
@@ -255,9 +225,9 @@ export default function App() {
           );
           if (!ready) {
             throw new Error(
-              `Хост ${hostIp}:3001 не отвечает за ${
-                SERVER_WAIT_TIMEOUT_MS / 1000
-              } секунд`
+              t('hostNotResponding')
+                .replace('{host}', hostIp.trim())
+                .replace('{sec}', String(SERVER_WAIT_TIMEOUT_MS / 1000))
             );
           }
 
@@ -274,11 +244,9 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // ============================================================
-  // Посещённые роли
-  // ============================================================
   useEffect(() => {
     if (role) {
       setVisited((prev) => {
@@ -290,9 +258,6 @@ export default function App() {
     }
   }, [role]);
 
-  // ============================================================
-  // Онлайн/офлайн
-  // ============================================================
   useEffect(() => {
     const onOnline = () => setIsOnline(true);
     const onOffline = () => setIsOnline(false);
@@ -314,9 +279,6 @@ export default function App() {
     window.location.reload();
   };
 
-  // ============================================================
-  // ЭКРАН 1: ВЫБОР РЕЖИМА
-  // ============================================================
   if (!mode) {
     return (
       <ModeSelectionScreen
@@ -332,9 +294,6 @@ export default function App() {
   const hostIp = window.localStorage.getItem(HOST_IP_KEY) ?? '';
   const localIp = window.localStorage.getItem(LOCAL_IP_KEY) ?? '';
 
-  // ============================================================
-  // ЭКРАН 1.5: СПЛЕШ
-  // ============================================================
   if (!serverReady) {
     return (
       <BootstrapScreen
@@ -358,9 +317,6 @@ export default function App() {
     );
   }
 
-  // ============================================================
-  // ЭКРАН 2: ВЫБОР РОЛИ
-  // ============================================================
   if (!role) {
     return (
       <RoleSelectionScreen
@@ -376,9 +332,6 @@ export default function App() {
     );
   }
 
-  // ============================================================
-  // РАБОЧИЙ ЭКРАН
-  // ============================================================
   return (
     <PageActionsContext.Provider value={slot}>
       <div className="h-dvh bg-slate-100 text-gray-900 flex flex-col overflow-hidden">
@@ -533,7 +486,10 @@ function ModeSelectionScreen({
       );
       if (!ready) {
         setError(
-          `Сервер не запустился за ${SERVER_WAIT_TIMEOUT_MS / 1000} секунд`
+          t('serverNotStartedInTime').replace(
+            '{sec}',
+            String(SERVER_WAIT_TIMEOUT_MS / 1000)
+          )
         );
         setStarting(false);
         return;
@@ -547,7 +503,7 @@ function ModeSelectionScreen({
           window.localStorage.setItem(LOCAL_IP_KEY, ipData.ip);
         }
       } catch {
-        // IP не критичен
+        /* IP не критичен */
       }
 
       setStarting(false);
@@ -574,7 +530,7 @@ function ModeSelectionScreen({
     try {
       await fetch('/api/server/stop', { method: 'POST' }).catch(() => {});
     } catch {
-      // ignore
+      /* ignore */
     }
     onSelect('client', ip.trim());
   };
@@ -586,7 +542,7 @@ function ModeSelectionScreen({
       setIpCopied(true);
       setTimeout(() => setIpCopied(false), 2000);
     } catch {
-      // ignore
+      /* ignore */
     }
   };
 
@@ -810,7 +766,7 @@ function ModeSelectionScreen({
 }
 
 // ============================================================
-// СПЛЕШ: запуск сервера
+// СПЛЕШ
 // ============================================================
 function BootstrapScreen({
   mode,
@@ -845,9 +801,7 @@ function BootstrapScreen({
               {t('appName')}
             </h1>
             <p className="text-sm text-gray-500 font-medium mt-0.5">
-              {mode === 'host'
-                ? t('startingServer')
-                : t('connectingToHost')}
+              {mode === 'host' ? t('startingServer') : t('connectingToHost')}
             </p>
           </div>
         </div>
@@ -856,9 +810,7 @@ function BootstrapScreen({
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-4 border-orange-500/30 border-t-orange-500 rounded-full animate-spin" />
             <p className="text-sm text-gray-500 font-medium text-center max-w-sm">
-              {mode === 'host'
-                ? t('serverBootHint')
-                : t('clientBootHint')}
+              {mode === 'host' ? t('serverBootHint') : t('clientBootHint')}
             </p>
           </div>
         )}
@@ -960,7 +912,7 @@ function RoleSelectionScreen({
       setIpCopied(true);
       setTimeout(() => setIpCopied(false), 2000);
     } catch {
-      // ignore
+      /* ignore */
     }
   };
 
@@ -1255,9 +1207,6 @@ function RoleSelectionScreen({
   );
 }
 
-// ============================================================
-// КАРТОЧКА РОЛИ
-// ============================================================
 function RoleCard({
   icon,
   label,
@@ -1299,9 +1248,6 @@ function RoleCard({
   );
 }
 
-// ============================================================
-// ВСПОМОГАТЕЛЬНЫЕ
-// ============================================================
 function ClientsBadge({
   count,
   isOnline,
@@ -1332,10 +1278,10 @@ function ClientsBadge({
 function DateLabel({ lang }: { lang: Lang }) {
   return (
     <span className="text-xs text-gray-500 hidden md:block">
-      {new Date().toLocaleDateString(
-        lang === 'ru' ? 'ru-RU' : 'en-US',
-        { month: 'short', day: 'numeric' }
-      )}
+      {new Date().toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-US', {
+        month: 'short',
+        day: 'numeric',
+      })}
     </span>
   );
 }

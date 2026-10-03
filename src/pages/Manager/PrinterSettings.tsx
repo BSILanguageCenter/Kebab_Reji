@@ -13,7 +13,6 @@ import {
   findUsbDeviceBySlot,
 } from '@/lib/printer-discovery';
 import { printBufferViaUsb, base64ToBytes } from '@/lib/usb-printer';
-import { invalidatePrinterSettingsCache } from '@/services/printer';
 import {
   Printer,
   Save,
@@ -77,18 +76,18 @@ export function PrinterSettingsPage() {
         encoding: s.encoding ?? 'cp866',
       });
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Ошибка загрузки');
+      setLoadError(e instanceof Error ? e.message : t('loadFailedShort'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
 
   // ============================================================
-  // Первичное обнаружение (USB + LAN + Windows)
+  // Первичное обнаружение
   // ============================================================
   useEffect(() => {
     let cancelled = false;
@@ -127,7 +126,7 @@ export function PrinterSettingsPage() {
   }, []);
 
   // ============================================================
-  // Добавить USB-принтер (WebUSB)
+  // Добавить USB-принтер
   // ============================================================
   const addUsbPrinter = async () => {
     const d = await requestUsbPrinter();
@@ -150,6 +149,7 @@ export function PrinterSettingsPage() {
         enabled: true,
         source: p.source,
         name: p.name,
+        paper: 'roll',
         width: prev[target].width || 32,
       };
 
@@ -183,6 +183,14 @@ export function PrinterSettingsPage() {
     }));
   };
 
+  const changePaper = (target: 'kitchen' | 'cashier', paper: 'roll' | 'a4') => {
+    setSettings((prev) => ({
+      ...prev,
+      [target]: { ...prev[target], paper },
+    }));
+    setMsg(null);
+  };
+
   // ============================================================
   // Сохранение
   // ============================================================
@@ -191,14 +199,11 @@ export function PrinterSettingsPage() {
     setMsg(null);
     try {
       const saved = await emitSavePrinterSettings(settings);
-      // ⚡ #6: сбрасываем кэш настроек в printer.ts
-      invalidatePrinterSettingsCache();
       setSettings({
         kitchen: { ...DEFAULT_PRINTER_SLOT, ...saved.kitchen },
         cashier: { ...DEFAULT_PRINTER_SLOT, ...saved.cashier },
         encoding: saved.encoding ?? 'cp866',
       });
-      setMsg({ kind: 'ok', text: t('printerSaved') });
       setMsg({ kind: 'ok', text: t('printerSaved') });
     } catch (e) {
       setMsg({
@@ -211,14 +216,13 @@ export function PrinterSettingsPage() {
   };
 
   // ============================================================
-  // Тест — роутинг по source
+  // Тест
   // ============================================================
   const test = async (target: 'kitchen' | 'cashier') => {
     setTesting(target);
     setMsg(null);
     try {
       const saved = await emitSavePrinterSettings(settings);
-      invalidatePrinterSettingsCache();
       setSettings({
         kitchen: { ...DEFAULT_PRINTER_SLOT, ...saved.kitchen },
         cashier: { ...DEFAULT_PRINTER_SLOT, ...saved.cashier },
@@ -235,26 +239,20 @@ export function PrinterSettingsPage() {
       // ---------- USB через WebUSB ----------
       if (slot.source === 'usb') {
         if (!hasWebUsb()) {
-          setMsg({
-            kind: 'err',
-            text: 'WebUSB не поддерживается. Используйте Chrome или выберите Windows-принтер.',
-          });
+          setMsg({ kind: 'err', text: t('webUsbNotSupported') });
           return;
         }
         console.log('[print-test] USB start', target, slot);
         const device = await findUsbDeviceBySlot(slot);
         if (!device) {
-          setMsg({
-            kind: 'err',
-            text: 'USB-принтер не найден. Разрешите доступ или используйте Windows-принтер.',
-          });
+          setMsg({ kind: 'err', text: t('usbPrinterNotFound') });
           return;
         }
         const buildRes = await emitBuildTestTicket(target);
         if (!buildRes.ok || !buildRes.buffer) {
           setMsg({
             kind: 'err',
-            text: buildRes.error || 'Не удалось собрать тест',
+            text: buildRes.error || t('failedToBuildTest'),
           });
           return;
         }
@@ -264,7 +262,7 @@ export function PrinterSettingsPage() {
         } catch (e) {
           setMsg({
             kind: 'err',
-            text: e instanceof Error ? e.message : 'USB print failed',
+            text: e instanceof Error ? e.message : t('printerTestFailed'),
           });
         }
         return;
@@ -365,6 +363,7 @@ export function PrinterSettingsPage() {
               onToggle={() => toggleEnabled('kitchen')}
               onUnassign={() => unassign('kitchen')}
               onTest={() => test('kitchen')}
+              onChangePaper={(p) => changePaper('kitchen', p)}
               testing={testing === 'kitchen'}
             />
             <AssignedSlot
@@ -374,6 +373,7 @@ export function PrinterSettingsPage() {
               onToggle={() => toggleEnabled('cashier')}
               onUnassign={() => unassign('cashier')}
               onTest={() => test('cashier')}
+              onChangePaper={(p) => changePaper('cashier', p)}
               testing={testing === 'cashier'}
             />
           </div>
@@ -398,7 +398,7 @@ export function PrinterSettingsPage() {
               title={
                 hasWebUsb()
                   ? t('addUsbPrinter')
-                  : 'WebUSB не поддерживается браузером'
+                  : t('webUsbNotSupportedBrowser')
               }
             >
               <Usb className="w-3.5 h-3.5" />
@@ -496,6 +496,7 @@ function AssignedSlot({
   onToggle,
   onUnassign,
   onTest,
+  onChangePaper,
   testing,
 }: {
   label: string;
@@ -504,6 +505,7 @@ function AssignedSlot({
   onToggle: () => void;
   onUnassign: () => void;
   onTest: () => void;
+  onChangePaper: (p: 'roll' | 'a4') => void;
   testing: boolean;
 }) {
   const { t } = useI18n();
@@ -514,6 +516,8 @@ function AssignedSlot({
 
   const isEmpty =
     !slot.name && !slot.ip && slot.usb_vendor_id == null && !slot.printer_name;
+
+  const isA4 = slot.paper === 'a4';
 
   return (
     <div className="rounded-xl border-2 border-gray-200 p-3 space-y-2">
@@ -567,6 +571,39 @@ function AssignedSlot({
               </>
             )}
           </div>
+
+          {/* ---- Тип бумаги ---- */}
+          {slot.source !== 'usb' && (
+            <div>
+              <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                {t('printerPaper')}
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onChangePaper('roll')}
+                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all active:scale-[0.97] ${
+                    !isA4
+                      ? 'bg-orange-500 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {t('printerPaperRoll')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onChangePaper('a4')}
+                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all active:scale-[0.97] ${
+                    isA4
+                      ? 'bg-orange-500 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {t('printerPaperA4')}
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-1.5">
             <button
