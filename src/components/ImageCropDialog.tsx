@@ -7,6 +7,7 @@ import {
   FileImage,
   AlertTriangle,
 } from 'lucide-react';
+import { useI18n } from '@/locale';
 
 const CONTAINER_SIZE = 360;
 const OUTPUT_SIZE = 768;
@@ -33,6 +34,8 @@ export function ImageCropDialog({
   onCancel: () => void;
   onConfirm: (cropped: File) => void;
 }) {
+  const { t } = useI18n();
+
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -81,23 +84,13 @@ export function ImageCropDialog({
     }
   }, [open]);
 
-  // ============================================================
-  // РАЗМЕРЫ
-  // Используем naturalWidth / naturalHeight — это истинные размеры
-  // ПОСЛЕ применения EXIF-поворота (все современные браузеры так делают).
-  // ============================================================
   const imgW = imgEl?.naturalWidth ?? 1;
   const imgH = imgEl?.naturalHeight ?? 1;
 
-  // Вписываем всё фото в квадрат (fit whole image)
   const baseScale = imgEl ? CONTAINER_SIZE / Math.max(imgW, imgH) : 1;
-
-  // Зум, при котором картинка заполнит квадрат без белых полей
   const fillZoom = imgEl ? Math.max(imgW, imgH) / Math.min(imgW, imgH) : 1;
 
-  // ============================================================
-  // Отрисовка итогового канваса
-  // ============================================================
+  // ---------- Отрисовка итогового канваса ----------
   const renderToCanvas = useCallback(() => {
     if (!imgEl) return null;
     const canvas = document.createElement('canvas');
@@ -106,7 +99,6 @@ export function ImageCropDialog({
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    // Белый фон (для PNG с прозрачностью)
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
 
@@ -229,7 +221,6 @@ export function ImageCropDialog({
       ? Math.round((1 - outputSize / originalSize) * 100)
       : 0;
 
-  // Сколько пикселей оригинала попадает в итоговый квадрат
   const sourcePixelsInCrop = Math.round(CONTAINER_SIZE / (baseScale * zoom));
   const willUpscale = sourcePixelsInCrop < UPSCALE_WARN_THRESHOLD;
   const hasWhiteGap = zoom < fillZoom - 0.01;
@@ -245,7 +236,9 @@ export function ImageCropDialog({
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-200 shrink-0">
-          <h3 className="text-lg font-black text-gray-900">Обрезка фото</h3>
+          <h3 className="text-lg font-black text-gray-900">
+            {t('cropTitle')}
+          </h3>
           <button
             onClick={onCancel}
             disabled={processing}
@@ -271,11 +264,6 @@ export function ImageCropDialog({
             onPointerCancel={onPointerUp}
             onWheel={onWheel}
           >
-            {/*
-              ВАЖНО: не задаём width/height в пикселях!
-              Пусть img рендерится по своим naturalWidth × naturalHeight
-              (после EXIF-поворота). Только transform: scale() уменьшает.
-            */}
             <img
               src={imgUrl}
               alt=""
@@ -288,7 +276,6 @@ export function ImageCropDialog({
                 height: 'auto',
                 maxWidth: 'none',
                 maxHeight: 'none',
-                // Принудительно учитывать EXIF-ориентацию
                 imageOrientation: 'from-image',
                 transform: `translate(-50%, -50%) translate(${offset.x}px, ${offset.y}px) scale(${
                   baseScale * zoom
@@ -309,8 +296,7 @@ export function ImageCropDialog({
 
             {hasWhiteGap && (
               <div className="pointer-events-none absolute bottom-1 left-1 right-1 text-center text-[9px] font-bold text-gray-500 bg-white/85 rounded px-1 py-0.5">
-                Видно всё фото. Для заполнения квадрата увеличьте до{' '}
-                {fillZoom.toFixed(2)}×
+                {t('cropWhiteGapHint').replace('{z}', fillZoom.toFixed(2))}
               </div>
             )}
           </div>
@@ -320,7 +306,7 @@ export function ImageCropDialog({
             <div className="flex items-center gap-2 mb-2">
               <ZoomIn className="w-4 h-4 text-gray-500" />
               <span className="text-xs font-bold text-gray-500 uppercase tracking-wider flex-1">
-                Масштаб
+                {t('cropScale')}
               </span>
               <span className="text-[11px] font-black text-orange-600 tabular-nums">
                 {zoom.toFixed(2)}×
@@ -349,7 +335,7 @@ export function ImageCropDialog({
                     ? 'bg-orange-500 text-white'
                     : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                 }`}
-                title="Показать всё фото"
+                title={t('cropFitTitle')}
               >
                 Fit
               </button>
@@ -364,7 +350,7 @@ export function ImageCropDialog({
                     ? 'bg-orange-500 text-white'
                     : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                 }`}
-                title={`Заполнить квадрат (${fillZoom.toFixed(2)}×)`}
+                title={t('cropFillTitle').replace('{z}', fillZoom.toFixed(2))}
               >
                 Fill
               </button>
@@ -393,7 +379,7 @@ export function ImageCropDialog({
               className="mt-2 w-full py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-xs font-bold text-gray-700 flex items-center justify-center gap-1.5"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              Сбросить
+              {t('cropReset')}
             </button>
           </div>
 
@@ -402,14 +388,14 @@ export function ImageCropDialog({
             <div className="flex items-center gap-1.5 mb-1.5">
               <FileImage className="w-3.5 h-3.5 text-slate-500" />
               <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                Информация
+                {t('cropInfo')}
               </span>
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-[11px]">
               <div>
                 <div className="text-gray-400 font-bold text-[9px] uppercase tracking-wider">
-                  Оригинал
+                  {t('cropOriginal')}
                 </div>
                 <div className="font-black text-gray-700 tabular-nums">
                   {imgW}×{imgH}
@@ -420,13 +406,15 @@ export function ImageCropDialog({
               </div>
               <div>
                 <div className="text-gray-400 font-bold text-[9px] uppercase tracking-wider">
-                  После обрезки
+                  {t('cropAfter')}
                 </div>
                 <div className="font-black text-orange-600 tabular-nums flex items-center gap-1.5">
                   {measuring ? (
                     <>
                       <span className="inline-block w-3 h-3 border-2 border-orange-500/30 border-t-orange-500 rounded-full animate-spin" />
-                      <span className="text-gray-400">считаю…</span>
+                      <span className="text-gray-400">
+                        {t('cropCalculating')}
+                      </span>
                     </>
                   ) : (
                     <>
@@ -447,7 +435,7 @@ export function ImageCropDialog({
 
             <div className="mt-1.5 pt-1.5 border-t border-slate-200 text-[10px] text-gray-500 leading-snug flex items-center justify-between gap-2">
               <span>
-                Кадр из оригинала:{' '}
+                {t('cropFrameFrom')}{' '}
                 <b className="text-gray-700">
                   {sourcePixelsInCrop}×{sourcePixelsInCrop} px
                 </b>
@@ -462,17 +450,16 @@ export function ImageCropDialog({
             <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <p className="text-[10px] text-amber-800 leading-snug">
-                Область кадра меньше {UPSCALE_WARN_THRESHOLD}×
-                {UPSCALE_WARN_THRESHOLD} px — картинка будет растянута.
-                Уменьшите масштаб, чтобы захватить больше оригинала.
+                {t('cropUpscaleWarning').replace(
+                  '{n}',
+                  String(UPSCALE_WARN_THRESHOLD)
+                )}
               </p>
             </div>
           )}
 
           <p className="mt-2 text-[10px] text-gray-500 text-center leading-snug">
-            При открытии видно всё фото (кнопка <b>Fit</b>). Кнопка{' '}
-            <b>Fill</b> заполняет квадрат без белых полей. Крутите колесо
-            мыши или ползунок, чтобы приблизить нужный кусок.
+            {t('cropHint')}
           </p>
         </div>
 
@@ -483,7 +470,7 @@ export function ImageCropDialog({
             disabled={processing}
             className="flex-1 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-bold disabled:opacity-40"
           >
-            Отмена
+            {t('cancel')}
           </button>
           <button
             onClick={handleConfirm}
@@ -491,7 +478,7 @@ export function ImageCropDialog({
             className="flex-1 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold flex items-center justify-center gap-1.5 disabled:opacity-40"
           >
             <Check className="w-4 h-4" />
-            {processing ? 'Обработка...' : 'Готово'}
+            {processing ? t('cropProcessing') : t('cropDone')}
           </button>
         </div>
       </div>

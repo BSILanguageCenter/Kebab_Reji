@@ -411,4 +411,24 @@ export const en: Record<TranslationKey, string> = {
   serverNotStartedInTime: 'Server did not start within {sec} seconds',
   hostNotResponding: 'Host {host}:3001 did not respond within {sec} seconds',
   hostNotSpecified: 'Host IP is not specified. Change mode.',
+
+  // ---------- ImageCropDialog ----------
+  cropTitle: 'Crop photo',
+  cropScale: 'Scale',
+  cropOriginal: 'Original',
+  cropAfter: 'After cropping',
+  cropReset: 'Reset',
+  cropInfo: 'Info',
+  cropFrameFrom: 'Frame from original:',
+  cropUpscaleWarning:
+    'Cropped area is smaller than {n}×{n} px — the image will be stretched. Reduce zoom to capture more of the original.',
+  cropHint:
+    'On open the whole photo is visible (Fit button). Fill button fills the square without white gaps. Use the mouse wheel or slider to zoom in on the desired part.',
+  cropWhiteGapHint:
+    'Whole photo is visible. To fill the square, zoom to {z}×',
+  cropFitTitle: 'Show whole photo',
+  cropFillTitle: 'Fill square ({z}×)',
+  cropDone: 'Done',
+  cropProcessing: 'Processing...',
+  cropCalculating: 'calculating…',
 };

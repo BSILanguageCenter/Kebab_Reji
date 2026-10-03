@@ -413,4 +413,24 @@ export const ru: Record<TranslationKey, string> = {
   serverNotStartedInTime: 'Сервер не запустился за {sec} секунд',
   hostNotResponding: 'Хост {host}:3001 не отвечает за {sec} секунд',
   hostNotSpecified: 'Не указан IP хоста. Смените режим.',
+
+  // ---------- ImageCropDialog ----------
+  cropTitle: 'Обрезка фото',
+  cropScale: 'Масштаб',
+  cropOriginal: 'Оригинал',
+  cropAfter: 'После обрезки',
+  cropReset: 'Сбросить',
+  cropInfo: 'Информация',
+  cropFrameFrom: 'Кадр из оригинала:',
+  cropUpscaleWarning:
+    'Область кадра меньше {n}×{n} px — картинка будет растянута. Уменьшите масштаб, чтобы захватить больше оригинала.',
+  cropHint:
+    'При открытии видно всё фото (кнопка Fit). Кнопка Fill заполняет квадрат без белых полей. Крутите колесо мыши или ползунок, чтобы приблизить нужный кусок.',
+  cropWhiteGapHint:
+    'Видно всё фото. Для заполнения квадрата увеличьте до {z}×',
+  cropFitTitle: 'Показать всё фото',
+  cropFillTitle: 'Заполнить квадрат ({z}×)',
+  cropDone: 'Готово',
+  cropProcessing: 'Обработка...',
+  cropCalculating: 'считаю…',
 };
