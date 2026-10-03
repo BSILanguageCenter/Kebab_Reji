@@ -255,6 +255,15 @@ export const translationKeys = [
   'toppingsHeight',
   'drinksShare',
 
+  // ---------- Layout v5 (расширенные) ----------
+  'cardRadius',
+  'gridGap',
+  'ordersRowGap',
+  'cartItemGap',
+  'panelHeaderSize',
+  'orderNumberSize',
+  'sectionSpacing',
+
   // ---------- v3.1 ----------
   'dragHint',
   'delete',

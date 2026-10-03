@@ -261,6 +261,15 @@ export const en: Record<TranslationKey, string> = {
   itemTextSize: 'Text size',
   toppingsHeight: 'Toppings height',
   drinksShare: 'Drinks / sauces',
+  
+  // ---------- Layout v5 (расширенные) ----------
+  cardRadius: 'Card corner radius',
+  gridGap: 'Gap between cards',
+  ordersRowGap: 'Gap between orders',
+  cartItemGap: 'Cart item spacing',
+  panelHeaderSize: 'Section header size',
+  orderNumberSize: 'Order number size',
+  sectionSpacing: 'Spacing',
 
   // ---------- v3.1 ----------
   dragHint: 'Drag cards to change their order in the POS',

@@ -261,6 +261,15 @@ export const ru: Record<TranslationKey, string> = {
   itemTextSize: 'Размер текста',
   toppingsHeight: 'Высота топпингов',
   drinksShare: 'Напитки / соусы',
+  
+  // ---------- Layout v5 (расширенные) ----------
+  cardRadius: 'Скругление карточек',
+  gridGap: 'Отступ между карточками',
+  ordersRowGap: 'Отступ между заказами',
+  cartItemGap: 'Отступ в корзине',
+  panelHeaderSize: 'Размер заголовков секций',
+  orderNumberSize: 'Размер номера заказа',
+  sectionSpacing: 'Отступы',
 
   // ---------- v3.1 ----------
   dragHint: 'Перетаскивайте карточки, чтобы изменить порядок в кассе',

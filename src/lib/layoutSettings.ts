@@ -1,14 +1,29 @@
 import { useEffect, useState } from 'react';
 
 export interface LayoutSettings {
+  // Колонки
   ordersWidth: number;
   menuRightWidth: number;
   cartWidth: number;
+
+  // Карточки
   dishCardSize: number;
   toppingCardSize: number;
   drinkCardSize: number;
   sauceCardSize: number;
+  cardRadius: number;      // НОВОЕ
+
+  // Отступы
+  gridGap: number;         // НОВОЕ
+  ordersRowGap: number;    // НОВОЕ
+  cartItemGap: number;     // НОВОЕ
+
+  // Текст
   itemTextSize: number;
+  panelHeaderSize: number; // НОВОЕ
+  orderNumberSize: number; // НОВОЕ
+
+  // Панели
   toppingsHeight: number;
   drinksShare: number;
 }
@@ -24,7 +39,13 @@ export const DEFAULT_LAYOUT: LayoutSettings = {
   toppingCardSize: 80,
   drinkCardSize: 72,
   sauceCardSize: 72,
+  cardRadius: 12,
+  gridGap: 12,
+  ordersRowGap: 8,
+  cartItemGap: 6,
   itemTextSize: 12,
+  panelHeaderSize: 9,
+  orderNumberSize: 18,
   toppingsHeight: 180,
   drinksShare: 50,
 };
@@ -37,7 +58,13 @@ const LIMITS = {
   toppingCardSize: { min: 40, max: 160 },
   drinkCardSize: { min: 40, max: 160 },
   sauceCardSize: { min: 40, max: 160 },
+  cardRadius: { min: 0, max: 32 },
+  gridGap: { min: 0, max: 32 },
+  ordersRowGap: { min: 0, max: 24 },
+  cartItemGap: { min: 0, max: 20 },
   itemTextSize: { min: 8, max: 20 },
+  panelHeaderSize: { min: 7, max: 16 },
+  orderNumberSize: { min: 12, max: 32 },
   toppingsHeight: { min: 80, max: 400 },
   drinksShare: { min: 20, max: 80 },
 } as const;
@@ -74,9 +101,6 @@ function loadLayout(): LayoutSettings {
   }
 }
 
-// ============================================================
-// Слушатели локальных изменений (для отправки на сервер)
-// ============================================================
 const localChangeListeners = new Set<(s: LayoutSettings) => void>();
 
 export function onLocalLayoutChange(
@@ -98,10 +122,6 @@ function notifyLocalChange(s: LayoutSettings) {
   });
 }
 
-// ============================================================
-// Применение layout, пришедшего ИЗВНЕ (например, от сервера).
-// НЕ вызывает notifyLocalChange — иначе будет цикл с сервером.
-// ============================================================
 export function applyExternalLayout(settings: LayoutSettings) {
   if (typeof window === 'undefined') return;
   const clamped = clampAll(settings);
@@ -119,9 +139,6 @@ export function applyExternalLayout(settings: LayoutSettings) {
   }
 }
 
-// ============================================================
-// Персист через rAF — не блокирует UI при быстром drag
-// ============================================================
 let persistRaf: number | null = null;
 let pendingPersist: LayoutSettings | null = null;
 
@@ -150,9 +167,6 @@ function schedulePersist(settings: LayoutSettings) {
   });
 }
 
-// ============================================================
-// Hook
-// ============================================================
 type Updater = LayoutSettings | ((prev: LayoutSettings) => LayoutSettings);
 
 export function useLayoutSettings(): [LayoutSettings, (u: Updater) => void] {
@@ -199,9 +213,6 @@ export function useLayoutSettings(): [LayoutSettings, (u: Updater) => void] {
   return [settings, update];
 }
 
-// ============================================================
-// Магнитная привязка
-// ============================================================
 export function snapValue(
   value: number,
   snapPoints: number[],

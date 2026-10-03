@@ -54,9 +54,6 @@ import {
   Save,
 } from 'lucide-react';
 
-// ============================================================
-// Категории (пространства)
-// ============================================================
 type CategorySpace = 'dishset' | 'drink' | 'sauce' | 'topping';
 
 function getSpaceItems(items: MenuItem[], space: CategorySpace): MenuItem[] {
@@ -66,9 +63,6 @@ function getSpaceItems(items: MenuItem[], space: CategorySpace): MenuItem[] {
   return items.filter((i) => i.type === space);
 }
 
-// ============================================================
-// Ширина карточки в ячейках
-// ============================================================
 function getItemWidth(item: MenuItem): number {
   if (item.type === 'dish' && item.dish_kind === 'group') {
     return Math.max(1, item.variants?.length ?? 1);
@@ -79,11 +73,6 @@ function getItemWidth(item: MenuItem): number {
   return 1;
 }
 
-const GRID_GAP = 12;
-
-// ============================================================
-// РАСЧЁТ ВРЕМЕНИ ОЖИДАНИЯ
-// ============================================================
 function getMenuItemCookTime(item: MenuItem): number {
   if (item.dish_kind === 'group' && item.variants?.length) {
     return Math.max(
@@ -144,9 +133,19 @@ function estimateWaitMinutes(
   return batchesAhead * avgBatch + ownTime;
 }
 
-// ============================================================
-// CASHIER PAGE
-// ============================================================
+function statusLabel(status: Order['status']): string {
+  switch (status) {
+    case 'READY':
+      return '✓ Готов';
+    case 'PREPARING':
+      return 'Готовится';
+    case 'CANCELLED':
+      return 'Отменён';
+    default:
+      return 'Новый';
+  }
+}
+
 export default function CashierPage() {
   const { t, lang } = useI18n();
 
@@ -174,9 +173,6 @@ export default function CashierPage() {
   const [layout, setLayout] = useLayoutSettings();
   const drinksWrapRef = useRef<HTMLDivElement>(null);
 
-  // ============================================================
-  // ПОДПИСКИ
-  // ============================================================
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
       setActiveOrders(snap.orders);
@@ -231,9 +227,6 @@ export default function CashierPage() {
     [cart.length]
   );
 
-  // ============================================================
-  // ДОБАВЛЕНИЕ В КОРЗИНУ
-  // ============================================================
   const addToCart = useCallback(
     (item: MenuItem) => {
       setCart((prev) => {
@@ -334,10 +327,12 @@ export default function CashierPage() {
     []
   );
 
-  // ============================================================
-  // ИЗМЕНЕНИЕ КОЛИЧЕСТВА / УДАЛЕНИЕ
-  // ============================================================
   const incrementItem = (cartId: string) => {
+    try {
+      if ('vibrate' in navigator) navigator.vibrate(8);
+    } catch {
+      /* ignore */
+    }
     setCart((prev) =>
       prev.map((c) =>
         c.id === cartId
@@ -348,18 +343,21 @@ export default function CashierPage() {
   };
 
   const decrementItem = (cartId: string) => {
+    try {
+      if ('vibrate' in navigator) navigator.vibrate(8);
+    } catch {
+      /* ignore */
+    }
     setCart((prev) =>
       prev
         .map((c) => {
           if (c.id !== cartId) return c;
-
           if (c.quantity <= 1) {
             if (editingOrder && c.db_id) {
               return { ...c, is_removed: true, quantity: 1 };
             }
             return { ...c, quantity: 0 };
           }
-
           return { ...c, quantity: c.quantity - 1 };
         })
         .filter((c) => c.quantity > 0 || c.is_removed)
@@ -381,9 +379,6 @@ export default function CashierPage() {
     });
   };
 
-  // ============================================================
-  // СОЗДАНИЕ ЗАКАЗА
-  // ============================================================
   const handleSendToKitchen = async () => {
     if (!hasActiveItems) return;
     setSending(true);
@@ -480,6 +475,12 @@ export default function CashierPage() {
           console.error('[cashier] customer print error:', e);
         });
 
+      try {
+        if ('vibrate' in navigator) navigator.vibrate(30);
+      } catch {
+        /* ignore */
+      }
+
       setCart([]);
       setComment('');
       setEditingOrder(null);
@@ -490,9 +491,6 @@ export default function CashierPage() {
     }
   };
 
-  // ============================================================
-  // РЕДАКТИРОВАНИЕ ЗАКАЗА → DELTA-ЧЕК НА КУХНЮ
-  // ============================================================
   const handleSaveChanges = async () => {
     if (!editingOrder || !hasActiveItems) return;
     setSending(true);
@@ -566,16 +564,6 @@ export default function CashierPage() {
       };
     });
 
-    console.log(
-      '[cashier] delta items:',
-      deltaItems.map((i) => ({
-        name: i.name,
-        qty: i.quantity,
-        is_removed: i.is_removed,
-        is_added_later: i.is_added_later,
-      }))
-    );
-
     try {
       pushUndo('cashier', {
         kind: 'edit',
@@ -621,20 +609,20 @@ export default function CashierPage() {
 
       printKitchenDelta(deltaOrder)
         .then((res) => {
-          console.log('[cashier] delta result:', res);
           if (!res.success && !res.skipped) {
             setPrintError(res.error ?? t('printerError'));
-          } else if (res.skipped) {
-            console.log(
-              '[cashier] delta skipped:',
-              res.note ?? 'no-changes'
-            );
           }
         })
         .catch((e) => {
           console.error('[cashier] delta print exception:', e);
           setPrintError(e instanceof Error ? e.message : t('printerError'));
         });
+
+      try {
+        if ('vibrate' in navigator) navigator.vibrate(30);
+      } catch {
+        /* ignore */
+      }
 
       setCart([]);
       setComment('');
@@ -646,9 +634,6 @@ export default function CashierPage() {
     }
   };
 
-  // ============================================================
-  // РЕЖИМ РЕДАКТИРОВАНИЯ
-  // ============================================================
   const actuallyEditOrder = (order: Order) => {
     const restored: CartItem[] = (order.order_items ?? []).map((item) => {
       cartIdCounter.current += 1;
@@ -702,9 +687,6 @@ export default function CashierPage() {
     setEditingOrder(null);
   };
 
-  // ============================================================
-  // UNDO
-  // ============================================================
   const askUndo = () => {
     const last = undoStack[undoStack.length - 1];
     if (!last) return;
@@ -733,9 +715,6 @@ export default function CashierPage() {
     }
   };
 
-  // ============================================================
-  // RESIZE
-  // ============================================================
   const startLayoutRef = useRef<typeof layout | null>(null);
 
   const beginResize = () => {
@@ -811,9 +790,6 @@ export default function CashierPage() {
     }));
   };
 
-  // ============================================================
-  // GRID RENDER
-  // ============================================================
   const renderGrid = (
     space: CategorySpace,
     size: number,
@@ -827,10 +803,11 @@ export default function CashierPage() {
 
     return (
       <div
-        className="grid gap-3"
+        className="grid"
         style={{
           gridTemplateColumns: `repeat(auto-fill, ${size}px)`,
           gridAutoRows: `${cellH}px`,
+          gap: layout.gridGap,
         }}
       >
         {sorted.map((card) => {
@@ -870,6 +847,7 @@ export default function CashierPage() {
                 size={size}
                 textSize={layout.itemTextSize}
                 compact={compact}
+                cardRadius={layout.cardRadius}
               />
             </div>
           );
@@ -883,22 +861,19 @@ export default function CashierPage() {
   const hasDrink = getSpaceItems(tops, 'drink').length > 0;
   const hasSauce = getSpaceItems(tops, 'sauce').length > 0;
 
-  // ============================================================
-  // RENDER
-  // ============================================================
   return (
-    <div className="h-full min-h-0 flex flex-col bg-slate-100">
-      <div className="flex items-center gap-3 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
+    <div className="h-full min-h-0 flex flex-col bg-slate-200/70">
+      <div className="flex items-center gap-3 px-4 py-2.5 bg-white shadow-sm border-b border-slate-200 shrink-0">
         <PageActions forRole="cashier">
           <button
             onClick={askUndo}
             disabled={undoStack.length === 0}
-            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="ml-auto flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold border-2 border-slate-200 bg-white hover:border-orange-400 hover:bg-orange-50 text-slate-700 active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
           >
-            <Undo2 className="w-3.5 h-3.5" />
+            <Undo2 className="w-4 h-4" />
             {t('undoLast')}
             {undoStack.length > 0 && (
-              <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-black">
+              <span className="text-[11px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-black">
                 {undoStack.length}
               </span>
             )}
@@ -907,23 +882,32 @@ export default function CashierPage() {
       </div>
 
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* ---- LEFT: ORDERS ---- */}
+        {/* LEFT: ORDERS */}
         <div
-          className="shrink-0 bg-white border-r-2 border-gray-300 flex flex-col min-h-0"
+          className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.ordersWidth }}
         >
-          <div className="px-2 py-1 border-b-2 border-gray-300 shrink-0 bg-gray-50">
-            <h2 className="text-[9px] font-black text-gray-700 uppercase tracking-wider border-l-2 border-gray-500 pl-1.5 leading-none">
+          <div className="px-3 py-2 border-b border-slate-200 shrink-0 bg-slate-50">
+            <h2
+              className="font-black text-slate-700 tracking-wide border-l-4 border-slate-400 pl-2 leading-none"
+              style={{ fontSize: layout.panelHeaderSize }}
+            >
               {t('activeOrders')}
             </h2>
-            <span className="text-base font-black text-orange-600 leading-none mt-1 block pl-1.5">
+            <span
+              className="font-black text-orange-600 leading-none mt-1.5 block pl-2 tabular-nums"
+              style={{ fontSize: layout.orderNumberSize }}
+            >
               {activeOrders.filter((o) => o.status !== 'CANCELLED').length}
             </span>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
+          <div
+            className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col"
+            style={{ rowGap: layout.ordersRowGap }}
+          >
             {activeOrders.length === 0 && (
-              <p className="text-gray-400 text-xs text-center mt-6">
+              <p className="text-slate-400 text-sm text-center mt-8">
                 {t('noActiveOrders')}
               </p>
             )}
@@ -931,31 +915,34 @@ export default function CashierPage() {
               const isCancelled = order.status === 'CANCELLED';
               const isEditing = editingOrder?.id === order.id;
               const cls = isCancelled
-                ? 'bg-red-50 border-red-300 opacity-60'
+                ? 'bg-red-50 border-l-red-400 opacity-60'
                 : isEditing
-                ? 'bg-orange-100 border-orange-500 ring-2 ring-orange-300'
+                ? 'bg-orange-100 border-l-orange-500 ring-2 ring-orange-300 shadow-md'
                 : order.status === 'READY'
-                ? 'bg-green-50 border-green-400'
+                ? 'bg-green-50 border-l-green-500 shadow-sm'
                 : order.status === 'PREPARING'
-                ? 'bg-yellow-50 border-yellow-400'
-                : 'bg-gray-50 border-gray-200';
+                ? 'bg-amber-50 border-l-amber-400 shadow-sm'
+                : 'bg-white border-l-slate-300 shadow-sm';
               return (
                 <button
                   key={order.id}
                   onClick={() => handleEditOrder(order)}
                   disabled={isCancelled}
-                  className={`w-full text-left p-2.5 rounded-xl border-2 transition-all ${cls} ${
+                  className={`w-full text-left p-3.5 rounded-xl border border-slate-200 border-l-[6px] transition-all ${cls} ${
                     isCancelled
                       ? 'cursor-not-allowed'
-                      : 'cursor-pointer active:scale-[0.97]'
+                      : 'cursor-pointer hover:shadow-md active:scale-[0.97]'
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-lg font-bold text-gray-900">
+                    <span
+                      className="font-black text-slate-900 tabular-nums"
+                      style={{ fontSize: layout.orderNumberSize }}
+                    >
                       #{order.order_number}
                     </span>
                     <span
-                      className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                      className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
                         order.order_type === 'INSIDE'
                           ? 'bg-blue-100 text-blue-700'
                           : 'bg-purple-100 text-purple-700'
@@ -964,16 +951,19 @@ export default function CashierPage() {
                       {order.order_type === 'INSIDE' ? 'IN' : 'OUT'}
                     </span>
                   </div>
+                  <div className="mt-1 text-[11px] font-bold text-slate-500">
+                    {statusLabel(order.status)}
+                  </div>
                   <div className="flex items-center justify-between mt-1">
-                    <span className="text-[10px] text-gray-500">
+                    <span className="text-[11px] text-slate-500">
                       {formatTimeAgo(order.created_at, lang)}
                     </span>
-                    <span className="text-xs font-bold text-gray-700">
+                    <span className="text-sm font-black text-slate-700 tabular-nums">
                       {formatYen(order.total_amount)}
                     </span>
                   </div>
                   {isEditing && (
-                    <div className="mt-1 text-[10px] text-orange-700 font-bold flex items-center gap-1">
+                    <div className="mt-1.5 text-[11px] text-orange-700 font-bold flex items-center gap-1">
                       <Pencil className="w-3 h-3" />
                       {t('editingOrder')}
                     </div>
@@ -983,12 +973,12 @@ export default function CashierPage() {
             })}
           </div>
 
-          <div className="p-2 border-t border-gray-200 shrink-0">
+          <div className="p-2 border-t border-slate-200 shrink-0">
             <button
               onClick={handleNewOrder}
-              className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl bg-orange-500 active:bg-orange-600 text-white text-xs font-bold shadow-md shadow-orange-500/20"
+              className="w-full flex items-center justify-center gap-2 px-3 py-4 rounded-xl bg-orange-500 hover:bg-orange-600 active:scale-[0.97] text-white text-sm font-black shadow-lg shadow-orange-500/30 transition-all"
             >
-              <FilePlus2 className="w-4 h-4" />
+              <FilePlus2 className="w-5 h-5" />
               {t('newOrder')}
             </button>
           </div>
@@ -1000,52 +990,55 @@ export default function CashierPage() {
           onEnd={endResize}
         />
 
-        {/* ---- CENTER: БЛЮДА И СЕТЫ + ТОППИНГИ ---- */}
-        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-50">
-          <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
-            <div className="flex rounded-xl overflow-hidden border-2 border-gray-300 shadow-sm">
+        {/* CENTER */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
+          <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-200 shrink-0">
+            <div className="flex p-1 rounded-2xl bg-slate-100 gap-1">
               <button
                 onClick={() => setOrderType('OUTSIDE')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-all ${
+                className={`flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold transition-all active:scale-95 ${
                   orderType === 'OUTSIDE'
-                    ? 'bg-purple-600 text-white'
-                    : 'bg-white text-gray-600'
+                    ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
+                    : 'text-slate-500 hover:bg-white'
                 }`}
               >
-                <ShoppingBag className="w-3.5 h-3.5" />
+                <ShoppingBag className="w-4 h-4" />
                 {t('orderTypeOutside')}
               </button>
               <button
                 onClick={() => setOrderType('INSIDE')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-all ${
+                className={`flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold transition-all active:scale-95 ${
                   orderType === 'INSIDE'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-600'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                    : 'text-slate-500 hover:bg-white'
                 }`}
               >
-                <Store className="w-3.5 h-3.5" />
+                <Store className="w-4 h-4" />
                 {t('orderTypeInside')}
               </button>
             </div>
           </div>
 
           {error && (
-            <div className="mx-2 mt-2 p-2 bg-red-50 border border-red-300 rounded-xl text-red-700 text-xs">
+            <div className="mx-2 mt-2 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
               {error}
             </div>
           )}
 
           {hasDishSet ? (
             <div className="flex-1 min-h-0 overflow-y-auto p-3">
-              <div className="mb-2 px-2 py-1 rounded-md bg-orange-100 border-l-2 border-orange-500">
-                <h3 className="text-[9px] font-black text-orange-800 uppercase tracking-wider truncate leading-none">
+              <div className="mb-3 px-3 py-2 rounded-lg bg-orange-100 border-l-4 border-orange-500">
+                <h3
+                  className="font-black text-orange-800 tracking-wide truncate leading-none"
+                  style={{ fontSize: layout.panelHeaderSize }}
+                >
                   {t('bludiAndSet')}
                 </h3>
               </div>
               {renderGrid('dishset', layout.dishCardSize, false)}
             </div>
           ) : (
-            <div className="flex-1 min-h-0 flex items-center justify-center text-gray-400 text-sm">
+            <div className="flex-1 min-h-0 flex items-center justify-center text-slate-400 text-sm">
               {t('noMenuItems')}
             </div>
           )}
@@ -1059,10 +1052,13 @@ export default function CashierPage() {
                 onEnd={endResize}
               />
               <div
-                className="shrink-0 bg-white px-2 py-1 overflow-hidden border-t-2 border-purple-300"
+                className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
                 style={{ height: layout.toppingsHeight }}
               >
-                <h3 className="text-[9px] font-black text-purple-800 uppercase tracking-wider mb-1 border-l-2 border-purple-500 pl-1.5 leading-none">
+                <h3
+                  className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
+                  style={{ fontSize: layout.panelHeaderSize }}
+                >
                   {t('type_topping')}
                 </h3>
                 <div className="overflow-y-auto h-[calc(100%-16px)]">
@@ -1079,18 +1075,21 @@ export default function CashierPage() {
           onEnd={endResize}
         />
 
-        {/* ---- RIGHT: НАПИТКИ + СОУСЫ ---- */}
+        {/* RIGHT */}
         <div
           ref={drinksWrapRef}
-          className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
+          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.menuRightWidth }}
         >
           <div
             className="flex flex-col border-b-2 border-cyan-300"
             style={{ height: `${layout.drinksShare}%` }}
           >
-            <div className="px-2 py-1 border-b border-cyan-300 shrink-0 bg-cyan-50">
-              <h3 className="text-[9px] font-black text-cyan-800 uppercase tracking-wider border-l-2 border-cyan-500 pl-1.5 leading-none">
+            <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
+              <h3
+                className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
+                style={{ fontSize: layout.panelHeaderSize }}
+              >
                 {t('type_drink')}
               </h3>
             </div>
@@ -1099,7 +1098,7 @@ export default function CashierPage() {
                 {renderGrid('drink', layout.drinkCardSize, true)}
               </div>
             ) : (
-              <div className="flex-1 min-h-0 flex items-center justify-center text-[10px] text-gray-400">
+              <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
                 —
               </div>
             )}
@@ -1113,8 +1112,11 @@ export default function CashierPage() {
           />
 
           <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-2 py-1 border-b border-red-300 shrink-0 bg-red-50">
-              <h3 className="text-[9px] font-black text-red-800 uppercase tracking-wider border-l-2 border-red-500 pl-1.5 leading-none">
+            <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
+              <h3
+                className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
+                style={{ fontSize: layout.panelHeaderSize }}
+              >
                 {t('type_sauce')}
               </h3>
             </div>
@@ -1123,7 +1125,7 @@ export default function CashierPage() {
                 {renderGrid('sauce', layout.sauceCardSize, true)}
               </div>
             ) : (
-              <div className="flex-1 min-h-0 flex items-center justify-center text-[10px] text-gray-400">
+              <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
                 —
               </div>
             )}
@@ -1136,26 +1138,26 @@ export default function CashierPage() {
           onEnd={endResize}
         />
 
-        {/* ---- FAR RIGHT: CART ---- */}
+        {/* CART */}
         <div
-          className="shrink-0 bg-white border-l-2 border-gray-300 flex flex-col min-h-0"
+          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.cartWidth }}
         >
           <div
-            className={`px-3 py-2 border-b shrink-0 ${
+            className={`px-4 py-3 border-b shrink-0 ${
               editingOrder
                 ? 'bg-orange-50 border-orange-300'
-                : 'border-gray-200'
+                : 'border-slate-200'
             }`}
           >
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-gray-900 truncate">
+              <h2 className="text-base font-black text-slate-900 truncate">
                 {editingOrder
                   ? `${t('editingOrder')} #${editingOrder.order_number}`
                   : t('currentOrder')}
               </h2>
               <span
-                className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ml-2 ${
+                className={`text-[11px] px-2.5 py-1 rounded-full font-bold shrink-0 ml-2 ${
                   orderType === 'INSIDE'
                     ? 'bg-blue-100 text-blue-700'
                     : 'bg-purple-100 text-purple-700'
@@ -1167,24 +1169,27 @@ export default function CashierPage() {
             {editingOrder && (
               <button
                 onClick={handleCancelEdit}
-                className="mt-1 flex items-center gap-1 text-[11px] text-orange-700 font-bold"
+                className="mt-2 flex items-center gap-1 text-xs text-orange-700 font-bold px-2 py-1 rounded-lg hover:bg-orange-100"
               >
                 <RotateCcw className="w-3 h-3" />
                 {t('cancelEdit')}
               </button>
             )}
             {!editingOrder && lastOrderNumber && (
-              <p className="text-[10px] text-green-600 mt-0.5">
+              <p className="text-[11px] text-green-600 mt-0.5 font-bold">
                 {t('lastOrder')}: #{lastOrderNumber}
               </p>
             )}
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5 bg-slate-50">
+          <div
+            className="flex-1 min-h-0 overflow-y-auto p-2 bg-slate-50 flex flex-col"
+            style={{ rowGap: layout.cartItemGap }}
+          >
             {cart.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400">
-                <ShoppingBag className="w-12 h-12 mb-2 opacity-40" />
-                <p className="text-xs">{t('tapItemsToAdd')}</p>
+              <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                <ShoppingBag className="w-14 h-14 mb-2 opacity-30" />
+                <p className="text-sm">{t('tapItemsToAdd')}</p>
               </div>
             )}
             {cart.map((item) => {
@@ -1201,7 +1206,7 @@ export default function CashierPage() {
                 ? 'bg-red-50 border-red-300 opacity-70'
                 : isNew || qtyChanged
                 ? 'bg-orange-50 border-orange-400 ring-1 ring-orange-300'
-                : 'bg-white border-gray-200';
+                : 'bg-white border-slate-200';
               const lineTotal =
                 item.price * item.quantity +
                 item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
@@ -1210,15 +1215,15 @@ export default function CashierPage() {
               return (
                 <div
                   key={item.id}
-                  className={`rounded-xl p-2.5 border-2 ${cardClass}`}
+                  className={`rounded-2xl p-3 border-2 shadow-sm ${cardClass}`}
                 >
-                  <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <div className="flex items-start justify-between gap-2 mb-2">
                     <div
                       className={`flex-1 min-w-0 ${
                         removed ? 'line-through' : ''
                       }`}
                     >
-                      <div className="text-xs font-bold text-gray-900 truncate">
+                      <div className="text-sm font-bold text-slate-900 truncate">
                         {item.name}
                         {item.variant && (
                           <span className="ml-1 text-orange-600">
@@ -1227,61 +1232,62 @@ export default function CashierPage() {
                         )}
                       </div>
                     </div>
+                    {/* Тач: увеличено с p-1.5 до w-11 h-11 */}
                     <button
                       onClick={() => removeItem(item.id)}
-                      className={`p-1 rounded-lg ${
+                      className={`w-11 h-11 flex items-center justify-center rounded-xl transition-colors ${
                         removed
-                          ? 'text-green-600'
-                          : 'text-gray-400 hover:text-red-600'
+                          ? 'text-green-600 hover:bg-green-50'
+                          : 'text-slate-400 hover:text-red-600 hover:bg-red-50 active:scale-90'
                       }`}
                     >
                       {removed ? (
-                        <RotateCcw className="w-4 h-4" />
+                        <RotateCcw className="w-5 h-5" />
                       ) : (
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-5 h-5" />
                       )}
                     </button>
                   </div>
 
                   {item.options.length > 0 && !removed && (
-                    <div className="mb-1.5 space-y-0.5">
+                    <div className="mb-2 flex flex-wrap gap-1">
                       {item.options.map((opt, i) => (
-                        <div
+                        <span
                           key={i}
-                          className="text-[10px] text-gray-600 flex items-center gap-1"
+                          className="px-2 py-1 rounded-md bg-orange-100 text-orange-800 text-[11px] font-bold"
                         >
-                          <span className="text-orange-500 font-bold">+</span>
-                          <span className="truncate">{opt.name}</span>
-                        </div>
+                          + {opt.name}
+                        </span>
                       ))}
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    {/* Тач: увеличено с w-10 h-10 до w-12 h-12 */}
+                    <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => decrementItem(item.id)}
                         disabled={removed}
-                        className="w-7 h-7 rounded-lg bg-gray-100 active:bg-gray-200 flex items-center justify-center disabled:opacity-50"
+                        className="w-12 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 active:scale-90 flex items-center justify-center transition-all disabled:opacity-40"
                       >
-                        <Minus className="w-3.5 h-3.5" />
+                        <Minus className="w-5 h-5" />
                       </button>
-                      <span className="text-sm font-bold w-6 text-center">
+                      <span className="text-xl font-black w-10 text-center tabular-nums">
                         {removed ? 0 : item.quantity}
                       </span>
                       <button
                         onClick={() => incrementItem(item.id)}
                         disabled={removed}
-                        className="w-7 h-7 rounded-lg bg-gray-100 active:bg-gray-200 flex items-center justify-center disabled:opacity-50"
+                        className="w-12 h-12 rounded-2xl bg-orange-100 hover:bg-orange-200 active:scale-90 flex items-center justify-center text-orange-700 transition-all disabled:opacity-40"
                       >
-                        <Plus className="w-3.5 h-3.5" />
+                        <Plus className="w-5 h-5" />
                       </button>
                     </div>
                     <span
-                      className={`text-sm font-black ${
+                      className={`text-base font-black tabular-nums ${
                         removed
-                          ? 'text-gray-400 line-through'
-                          : 'text-orange-600'
+                          ? 'text-slate-400 line-through'
+                          : 'text-slate-900'
                       }`}
                     >
                       {removed ? formatYen(0) : formatYen(lineTotal)}
@@ -1289,7 +1295,7 @@ export default function CashierPage() {
                   </div>
 
                   {qtyChanged && (
-                    <div className="mt-1 text-[10px] text-orange-700 font-bold">
+                    <div className="mt-2 text-[11px] text-orange-700 font-bold">
                       {t('qtyChangedFromTo')
                         .replace(
                           '{from}',
@@ -1303,31 +1309,33 @@ export default function CashierPage() {
             })}
           </div>
 
-          <div className="p-2 border-t border-gray-200 bg-white shrink-0">
+          <div className="p-2 border-t border-slate-200 bg-white shrink-0">
             <input
               type="text"
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               placeholder={t('addComment')}
-              className="w-full bg-white border-2 border-gray-300 rounded-xl px-3 py-2 text-xs text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+              className="form-input text-sm !py-3"
             />
           </div>
 
-          <div className="p-2 border-t border-gray-200 space-y-2 bg-white shrink-0">
+          <div className="p-3 border-t border-slate-200 space-y-3 bg-white shrink-0 shadow-[0_-8px_16px_-12px_rgba(0,0,0,0.2)]">
             {printError && (
-              <div className="p-2 bg-red-50 border border-red-300 rounded-lg text-red-700 text-[11px] flex items-center justify-between">
+              <div className="p-2.5 bg-red-50 border border-red-300 rounded-lg text-red-700 text-xs flex items-center justify-between">
                 <span className="truncate">{t('printerError')}</span>
                 <button
                   onClick={() => setPrintError(null)}
-                  className="text-red-600 font-bold underline ml-2 shrink-0"
+                  className="text-red-600 font-bold underline ml-2 shrink-0 px-2 py-1"
                 >
                   {t('retryPrint')}
                 </button>
               </div>
             )}
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-500">{t('total')}</span>
-              <span className="text-xl font-black text-orange-600">
+            <div className="flex items-end justify-between">
+              <span className="text-sm font-bold text-slate-500">
+                {t('total')}
+              </span>
+              <span className="text-3xl font-black text-slate-900 tabular-nums leading-none">
                 {formatYen(cartTotal)}
               </span>
             </div>
@@ -1336,16 +1344,16 @@ export default function CashierPage() {
               <button
                 onClick={handleSaveChanges}
                 disabled={!hasActiveItems || sending}
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-40"
+                className="w-full h-16 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 active:scale-[0.98] disabled:opacity-40 disabled:shadow-none transition-all"
               >
                 {sending ? (
                   <>
-                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     {t('sending')}
                   </>
                 ) : (
                   <>
-                    <Save className="w-4 h-4" />
+                    <Save className="w-5 h-5" />
                     {t('saveChanges')}
                   </>
                 )}
@@ -1354,16 +1362,16 @@ export default function CashierPage() {
               <button
                 onClick={handleSendToKitchen}
                 disabled={!hasActiveItems || sending}
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-40"
+                className="w-full h-16 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 active:scale-[0.98] disabled:opacity-40 disabled:shadow-none transition-all"
               >
                 {sending ? (
                   <>
-                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     {t('sending')}
                   </>
                 ) : (
                   <>
-                    <Send className="w-4 h-4" />
+                    <Send className="w-5 h-5" />
                     {t('sendToKitchen')}
                   </>
                 )}
@@ -1373,7 +1381,7 @@ export default function CashierPage() {
             {cart.length > 0 && !editingOrder && (
               <button
                 onClick={() => setCart([])}
-                className="w-full py-1.5 text-[11px] text-gray-500 active:text-red-500 font-medium"
+                className="w-full py-2.5 text-xs text-slate-500 hover:text-red-600 font-bold"
               >
                 {t('clearAll')}
               </button>
@@ -1440,6 +1448,7 @@ const ProductCard = memo(function ProductCard({
   size,
   textSize,
   compact,
+  cardRadius,
 }: {
   item: MenuItem;
   variants?: MenuItem[];
@@ -1448,32 +1457,31 @@ const ProductCard = memo(function ProductCard({
   size: number;
   textSize: number;
   compact?: boolean;
+  cardRadius: number;
 }) {
   const isGroup = (variants?.length ?? 0) > 0;
   const nameSize = compact ? Math.max(8, textSize - 2) : textSize;
   const priceSize = compact ? Math.max(8, textSize - 2) : textSize;
 
-  // ============ SINGLE ============
   if (!isGroup) {
     return (
       <button
         onClick={() => onClick(item)}
         style={{ width: size }}
-        className="flex flex-col items-center select-none active:scale-95 transition-transform"
+        className="group flex flex-col items-center select-none active:scale-95 transition-transform"
       >
         <div
-          className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 transition-all"
+          className="relative overflow-hidden border-2 border-white shadow-md group-hover:shadow-xl group-hover:-translate-y-0.5 group-active:shadow-sm transition-all"
           style={{
             width: size,
             height: size,
+            borderRadius: cardRadius,
             background:
               item.type === 'sauce'
                 ? '#ffffff'
                 : 'linear-gradient(to bottom right, #f97316, #dc2626)',
             borderColor:
-              item.type === 'sauce'
-                ? item.color ?? '#e5e7eb'
-                : undefined,
+              item.type === 'sauce' ? item.color ?? '#e5e7eb' : undefined,
             borderWidth: item.type === 'sauce' ? 4 : 2,
           }}
         >
@@ -1501,14 +1509,14 @@ const ProductCard = memo(function ProductCard({
           ) : null}
         </div>
         <div
-          className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+          className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
           style={{ fontSize: nameSize }}
           title={item.name}
         >
           {item.short_name || item.name}
         </div>
         <div
-          className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+          className="mt-0.5 text-center font-black text-orange-600 w-full leading-none"
           style={{ fontSize: priceSize }}
         >
           {item.free ? '' : formatYen(item.price)}
@@ -1517,20 +1525,27 @@ const ProductCard = memo(function ProductCard({
     );
   }
 
-  // ============ GROUP ============
   const headerH = nameSize + 8;
 
   return (
     <div
-      style={{ width: '100%', minHeight: headerH + size + nameSize * 2 + 4 }}
-      className="rounded-xl bg-white ring-2 ring-gray-400 hover:ring-orange-400 flex flex-col overflow-hidden transition-all"
+      style={{
+        width: '100%',
+        minHeight: headerH + size + nameSize * 2 + 4,
+        borderRadius: cardRadius,
+      }}
+      className="bg-white shadow-md ring-1 ring-slate-300 hover:ring-orange-400 flex flex-col overflow-hidden transition-all"
     >
       <button
         onClick={() => onClick(item)}
-        className="flex items-center justify-between w-full px-2 py-0.5 border-b border-gray-200 bg-gray-50 hover:bg-orange-50 transition-colors shrink-0 leading-none"
+        className="flex items-center justify-between w-full px-2 py-1.5 border-b border-slate-200 bg-slate-50 hover:bg-orange-50 transition-colors shrink-0 leading-none"
+        style={{
+          borderTopLeftRadius: cardRadius,
+          borderTopRightRadius: cardRadius,
+        }}
       >
         <span
-          className="font-black text-gray-900 uppercase tracking-wide truncate text-left leading-none"
+          className="font-black text-slate-900 tracking-wide truncate text-left leading-none"
           style={{ fontSize: nameSize }}
         >
           {item.name}
@@ -1545,7 +1560,7 @@ const ProductCard = memo(function ProductCard({
         )}
       </button>
 
-      <div className="flex items-stretch" style={{ gap: GRID_GAP }}>
+      <div className="flex items-stretch" style={{ gap: 8 }}>
         {variants!.map((v) => (
           <button
             key={v.id}
@@ -1554,13 +1569,14 @@ const ProductCard = memo(function ProductCard({
               else onClick(v);
             }}
             style={{ width: size, flex: '0 0 auto' }}
-            className="flex flex-col items-center active:scale-95 transition-transform"
+            className="group flex flex-col items-center active:scale-95 transition-transform"
           >
             <div
-              className="relative rounded-xl overflow-hidden border-2 border-gray-300 hover:border-orange-400 transition-all"
+              className="relative overflow-hidden border-2 border-white shadow-md group-hover:shadow-xl group-hover:-translate-y-0.5 transition-all"
               style={{
                 width: size,
                 height: size,
+                borderRadius: cardRadius,
                 background:
                   'linear-gradient(to bottom right, #f97316, #dc2626)',
               }}
@@ -1579,13 +1595,13 @@ const ProductCard = memo(function ProductCard({
               )}
             </div>
             <div
-              className="mt-0 text-center font-black text-gray-900 truncate w-full px-0.5 leading-[1.05]"
+              className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
               style={{ fontSize: nameSize }}
             >
               {v.name}
             </div>
             <div
-              className="text-center font-black text-orange-600 w-full px-0.5 leading-[1.05] -mt-px"
+              className="mt-0.5 text-center font-black text-orange-600 w-full leading-none"
               style={{ fontSize: priceSize }}
             >
               {v.free ? '' : formatYen(v.price)}
