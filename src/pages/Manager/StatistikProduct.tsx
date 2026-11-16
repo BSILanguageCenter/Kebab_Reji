@@ -71,7 +71,7 @@ export function StatistikProduct() {
   };
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto p-4">
+    <div className="h-full min-h-0 overflow-y-auto p-3 sm:p-4">
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {['today', 'yesterday', 'week', 'month', 'custom'].map((p) => (
           <button
@@ -87,7 +87,7 @@ export function StatistikProduct() {
           </button>
         ))}
         {preset === 'custom' && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               type="date"
               value={customStart}
@@ -238,8 +238,8 @@ export function StatistikProduct() {
               ) : (
                 <div className="space-y-2">
                   {categories.map((cat, idx) => (
-                    <div key={idx} className="flex items-center gap-3">
-                      <span className="text-sm font-semibold flex-1 truncate text-gray-900">
+                    <div key={idx} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1">
+                      <span className="text-sm font-semibold w-full sm:w-auto sm:flex-1 truncate text-gray-900">
                         {cat.name}
                       </span>
                       <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
@@ -288,13 +288,15 @@ function SummaryCard({
   };
   return (
     <div
-      className={`bg-gradient-to-br ${colors[color]} border rounded-2xl p-4 shadow-sm`}
+      className={`bg-gradient-to-br ${colors[color]} border rounded-2xl p-3 sm:p-4 shadow-sm min-w-0 last:col-span-2 md:last:col-span-1`}
     >
       <div className="flex items-center gap-2 mb-2">
         {icon}
         <span className="text-xs text-gray-600 font-medium">{label}</span>
       </div>
-      <div className="text-2xl font-bold text-gray-900">{value}</div>
+      <div className="text-xl sm:text-2xl font-bold text-gray-900 truncate tabular-nums">
+        {value}
+      </div>
     </div>
   );
 }

@@ -1,244 +1,23 @@
-import { supabase } from '@/lib/supabase';
 import type {
   MenuItem,
   MenuItemType,
   Station,
   DishKind,
   SauceMode,
+  HydratedProperty,
+  HydratedSauce,
+  HydratedSetExtraOption,
 } from '@/types/database';
+import {
+  getMenuItems,
+  setMenuItems,
+  removeMenuItem,
+  newId,
+} from '@/lib/localStore';
+import { canFitImage } from '@/lib/storageUsage';
 
 // ============================================================
-// ЗАГРУЗКА
-// ============================================================
-export async function fetchAllMenuItems(): Promise<MenuItem[]> {
-  const [items, props, dishSauces, setMain, setOv, setGroups, setOpts] =
-    await Promise.all([
-      supabase.from('menu_items').select('*').order('sort_order'),
-      supabase.from('menu_item_properties').select('*').order('sort_order'),
-      supabase.from('menu_dish_sauces').select('*').order('sort_order'),
-      supabase.from('menu_set_main').select('*'),
-      supabase.from('menu_set_main_overrides').select('*'),
-      supabase.from('menu_set_extra_groups').select('*').order('sort_order'),
-      supabase.from('menu_set_extra_options').select('*').order('sort_order'),
-    ]);
-
-  if (items.error) throw items.error;
-
-  // Индексы
-  const itemsById = new Map<string, MenuItem>();
-  const rawList: MenuItem[] = (items.data ?? []).map((i) => ({
-    ...i,
-    active: Boolean(i.active),
-    free: Boolean(i.free),
-  }));
-  for (const it of rawList) itemsById.set(it.id, it);
-
-  // ---- Свойства: options (jsonb) с fallback на options_json ----
-  const propsByItem = new Map<
-    string,
-    {
-      id: string;
-      item_id: string;
-      name: string;
-      options: string[];
-      required: boolean;
-      sort_order: number;
-    }[]
-  >();
-
-  for (const p of props.data ?? []) {
-    const arr = propsByItem.get(p.item_id) ?? [];
-
-    let parsedOptions: string[] = [];
-
-    // 1) options (jsonb) — Supabase обычно отдаёт готовый массив
-    const rawOptions = (p as Record<string, unknown>).options;
-    if (Array.isArray(rawOptions)) {
-      parsedOptions = (rawOptions as unknown[]).filter(
-        (x): x is string => typeof x === 'string'
-      );
-    } else if (typeof rawOptions === 'string') {
-      try {
-        const parsed = JSON.parse(rawOptions);
-        if (Array.isArray(parsed)) {
-          parsedOptions = parsed.filter(
-            (x): x is string => typeof x === 'string'
-          );
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    // 2) options_json (text) — fallback, если options пустой
-    if (parsedOptions.length === 0) {
-      const rawJson = (p as Record<string, unknown>).options_json;
-      if (typeof rawJson === 'string') {
-        try {
-          const parsed = JSON.parse(rawJson);
-          if (Array.isArray(parsed)) {
-            parsedOptions = parsed.filter(
-              (x): x is string => typeof x === 'string'
-            );
-          }
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-
-    arr.push({
-      id: p.id,
-      item_id: p.item_id,
-      name: p.name,
-      options: parsedOptions,
-      required: Boolean((p as Record<string, unknown>).required),
-      sort_order: p.sort_order,
-    });
-    propsByItem.set(p.item_id, arr);
-  }
-
-  const sauceIdsByItem = new Map<string, string[]>();
-  for (const s of dishSauces.data ?? []) {
-    const arr = sauceIdsByItem.get(s.dish_item_id) ?? [];
-    arr.push(s.sauce_item_id);
-    sauceIdsByItem.set(s.dish_item_id, arr);
-  }
-
-  const variantsByParent = new Map<string, MenuItem[]>();
-  for (const it of rawList) {
-    if (!it.parent_id) continue;
-    const arr = variantsByParent.get(it.parent_id) ?? [];
-    arr.push(it);
-    variantsByParent.set(it.parent_id, arr);
-  }
-
-  const mainBySet = new Map<string, string>();
-  for (const m of setMain.data ?? [])
-    mainBySet.set(m.set_item_id, m.main_item_id);
-
-  const overridesBySet = new Map<
-    string,
-    Map<string, { price_override: number | null; image_override: string | null }>
-  >();
-  for (const o of setOv.data ?? []) {
-    const map = overridesBySet.get(o.set_item_id) ?? new Map();
-    map.set(o.variant_item_id, {
-      price_override: o.price_override,
-      image_override: o.image_override,
-    });
-    overridesBySet.set(o.set_item_id, map);
-  }
-
-  const groupsBySet = new Map<
-    string,
-    {
-      id: string;
-      set_item_id: string;
-      label: string;
-      required: boolean;
-      sort_order: number;
-    }[]
-  >();
-  for (const g of setGroups.data ?? []) {
-    const arr = groupsBySet.get(g.set_item_id) ?? [];
-    arr.push({ ...g, required: Boolean(g.required) });
-    groupsBySet.set(g.set_item_id, arr);
-  }
-
-  const optionsByGroup = new Map<
-    string,
-    {
-      id: string;
-      group_id: string;
-      item_id: string;
-      price_override: number | null;
-      image_override: string | null;
-      sort_order: number;
-    }[]
-  >();
-  for (const o of setOpts.data ?? []) {
-    const arr = optionsByGroup.get(o.group_id) ?? [];
-    arr.push(o);
-    optionsByGroup.set(o.group_id, arr);
-  }
-
-  // Hydrate helper
-  const hydrateOne = (raw: MenuItem): MenuItem => ({
-    ...raw,
-    properties: propsByItem.get(raw.id) ?? [],
-    allowed_sauces: (sauceIdsByItem.get(raw.id) ?? [])
-      .map((sid) => itemsById.get(sid))
-      .filter((x): x is MenuItem => !!x)
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        short_name: s.short_name,
-        image_url: s.image_url,
-        price: s.price,
-        free: s.free,
-        color: s.color,
-        active: s.active,
-      })),
-  });
-
-  // Собираем верхнеуровневые
-  const result: MenuItem[] = [];
-  for (const it of rawList) {
-    if (it.parent_id) continue;
-    const base = hydrateOne(it);
-
-    if (it.type === 'dish' && it.dish_kind === 'group') {
-      const variants = variantsByParent.get(it.id) ?? [];
-      base.variants = variants.map(hydrateOne);
-    }
-
-    if (it.type === 'set') {
-      const mainId = mainBySet.get(it.id);
-      const mainRaw = mainId ? itemsById.get(mainId) : null;
-      if (mainRaw) {
-        const main = hydrateOne(mainRaw);
-        if (mainRaw.type === 'dish' && mainRaw.dish_kind === 'group') {
-          const variants = variantsByParent.get(mainRaw.id) ?? [];
-          main.variants = variants.map((v) => {
-            const hyd = hydrateOne(v);
-            const ov = overridesBySet.get(it.id)?.get(v.id);
-            if (ov) {
-              if (ov.price_override != null) hyd.price = ov.price_override;
-              if (ov.image_override) hyd.image_url = ov.image_override;
-            }
-            return hyd;
-          });
-        }
-        base.set_main = main;
-      }
-
-      const groups = groupsBySet.get(it.id) ?? [];
-      base.set_extra_groups = groups.map((g) => ({
-        ...g,
-        options: (optionsByGroup.get(g.id) ?? [])
-          .map((o) => {
-            const optRaw = itemsById.get(o.item_id);
-            if (!optRaw) return null;
-            const hyd = hydrateOne(optRaw);
-            if (o.price_override != null) hyd.price = o.price_override;
-            if (o.image_override) hyd.image_url = o.image_override;
-            return { option_id: o.id, item: hyd };
-          })
-          .filter(
-            (x): x is { option_id: string; item: MenuItem } => !!x
-          ),
-      }));
-    }
-
-    result.push(base);
-  }
-
-  return result;
-}
-
-// ============================================================
-// SAVE PAYLOAD
+// ПУБЛИЧНЫЕ ТИПЫ
 // ============================================================
 export interface VariantDraftPayload {
   id?: string;
@@ -300,86 +79,103 @@ export interface SaveItemPayload {
 }
 
 // ============================================================
-// ХЕЛПЕР: подготовить строки для menu_item_properties
+// ЗАГРУЗКА
 // ============================================================
-function buildPropertyRows(
-  itemId: string,
-  properties: PropertyDraftPayload[]
-): Array<{
-  item_id: string;
-  name: string;
-  options: string[];
-  options_json: string;
-  required: number;
-  sort_order: number;
-}> {
-  return properties.map((p, i) => {
-    const opts = Array.isArray(p.options) ? p.options : [];
-    const optsJson = JSON.stringify(opts);
-    return {
-      item_id: itemId,
-      name: p.name,
-      options: opts,
-      options_json: optsJson,
-      // smallint в БД: 1 / 0
-      required: p.required ? 1 : 0,
-      sort_order: i,
-    };
-  });
+export async function fetchAllMenuItems(): Promise<MenuItem[]> {
+  return JSON.parse(JSON.stringify(getMenuItems())) as MenuItem[];
 }
 
 // ============================================================
-// СОЗДАНИЕ
+// ХЕЛПЕРЫ
 // ============================================================
-export async function createItem(payload: SaveItemPayload): Promise<MenuItem> {
-  const {
-    properties = [],
-    allowed_sauce_ids = [],
-    variants = [],
-    set_main_item_id,
-    set_main_overrides = [],
-    set_extra_groups = [],
-    ...base
-  } = payload;
+function buildPropertyHydrated(
+  itemId: string,
+  properties: PropertyDraftPayload[]
+): HydratedProperty[] {
+  return properties
+    .filter((p) => p.name.trim())
+    .map((p, i) => ({
+      id: newId(),
+      item_id: itemId,
+      name: p.name.trim(),
+      options: Array.isArray(p.options) ? [...p.options] : [],
+      required: Boolean(p.required),
+      sort_order: i,
+    }));
+}
 
-  const { data: item, error } = await supabase
-    .from('menu_items')
-    .insert(base)
-    .select()
-    .single();
-  if (error) throw error;
+function buildSaucesFromIds(
+  ids: string[],
+  allItems: MenuItem[]
+): HydratedSauce[] {
+  return ids
+    .map((id) => allItems.find((i) => i.id === id))
+    .filter((x): x is MenuItem => Boolean(x))
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      short_name: s.short_name,
+      image_url: s.image_url,
+      price: s.price,
+      free: s.free,
+      color: s.color,
+      active: s.active,
+    }));
+}
 
-  const itemId = item.id as string;
+function cloneItem(it: MenuItem): MenuItem {
+  return JSON.parse(JSON.stringify(it)) as MenuItem;
+}
 
-  // Свойства и соусы корня — только если НЕ dish-group
-  if (base.type !== 'dish' || base.dish_kind !== 'group') {
-    if (properties.length) {
-      const rows = buildPropertyRows(itemId, properties);
-      const { error: e } = await supabase
-        .from('menu_item_properties')
-        .insert(rows);
-      if (e) throw e;
-    }
-    if (base.sauce_mode === 'with' && allowed_sauce_ids.length) {
-      const rows = allowed_sauce_ids.map((sid, i) => ({
-        dish_item_id: itemId,
-        sauce_item_id: sid,
-        sort_order: i,
-      }));
-      const { error: e } = await supabase
-        .from('menu_dish_sauces')
-        .insert(rows);
-      if (e) throw e;
+function buildMenuItem(
+  payload: SaveItemPayload,
+  id: string,
+  allItems: MenuItem[],
+  existing?: MenuItem
+): MenuItem {
+  const now = new Date().toISOString();
+
+  const item: MenuItem = {
+    id,
+    type: payload.type,
+    name: payload.name,
+    short_name: payload.short_name,
+    image_url: payload.image_url,
+    price: payload.price,
+    free: payload.free,
+    station: payload.station,
+    cook_time_min: payload.cook_time_min,
+    color: payload.color,
+    dish_kind: payload.dish_kind,
+    sauce_mode: payload.sauce_mode,
+    parent_id: null,
+    active: payload.active,
+    sort_order: payload.sort_order,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+    properties: [],
+    allowed_sauces: [],
+  };
+
+  if (
+    (payload.type === 'dish' && payload.dish_kind === 'single') ||
+    payload.type === 'topping'
+  ) {
+    item.properties = buildPropertyHydrated(id, payload.properties ?? []);
+    if (payload.sauce_mode === 'with' && payload.allowed_sauce_ids?.length) {
+      item.allowed_sauces = buildSaucesFromIds(
+        payload.allowed_sauce_ids,
+        allItems
+      );
     }
   }
 
-  // Варианты
-  if (base.type === 'dish' && base.dish_kind === 'group' && variants.length) {
-    for (let i = 0; i < variants.length; i++) {
-      const v = variants[i];
-      const vBase = {
+  if (payload.type === 'dish' && payload.dish_kind === 'group') {
+    item.variants = (payload.variants ?? []).map((v, i) => {
+      const vid = v.id ?? newId();
+      const variant: MenuItem = {
+        id: vid,
         type: 'dish',
-        parent_id: itemId,
         name: v.name,
         short_name: v.short_name,
         image_url: v.image_url,
@@ -390,91 +186,75 @@ export async function createItem(payload: SaveItemPayload): Promise<MenuItem> {
         color: null,
         dish_kind: 'single',
         sauce_mode: v.sauce_mode,
+        parent_id: id,
         active: true,
         sort_order: i,
+        created_at: now,
+        updated_at: now,
+        properties: buildPropertyHydrated(vid, v.properties ?? []),
+        allowed_sauces:
+          v.sauce_mode === 'with'
+            ? buildSaucesFromIds(v.allowed_sauce_ids ?? [], allItems)
+            : [],
       };
-      const { data: newV, error: ev } = await supabase
-        .from('menu_items')
-        .insert(vBase)
-        .select()
-        .single();
-      if (ev) throw ev;
-
-      if (v.properties.length) {
-        const rows = buildPropertyRows(newV.id, v.properties);
-        const { error: e } = await supabase
-          .from('menu_item_properties')
-          .insert(rows);
-        if (e) throw e;
-      }
-      if (v.sauce_mode === 'with' && v.allowed_sauce_ids.length) {
-        const rows = v.allowed_sauce_ids.map((sid, j) => ({
-          dish_item_id: newV.id,
-          sauce_item_id: sid,
-          sort_order: j,
-        }));
-        const { error: e } = await supabase
-          .from('menu_dish_sauces')
-          .insert(rows);
-        if (e) throw e;
-      }
-    }
-  }
-
-  // Set
-  if (base.type === 'set' && set_main_item_id) {
-    const { error: e1 } = await supabase.from('menu_set_main').insert({
-      set_item_id: itemId,
-      main_item_id: set_main_item_id,
+      return variant;
     });
-    if (e1) throw e1;
-
-    if (set_main_overrides.length) {
-      const rows = set_main_overrides.map((o) => ({
-        set_item_id: itemId,
-        variant_item_id: o.variant_item_id,
-        price_override: o.price_override,
-        image_override: o.image_override,
-      }));
-      const { error: e } = await supabase
-        .from('menu_set_main_overrides')
-        .insert(rows);
-      if (e) throw e;
-    }
-
-    if (set_extra_groups.length) {
-      for (let i = 0; i < set_extra_groups.length; i++) {
-        const g = set_extra_groups[i];
-        const { data: newG, error: eg } = await supabase
-          .from('menu_set_extra_groups')
-          .insert({
-            set_item_id: itemId,
-            label: g.label,
-            required: g.required,
-            sort_order: i,
-          })
-          .select()
-          .single();
-        if (eg) throw eg;
-
-        if (g.options.length) {
-          const rows = g.options.map((o, j) => ({
-            group_id: newG.id,
-            item_id: o.item_id,
-            price_override: o.price_override,
-            image_override: o.image_override,
-            sort_order: j,
-          }));
-          const { error: e } = await supabase
-            .from('menu_set_extra_options')
-            .insert(rows);
-          if (e) throw e;
-        }
-      }
-    }
   }
 
-  return item as MenuItem;
+  if (payload.type === 'set' && payload.set_main_item_id) {
+    const main = allItems.find((i) => i.id === payload.set_main_item_id);
+    if (main) {
+      const mainCopy = cloneItem(main);
+      if (
+        main.dish_kind === 'group' &&
+        mainCopy.variants &&
+        payload.set_main_overrides
+      ) {
+        mainCopy.variants = mainCopy.variants.map((v) => {
+          const ov = payload.set_main_overrides?.find(
+            (o) => o.variant_item_id === v.id
+          );
+          if (!ov) return v;
+          const merged = { ...v };
+          if (ov.price_override != null) merged.price = ov.price_override;
+          if (ov.image_override) merged.image_url = ov.image_override;
+          return merged;
+        });
+      }
+      item.set_main = mainCopy;
+    }
+
+    item.set_extra_groups = (payload.set_extra_groups ?? []).map((g, gi) => ({
+      id: newId(),
+      set_item_id: id,
+      label: g.label,
+      required: g.required,
+      sort_order: gi,
+      options: g.options
+        .map((o): HydratedSetExtraOption | null => {
+          const optItem = allItems.find((x) => x.id === o.item_id);
+          if (!optItem) return null;
+          const copy = cloneItem(optItem);
+          if (o.price_override != null) copy.price = o.price_override;
+          if (o.image_override) copy.image_url = o.image_override;
+          return { option_id: newId(), item: copy };
+        })
+        .filter((x): x is HydratedSetExtraOption => Boolean(x)),
+    }));
+  }
+
+  return item;
+}
+
+// ============================================================
+// СОЗДАНИЕ
+// ============================================================
+export async function createItem(payload: SaveItemPayload): Promise<MenuItem> {
+  const allItems = getMenuItems();
+  const id = newId();
+  const item = buildMenuItem(payload, id, allItems);
+  setMenuItems([...allItems, item]);
+  return item;
 }
 
 // ============================================================
@@ -484,239 +264,205 @@ export async function updateItem(
   id: string,
   payload: SaveItemPayload
 ): Promise<MenuItem> {
-  const {
-    properties = [],
-    allowed_sauce_ids = [],
-    variants = [],
-    set_main_item_id,
-    set_main_overrides = [],
-    set_extra_groups = [],
-    ...base
-  } = payload;
-
-  // 1. Обновляем корень
-  const { data: item, error } = await supabase
-    .from('menu_items')
-    .update(base)
-    .eq('id', id)
-    .select()
-    .single();
-  if (error) throw error;
-
-  // 2. Чистим вложенные
-  await Promise.all([
-    supabase.from('menu_item_properties').delete().eq('item_id', id),
-    supabase.from('menu_dish_sauces').delete().eq('dish_item_id', id),
-    supabase.from('menu_set_main').delete().eq('set_item_id', id),
-    supabase.from('menu_set_main_overrides').delete().eq('set_item_id', id),
-  ]);
-
-  const { data: oldGroups } = await supabase
-    .from('menu_set_extra_groups')
-    .select('id')
-    .eq('set_item_id', id);
-
-  if (oldGroups?.length) {
-    const ids = oldGroups.map((g) => g.id);
-    await supabase.from('menu_set_extra_options').delete().in('group_id', ids);
-    await supabase
-      .from('menu_set_extra_groups')
-      .delete()
-      .eq('set_item_id', id);
-  }
-
-  // 3. Варианты (dish-group)
-  if (base.type === 'dish' && base.dish_kind === 'group') {
-    const { data: existingChildren } = await supabase
-      .from('menu_items')
-      .select('id')
-      .eq('parent_id', id);
-
-    const existingIds = new Set((existingChildren ?? []).map((c) => c.id));
-    const incomingIds = new Set(
-      variants.map((v) => v.id).filter((v): v is string => !!v)
-    );
-
-    const toDelete = [...existingIds].filter((x) => !incomingIds.has(x));
-    if (toDelete.length) {
-      await supabase.from('menu_items').delete().in('id', toDelete);
-    }
-
-    for (let i = 0; i < variants.length; i++) {
-      const v = variants[i];
-      const vBase = {
-        type: 'dish',
-        parent_id: id,
-        name: v.name,
-        short_name: v.short_name,
-        image_url: v.image_url,
-        price: v.price,
-        free: v.free,
-        station: v.station,
-        cook_time_min: v.cook_time_min,
-        color: null,
-        dish_kind: 'single',
-        sauce_mode: v.sauce_mode,
-        active: true,
-        sort_order: i,
-      };
-
-      let variantId: string;
-      if (v.id && existingIds.has(v.id)) {
-        await supabase.from('menu_items').update(vBase).eq('id', v.id);
-        variantId = v.id;
-        await supabase
-          .from('menu_item_properties')
-          .delete()
-          .eq('item_id', v.id);
-        await supabase
-          .from('menu_dish_sauces')
-          .delete()
-          .eq('dish_item_id', v.id);
-      } else {
-        const { data: newV, error: ev } = await supabase
-          .from('menu_items')
-          .insert(vBase)
-          .select()
-          .single();
-        if (ev) throw ev;
-        variantId = newV.id;
-      }
-
-      if (v.properties.length) {
-        const rows = buildPropertyRows(variantId, v.properties);
-        const { error: e } = await supabase
-          .from('menu_item_properties')
-          .insert(rows);
-        if (e) throw e;
-      }
-      if (v.sauce_mode === 'with' && v.allowed_sauce_ids.length) {
-        const rows = v.allowed_sauce_ids.map((sid, j) => ({
-          dish_item_id: variantId,
-          sauce_item_id: sid,
-          sort_order: j,
-        }));
-        const { error: e } = await supabase
-          .from('menu_dish_sauces')
-          .insert(rows);
-        if (e) throw e;
-      }
-    }
-  } else {
-    // Обычные свойства / соусы
-    if (properties.length) {
-      const rows = buildPropertyRows(id, properties);
-      const { error: e } = await supabase
-        .from('menu_item_properties')
-        .insert(rows);
-      if (e) throw e;
-    }
-    if (base.sauce_mode === 'with' && allowed_sauce_ids.length) {
-      const rows = allowed_sauce_ids.map((sid, i) => ({
-        dish_item_id: id,
-        sauce_item_id: sid,
-        sort_order: i,
-      }));
-      const { error: e } = await supabase
-        .from('menu_dish_sauces')
-        .insert(rows);
-      if (e) throw e;
-    }
-  }
-
-  // 4. Set
-  if (base.type === 'set' && set_main_item_id) {
-    const { error: e1 } = await supabase.from('menu_set_main').insert({
-      set_item_id: id,
-      main_item_id: set_main_item_id,
-    });
-    if (e1) throw e1;
-
-    if (set_main_overrides.length) {
-      const rows = set_main_overrides.map((o) => ({
-        set_item_id: id,
-        variant_item_id: o.variant_item_id,
-        price_override: o.price_override,
-        image_override: o.image_override,
-      }));
-      const { error: e } = await supabase
-        .from('menu_set_main_overrides')
-        .insert(rows);
-      if (e) throw e;
-    }
-
-    if (set_extra_groups.length) {
-      for (let i = 0; i < set_extra_groups.length; i++) {
-        const g = set_extra_groups[i];
-        const { data: newG, error: eg } = await supabase
-          .from('menu_set_extra_groups')
-          .insert({
-            set_item_id: id,
-            label: g.label,
-            required: g.required,
-            sort_order: i,
-          })
-          .select()
-          .single();
-        if (eg) throw eg;
-
-        if (g.options.length) {
-          const rows = g.options.map((o, j) => ({
-            group_id: newG.id,
-            item_id: o.item_id,
-            price_override: o.price_override,
-            image_override: o.image_override,
-            sort_order: j,
-          }));
-          const { error: e } = await supabase
-            .from('menu_set_extra_options')
-            .insert(rows);
-          if (e) throw e;
-        }
-      }
-    }
-  }
-
-  return item as MenuItem;
+  const allItems = getMenuItems();
+  const existing = allItems.find((i) => i.id === id);
+  if (!existing) throw new Error('Продукт не найден');
+  const updated = buildMenuItem(payload, id, allItems, existing);
+  setMenuItems(allItems.map((i) => (i.id === id ? updated : i)));
+  return updated;
 }
 
 // ============================================================
 // УДАЛЕНИЕ
 // ============================================================
 export async function deleteItem(id: string): Promise<void> {
-  const { error } = await supabase.from('menu_items').delete().eq('id', id);
-  if (error) throw error;
+  removeMenuItem(id);
 }
 
 // ============================================================
-// ПОРЯДОК ОТОБРАЖЕНИЯ
+// ПОРЯДОК
 // ============================================================
 export async function reorderItems(
   updates: { id: string; sort_order: number }[]
 ): Promise<void> {
   if (updates.length === 0) return;
-  const results = await Promise.all(
-    updates.map(({ id, sort_order }) =>
-      supabase.from('menu_items').update({ sort_order }).eq('id', id)
-    )
+  const map = new Map(updates.map((u) => [u.id, u.sort_order]));
+  const items = getMenuItems().map((i) =>
+    map.has(i.id) ? { ...i, sort_order: map.get(i.id)! } : i
   );
-  const err = results.find((r) => r.error);
-  if (err?.error) throw err.error;
+  setMenuItems(items);
 }
 
 // ============================================================
-// ИЗОБРАЖЕНИЯ
+// ИЗОБРАЖЕНИЯ → data URL с проверкой лимита
 // ============================================================
+const MAX_IMAGE_KB = 500;
+const COMPRESS_MAX_SIZE = 512;
+const COMPRESS_QUALITY = 0.75;
+
+/**
+ * Пережимает фото в квадрат через canvas (JPEG), возвращает data URL.
+ * ImageCropDialog уже отдаёт готовый File — здесь дополнительно
+ * уменьшаем до 512px и quality 0.75, чтобы данные точно помещались
+ * в localStorage (5 МБ на всё).
+ */
+async function compressToDataUrl(
+  file: File,
+  maxSize: number,
+  quality: number
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = Math.min(
+            1,
+            maxSize / Math.max(img.width, img.height)
+          );
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            reject(new Error('Canvas недоступен'));
+            return;
+          }
+
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(img, 0, 0, w, h);
+
+          const dataUrl = canvas.toDataURL('image/jpeg', quality);
+          resolve(dataUrl);
+        } catch (e) {
+          reject(e instanceof Error ? e : new Error('Ошибка сжатия'));
+        }
+      };
+      img.onerror = () => reject(new Error('Не удалось загрузить изображение'));
+      img.src = reader.result as string;
+    };
+    reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+    reader.readAsDataURL(file);
+  });
+}
+
 export async function uploadItemImage(
   file: File,
   itemId: string
 ): Promise<string | null> {
-  const ext = file.name.split('.').pop() ?? 'jpg';
-  const path = `menu-items/${itemId}.${ext}`;
-  const { error } = await supabase.storage
-    .from('menu-images')
-    .upload(path, file, { upsert: true });
-  if (error) throw error;
-  const { data } = supabase.storage.from('menu-images').getPublicUrl(path);
-  return data.publicUrl;
+  void itemId;
+
+  // 1) Сжимаем
+  const compressed = await compressToDataUrl(
+    file,
+    COMPRESS_MAX_SIZE,
+    COMPRESS_QUALITY
+  );
+
+  // 2) Проверяем размер одного фото
+  const sizeKb = Math.round(compressed.length / 1024);
+  if (sizeKb > MAX_IMAGE_KB) {
+    throw new Error(
+      `Фото слишком большое (${sizeKb} КБ, лимит ${MAX_IMAGE_KB} КБ). ` +
+        `Уменьшите масштаб в редакторе.`
+    );
+  }
+
+  // 3) Проверяем, влезет ли в localStorage
+  const check = canFitImage(compressed.length);
+  if (!check.ok) {
+    throw new Error(check.message ?? 'Недостаточно места для фото');
+  }
+
+  return compressed;
+}
+
+// ============================================================
+// ДУБЛИРОВАНИЕ
+// ============================================================
+function getItemWidthForDup(item: MenuItem): number {
+  if (item.type === 'dish' && item.dish_kind === 'group') {
+    return Math.max(1, item.variants?.length ?? 1);
+  }
+  if (item.type === 'set' && item.set_main?.dish_kind === 'group') {
+    return Math.max(1, item.set_main.variants?.length ?? 1);
+  }
+  return 1;
+}
+
+export async function duplicateItem(
+  sourceId: string
+): Promise<MenuItem | null> {
+  const allItems = getMenuItems();
+  const src = allItems.find((i) => i.id === sourceId);
+  if (!src) return null;
+
+  const now = new Date().toISOString();
+  const newRootId = newId();
+
+  const clone: MenuItem = JSON.parse(JSON.stringify(src));
+  clone.id = newRootId;
+  clone.name = `${src.name} (копия)`;
+  clone.created_at = now;
+  clone.updated_at = now;
+
+  if (clone.properties) {
+    clone.properties = clone.properties.map((p) => ({
+      ...p,
+      id: newId(),
+      item_id: newRootId,
+    }));
+  }
+
+  if (clone.variants) {
+    clone.variants = clone.variants.map((v) => {
+      const newVid = newId();
+      return {
+        ...JSON.parse(JSON.stringify(v)),
+        id: newVid,
+        parent_id: newRootId,
+        created_at: now,
+        updated_at: now,
+        properties: (v.properties ?? []).map((p) => ({
+          ...p,
+          id: newId(),
+          item_id: newVid,
+        })),
+      };
+    });
+  }
+
+  if (clone.set_extra_groups) {
+    clone.set_extra_groups = clone.set_extra_groups.map((g) => ({
+      ...JSON.parse(JSON.stringify(g)),
+      id: newId(),
+      set_item_id: newRootId,
+      options: g.options.map((o) => ({
+        ...o,
+        option_id: newId(),
+      })),
+    }));
+  }
+
+  const isDishSet = src.type === 'dish' || src.type === 'set';
+  const sameSpace = allItems.filter((i) => {
+    if (isDishSet) return i.type === 'dish' || i.type === 'set';
+    return i.type === src.type;
+  });
+  const maxEnd = sameSpace.reduce(
+    (m, i) => Math.max(m, i.sort_order + getItemWidthForDup(i)),
+    0
+  );
+  clone.sort_order = maxEnd;
+
+  setMenuItems([...allItems, clone]);
+  return clone;
 }

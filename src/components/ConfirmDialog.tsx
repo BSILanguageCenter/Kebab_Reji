@@ -72,7 +72,7 @@ export function ConfirmDialog({
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-md p-5"
+        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-md p-4 sm:p-5 max-h-[90dvh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Иконка + Заголовок */}
@@ -91,17 +91,17 @@ export function ConfirmDialog({
         </div>
 
         {/* Кнопки Да / Нет */}
-        <div className="flex gap-2">
+        <div className="flex flex-col-reverse sm:flex-row gap-2">
           <button
             onClick={onCancel}
-            className="flex-1 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm font-bold transition-colors active:scale-[0.98]"
+            className="flex-1 py-3 sm:py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm font-bold transition-colors active:scale-[0.98]"
           >
             {cancelLabel ?? t('no')}
           </button>
           <button
             onClick={onConfirm}
             disabled={isBlocked}
-            className={`flex-1 py-2.5 rounded-xl text-white text-sm font-bold transition-colors ${colors[variant]} ${
+            className={`flex-1 py-3 sm:py-2.5 rounded-xl text-white text-sm font-bold transition-colors ${colors[variant]} ${
               isBlocked
                 ? 'opacity-50 cursor-not-allowed'
                 : 'active:scale-[0.98]'

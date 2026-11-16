@@ -714,7 +714,7 @@ export function ProductBuilderDialog({
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-lg max-h-[92vh] overflow-hidden flex flex-col"
+        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-lg max-h-[92dvh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

@@ -1,4 +1,11 @@
-import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
+import {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+  type ReactNode,
+} from 'react';
 import { formatYen, formatTimeAgo } from '@/locale/format';
 import { useI18n } from '@/locale';
 import {
@@ -9,18 +16,14 @@ import {
   emitCreateOrder,
   emitUpdateOrder,
   emitUpdateStatus,
-} from '@/lib/socket';
+} from '@/lib/localStore';
 import { ClearCartDialog } from '@/components/ClearCartDialog';
 import { ProductBuilderDialog } from '@/components/ProductBuilderDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageActions';
 import { Resizer } from '@/components/Resizer';
-import {
-  printCustomerTicket,
-  printKitchenOrder,
-  printKitchenDelta,
-} from '@/services/printer';
-import { KITCHEN_LIMIT } from '@/services/kitchen';
+import { MenuCard } from '@/components/MenuCard';
+import { useViewport } from '@/lib/useViewport';
 import {
   pushUndo,
   popUndo,
@@ -37,7 +40,6 @@ import type {
   CartItem,
   CartItemOption,
   Order,
-  OrderItem,
   OrderType,
 } from '@/types/database';
 import {
@@ -52,9 +54,37 @@ import {
   FilePlus2,
   Pencil,
   Save,
+  ShoppingCart,
+  ClipboardList,
+  UtensilsCrossed,
+  X,
 } from 'lucide-react';
 
 type CategorySpace = 'dishset' | 'drink' | 'sauce' | 'topping';
+
+type MobileTab = 'menu' | 'cart' | 'orders';
+
+/** Отступ между карточками в адаптивной (телефон / планшет) сетке */
+const FLUID_GAP = 6;
+
+const CAT_STYLE: Record<CategorySpace, { on: string; off: string }> = {
+  dishset: {
+    on: 'bg-orange-500 text-white border-orange-500',
+    off: 'bg-white text-orange-700 border-orange-200',
+  },
+  drink: {
+    on: 'bg-cyan-600 text-white border-cyan-600',
+    off: 'bg-white text-cyan-700 border-cyan-200',
+  },
+  sauce: {
+    on: 'bg-red-600 text-white border-red-600',
+    off: 'bg-white text-red-700 border-red-200',
+  },
+  topping: {
+    on: 'bg-purple-600 text-white border-purple-600',
+    off: 'bg-white text-purple-700 border-purple-200',
+  },
+};
 
 function getSpaceItems(items: MenuItem[], space: CategorySpace): MenuItem[] {
   if (space === 'dishset') {
@@ -71,66 +101,6 @@ function getItemWidth(item: MenuItem): number {
     return Math.max(1, item.set_main.variants?.length ?? 1);
   }
   return 1;
-}
-
-function getMenuItemCookTime(item: MenuItem): number {
-  if (item.dish_kind === 'group' && item.variants?.length) {
-    return Math.max(
-      ...item.variants.map((v) =>
-        v.station === 'kitchen' ? v.cook_time_min ?? 0 : 0
-      )
-    );
-  }
-  return item.station === 'kitchen' ? item.cook_time_min ?? 0 : 0;
-}
-
-function getItemCookTime(item: MenuItem): number {
-  if (item.type === 'set' && item.set_main) {
-    return getMenuItemCookTime(item.set_main);
-  }
-  return getMenuItemCookTime(item);
-}
-
-function estimateWaitMinutes(
-  cart: CartItem[],
-  menuItems: MenuItem[],
-  activeOrders: Order[],
-  kitchenLimit: number = KITCHEN_LIMIT
-): number {
-  let ownTime = 0;
-  for (const c of cart) {
-    if (c.is_removed) continue;
-    const mi = menuItems.find((m) => m.id === c.menu_item_id);
-    if (!mi) continue;
-    const t = getItemCookTime(mi);
-    if (t > ownTime) ownTime = t;
-  }
-
-  const activeKitchen = activeOrders.filter(
-    (o) => o.status === 'NEW' || o.status === 'PREPARING'
-  );
-
-  if (activeKitchen.length === 0) return ownTime;
-
-  let sumCook = 0;
-  let counted = 0;
-  for (const o of activeKitchen) {
-    let orderCook = 0;
-    for (const it of o.order_items ?? []) {
-      if (it.is_removed) continue;
-      const mi = menuItems.find((m) => m.id === it.menu_item_id);
-      if (!mi) continue;
-      const t = getItemCookTime(mi);
-      if (t > orderCook) orderCook = t;
-    }
-    if (orderCook > 0) {
-      sumCook += orderCook;
-      counted++;
-    }
-  }
-  const avgBatch = counted > 0 ? Math.round(sumCook / counted) : 10;
-  const batchesAhead = Math.floor(activeKitchen.length / kitchenLimit);
-  return batchesAhead * avgBatch + ownTime;
 }
 
 function statusLabel(status: Order['status']): string {
@@ -156,7 +126,6 @@ export default function CashierPage() {
   const [comment, setComment] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [printError, setPrintError] = useState<string | null>(null);
   const [lastOrderNumber, setLastOrderNumber] = useState<number | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
@@ -172,6 +141,14 @@ export default function CashierPage() {
   const undoStack = useUndoStack('cashier');
   const [layout, setLayout] = useLayoutSettings();
   const drinksWrapRef = useRef<HTMLDivElement>(null);
+
+  // ---------- адаптивность ----------
+  const { width: vw, device } = useViewport();
+  const isDesktop = device === 'desktop';
+  const isPhone = device === 'phone';
+  const [mobileTab, setMobileTab] = useState<MobileTab>('menu');
+  const [menuCat, setMenuCat] = useState<CategorySpace>('dishset');
+  const [ordersOpen, setOrdersOpen] = useState(false); // выезжающая панель (планшет)
 
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
@@ -383,7 +360,6 @@ export default function CashierPage() {
     if (!hasActiveItems) return;
     setSending(true);
     setError(null);
-    setPrintError(null);
     try {
       const created = await emitCreateOrder({
         order_type: orderType,
@@ -420,61 +396,6 @@ export default function CashierPage() {
 
       setLastOrderNumber(created.order_number);
 
-      const ticketOrder: Order = {
-        ...created,
-        order_items: cart
-          .filter((c) => !c.is_removed)
-          .map((c) => ({
-            id: 'temp',
-            order_id: created.id,
-            menu_item_id: c.menu_item_id,
-            name: c.name,
-            short_name: c.short_name,
-            variant: c.variant,
-            price: c.price,
-            quantity: c.quantity,
-            subtotal: c.price * c.quantity,
-            created_at: new Date().toISOString(),
-            is_removed: false,
-            is_added_later: false,
-            options: c.options.map((o) => ({
-              id: 'temp',
-              order_item_id: 'temp',
-              type: o.type,
-              name: o.name,
-              price: o.price,
-              quantity: o.quantity,
-            })),
-          })),
-      };
-
-      const estimatedMinutes = estimateWaitMinutes(
-        cart,
-        menuItems,
-        activeOrders
-      );
-
-      printKitchenOrder(ticketOrder)
-        .then((res) => {
-          if (!res.success && !res.skipped) {
-            setPrintError(res.error ?? t('printerError'));
-          }
-        })
-        .catch((e) => {
-          console.error('[cashier] kitchen print error:', e);
-          setPrintError(e instanceof Error ? e.message : t('printerError'));
-        });
-
-      printCustomerTicket(ticketOrder, estimatedMinutes)
-        .then((res) => {
-          if (!res.success && !res.skipped) {
-            setPrintError(res.error ?? t('printerError'));
-          }
-        })
-        .catch((e) => {
-          console.error('[cashier] customer print error:', e);
-        });
-
       try {
         if ('vibrate' in navigator) navigator.vibrate(30);
       } catch {
@@ -484,6 +405,7 @@ export default function CashierPage() {
       setCart([]);
       setComment('');
       setEditingOrder(null);
+      setMobileTab('menu');
     } catch (e) {
       setError(e instanceof Error ? e.message : t('failedToSendOrder'));
     } finally {
@@ -495,7 +417,6 @@ export default function CashierPage() {
     if (!editingOrder || !hasActiveItems) return;
     setSending(true);
     setError(null);
-    setPrintError(null);
 
     const undoSnapshot = {
       order_type: editingOrder.order_type,
@@ -519,50 +440,6 @@ export default function CashierPage() {
         })),
       })),
     };
-
-    const commentChanged =
-      (editingOrder.comment ?? '') !== (comment ?? '');
-    let commentHandled = false;
-
-    const deltaItems: OrderItem[] = cart.map((c) => {
-      const qtyChanged =
-        !!c.db_id &&
-        c.original_quantity != null &&
-        c.quantity !== c.original_quantity &&
-        !c.is_removed;
-
-      const commentFlag =
-        commentChanged && !commentHandled && !c.is_removed && !!c.db_id;
-      if (commentFlag) commentHandled = true;
-
-      return {
-        id: c.db_id ?? 'temp',
-        order_id: editingOrder.id,
-        menu_item_id: c.menu_item_id,
-        name: c.name,
-        short_name: c.short_name,
-        variant: c.variant,
-        price: c.price,
-        quantity: c.quantity,
-        subtotal: c.is_removed
-          ? 0
-          : c.price * c.quantity +
-            c.options.reduce((s, o) => s + o.price * o.quantity, 0) *
-              c.quantity,
-        created_at: new Date().toISOString(),
-        is_removed: c.is_removed ?? false,
-        is_added_later:
-          (c.is_added_later || qtyChanged || commentFlag) ?? false,
-        options: c.options.map((o) => ({
-          id: 'temp',
-          order_item_id: 'temp',
-          type: o.type,
-          name: o.name,
-          price: o.price,
-          quantity: o.quantity,
-        })),
-      };
-    });
 
     try {
       pushUndo('cashier', {
@@ -601,23 +478,6 @@ export default function CashierPage() {
         })),
       });
 
-      const deltaOrder: Order = {
-        ...editingOrder,
-        comment,
-        order_items: deltaItems,
-      };
-
-      printKitchenDelta(deltaOrder)
-        .then((res) => {
-          if (!res.success && !res.skipped) {
-            setPrintError(res.error ?? t('printerError'));
-          }
-        })
-        .catch((e) => {
-          console.error('[cashier] delta print exception:', e);
-          setPrintError(e instanceof Error ? e.message : t('printerError'));
-        });
-
       try {
         if ('vibrate' in navigator) navigator.vibrate(30);
       } catch {
@@ -627,6 +487,7 @@ export default function CashierPage() {
       setCart([]);
       setComment('');
       setEditingOrder(null);
+      setMobileTab('menu');
     } catch (e) {
       setError(e instanceof Error ? e.message : t('failedToSendOrder'));
     } finally {
@@ -661,6 +522,8 @@ export default function CashierPage() {
     setOrderType(order.order_type);
     setComment(order.comment ?? '');
     setEditingOrder(order);
+    setMobileTab('cart');
+    setOrdersOpen(false);
   };
 
   const handleEditOrder = (order: Order) => {
@@ -678,6 +541,8 @@ export default function CashierPage() {
       setComment('');
       setOrderType('OUTSIDE');
       setEditingOrder(null);
+      setMobileTab('menu');
+      setOrdersOpen(false);
     });
   };
 
@@ -685,6 +550,7 @@ export default function CashierPage() {
     setCart([]);
     setComment('');
     setEditingOrder(null);
+    setMobileTab('menu');
   };
 
   const askUndo = () => {
@@ -793,8 +659,10 @@ export default function CashierPage() {
   const renderGrid = (
     space: CategorySpace,
     size: number,
-    compact: boolean
+    compact: boolean,
+    fluidCols?: number
   ) => {
+    const fluid = fluidCols != null;
     const spaceItems = getSpaceItems(tops, space);
     const sorted = [...spaceItems].sort(
       (a, b) => a.sort_order - b.sort_order
@@ -805,9 +673,11 @@ export default function CashierPage() {
       <div
         className="grid"
         style={{
-          gridTemplateColumns: `repeat(auto-fill, ${size}px)`,
-          gridAutoRows: `${cellH}px`,
-          gap: layout.gridGap,
+          gridTemplateColumns: fluid
+            ? `repeat(${fluidCols}, minmax(0, 1fr))`
+            : `repeat(auto-fill, ${size}px)`,
+          gridAutoRows: fluid ? 'auto' : `${cellH}px`,
+          gap: fluid ? FLUID_GAP : layout.gridGap,
         }}
       >
         {sorted.map((card) => {
@@ -827,13 +697,18 @@ export default function CashierPage() {
             <div
               key={card.id}
               style={{
-                gridColumn: `span ${w}`,
+                gridColumn: fluid
+                  ? variants
+                    ? '1 / -1'
+                    : 'span 1'
+                  : `span ${w}`,
                 display: 'flex',
-                alignItems: 'center',
+                alignItems: fluid ? 'flex-start' : 'center',
                 justifyContent: 'center',
               }}
             >
-              <ProductCard
+              <MenuCard
+                mode="view"
                 item={card}
                 variants={variants}
                 onClick={handleItemClick}
@@ -845,8 +720,13 @@ export default function CashierPage() {
                   }
                 }}
                 size={size}
-                textSize={layout.itemTextSize}
-                compact={compact}
+                textSize={
+                  fluid
+                    ? Math.max(12, layout.itemTextSize)
+                    : layout.itemTextSize
+                }
+                compact={fluid ? false : compact}
+                wrapVariants={fluid}
                 cardRadius={layout.cardRadius}
               />
             </div>
@@ -861,42 +741,56 @@ export default function CashierPage() {
   const hasDrink = getSpaceItems(tops, 'drink').length > 0;
   const hasSauce = getSpaceItems(tops, 'sauce').length > 0;
 
-  return (
-    <div className="h-full min-h-0 flex flex-col bg-slate-200/70">
-      <div className="flex items-center gap-3 px-4 py-2.5 bg-white shadow-sm border-b border-slate-200 shrink-0">
-        <PageActions forRole="cashier">
-          <button
-            onClick={askUndo}
-            disabled={undoStack.length === 0}
-            className="ml-auto flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold border-2 border-slate-200 bg-white hover:border-orange-400 hover:bg-orange-50 text-slate-700 active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
-          >
-            <Undo2 className="w-4 h-4" />
-            {t('undoLast')}
-            {undoStack.length > 0 && (
-              <span className="text-[11px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-black">
-                {undoStack.length}
-              </span>
-            )}
-          </button>
-        </PageActions>
-      </div>
+  // ---------- адаптивные размеры ----------
+  const hdrSize = isDesktop
+    ? layout.panelHeaderSize
+    : Math.max(12, layout.panelHeaderSize);
+  const numSize = isDesktop
+    ? layout.orderNumberSize
+    : Math.max(18, layout.orderNumberSize);
 
-      <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* LEFT: ORDERS */}
-        <div
-          className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.ordersWidth }}
-        >
+  const cartQty = cart
+    .filter((i) => !i.is_removed)
+    .reduce((s, i) => s + i.quantity, 0);
+  const ordersCount = activeOrders.filter(
+    (o) => o.status !== 'CANCELLED'
+  ).length;
+
+  // Ширина корзины на планшете и ширина области меню (для расчёта колонок)
+  const tabletCartW = Math.round(Math.min(400, Math.max(300, vw * 0.38)));
+  const menuAvail = (isPhone ? vw - 24 : vw - tabletCartW - 25) - 8;
+  const fluidGrid = (space: CategorySpace) => {
+    const target =
+      space === 'dishset' ? (isPhone ? 104 : 120) : isPhone ? 88 : 96;
+    const cols = Math.max(
+      2,
+      Math.floor((menuAvail + FLUID_GAP) / (target + FLUID_GAP))
+    );
+    const size = Math.floor((menuAvail - FLUID_GAP * (cols - 1)) / cols);
+    return { cols, size };
+  };
+
+  const catList = [
+    { key: 'dishset' as const, label: t('bludiAndSet'), has: hasDishSet },
+    { key: 'drink' as const, label: t('type_drink'), has: hasDrink },
+    { key: 'sauce' as const, label: t('type_sauce'), has: hasSauce },
+    { key: 'topping' as const, label: t('type_topping'), has: hasTopping },
+  ].filter((c) => c.has);
+  const activeCat = catList.find((c) => c.key === menuCat) ?? catList[0];
+
+  // ---------- общие куски интерфейса ----------
+  const ordersInner = (
+    <>
           <div className="px-3 py-2 border-b border-slate-200 shrink-0 bg-slate-50">
             <h2
               className="font-black text-slate-700 tracking-wide border-l-4 border-slate-400 pl-2 leading-none"
-              style={{ fontSize: layout.panelHeaderSize }}
+              style={{ fontSize: hdrSize }}
             >
               {t('activeOrders')}
             </h2>
             <span
               className="font-black text-orange-600 leading-none mt-1.5 block pl-2 tabular-nums"
-              style={{ fontSize: layout.orderNumberSize }}
+              style={{ fontSize: numSize }}
             >
               {activeOrders.filter((o) => o.status !== 'CANCELLED').length}
             </span>
@@ -937,7 +831,7 @@ export default function CashierPage() {
                   <div className="flex items-center justify-between">
                     <span
                       className="font-black text-slate-900 tabular-nums"
-                      style={{ fontSize: layout.orderNumberSize }}
+                      style={{ fontSize: numSize }}
                     >
                       #{order.order_number}
                     </span>
@@ -982,167 +876,11 @@ export default function CashierPage() {
               {t('newOrder')}
             </button>
           </div>
-        </div>
+    </>
+  );
 
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeOrders}
-          onEnd={endResize}
-        />
-
-        {/* CENTER */}
-        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
-          <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-200 shrink-0">
-            <div className="flex p-1 rounded-2xl bg-slate-100 gap-1">
-              <button
-                onClick={() => setOrderType('OUTSIDE')}
-                className={`flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold transition-all active:scale-95 ${
-                  orderType === 'OUTSIDE'
-                    ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
-                    : 'text-slate-500 hover:bg-white'
-                }`}
-              >
-                <ShoppingBag className="w-4 h-4" />
-                {t('orderTypeOutside')}
-              </button>
-              <button
-                onClick={() => setOrderType('INSIDE')}
-                className={`flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold transition-all active:scale-95 ${
-                  orderType === 'INSIDE'
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'text-slate-500 hover:bg-white'
-                }`}
-              >
-                <Store className="w-4 h-4" />
-                {t('orderTypeInside')}
-              </button>
-            </div>
-          </div>
-
-          {error && (
-            <div className="mx-2 mt-2 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
-              {error}
-            </div>
-          )}
-
-          {hasDishSet ? (
-            <div className="flex-1 min-h-0 overflow-y-auto p-3">
-              <div className="mb-3 px-3 py-2 rounded-lg bg-orange-100 border-l-4 border-orange-500">
-                <h3
-                  className="font-black text-orange-800 tracking-wide truncate leading-none"
-                  style={{ fontSize: layout.panelHeaderSize }}
-                >
-                  {t('bludiAndSet')}
-                </h3>
-              </div>
-              {renderGrid('dishset', layout.dishCardSize, false)}
-            </div>
-          ) : (
-            <div className="flex-1 min-h-0 flex items-center justify-center text-slate-400 text-sm">
-              {t('noMenuItems')}
-            </div>
-          )}
-
-          {hasTopping && (
-            <>
-              <Resizer
-                direction="horizontal"
-                onStart={beginResize}
-                onResize={handleResizeToppings}
-                onEnd={endResize}
-              />
-              <div
-                className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
-                style={{ height: layout.toppingsHeight }}
-              >
-                <h3
-                  className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
-                  style={{ fontSize: layout.panelHeaderSize }}
-                >
-                  {t('type_topping')}
-                </h3>
-                <div className="overflow-y-auto h-[calc(100%-16px)]">
-                  {renderGrid('topping', layout.toppingCardSize, true)}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeMenuRight}
-          onEnd={endResize}
-        />
-
-        {/* RIGHT */}
-        <div
-          ref={drinksWrapRef}
-          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.menuRightWidth }}
-        >
-          <div
-            className="flex flex-col border-b-2 border-cyan-300"
-            style={{ height: `${layout.drinksShare}%` }}
-          >
-            <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
-              <h3
-                className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
-                style={{ fontSize: layout.panelHeaderSize }}
-              >
-                {t('type_drink')}
-              </h3>
-            </div>
-            {hasDrink ? (
-              <div className="flex-1 min-h-0 overflow-y-auto p-2">
-                {renderGrid('drink', layout.drinkCardSize, true)}
-              </div>
-            ) : (
-              <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
-                —
-              </div>
-            )}
-          </div>
-
-          <Resizer
-            direction="horizontal"
-            onStart={beginResize}
-            onResize={handleResizeDrinks}
-            onEnd={endResize}
-          />
-
-          <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
-              <h3
-                className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
-                style={{ fontSize: layout.panelHeaderSize }}
-              >
-                {t('type_sauce')}
-              </h3>
-            </div>
-            {hasSauce ? (
-              <div className="flex-1 min-h-0 overflow-y-auto p-2">
-                {renderGrid('sauce', layout.sauceCardSize, true)}
-              </div>
-            ) : (
-              <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
-                —
-              </div>
-            )}
-          </div>
-        </div>
-
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeCart}
-          onEnd={endResize}
-        />
-
-        {/* CART */}
-        <div
-          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.cartWidth }}
-        >
+  const cartInner = (
+    <>
           <div
             className={`px-4 py-3 border-b shrink-0 ${
               editingOrder
@@ -1232,7 +970,6 @@ export default function CashierPage() {
                         )}
                       </div>
                     </div>
-                    {/* Тач: увеличено с p-1.5 до w-11 h-11 */}
                     <button
                       onClick={() => removeItem(item.id)}
                       className={`w-11 h-11 flex items-center justify-center rounded-xl transition-colors ${
@@ -1263,7 +1000,6 @@ export default function CashierPage() {
                   )}
 
                   <div className="flex items-center justify-between gap-2">
-                    {/* Тач: увеличено с w-10 h-10 до w-12 h-12 */}
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => decrementItem(item.id)}
@@ -1320,17 +1056,6 @@ export default function CashierPage() {
           </div>
 
           <div className="p-3 border-t border-slate-200 space-y-3 bg-white shrink-0 shadow-[0_-8px_16px_-12px_rgba(0,0,0,0.2)]">
-            {printError && (
-              <div className="p-2.5 bg-red-50 border border-red-300 rounded-lg text-red-700 text-xs flex items-center justify-between">
-                <span className="truncate">{t('printerError')}</span>
-                <button
-                  onClick={() => setPrintError(null)}
-                  className="text-red-600 font-bold underline ml-2 shrink-0 px-2 py-1"
-                >
-                  {t('retryPrint')}
-                </button>
-              </div>
-            )}
             <div className="flex items-end justify-between">
               <span className="text-sm font-bold text-slate-500">
                 {t('total')}
@@ -1387,8 +1112,405 @@ export default function CashierPage() {
               </button>
             )}
           </div>
+    </>
+  );
+
+  const renderTypeBar = (leading?: ReactNode) => (
+          <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-200 shrink-0">
+            {leading}
+            <div className="flex p-1 rounded-2xl bg-slate-100 gap-1 w-full md:w-auto">
+              <button
+                onClick={() => setOrderType('OUTSIDE')}
+                className={`flex-1 justify-center md:flex-none flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold transition-all active:scale-95 ${
+                  orderType === 'OUTSIDE'
+                    ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
+                    : 'text-slate-500 hover:bg-white'
+                }`}
+              >
+                <ShoppingBag className="w-4 h-4" />
+                {t('orderTypeOutside')}
+              </button>
+              <button
+                onClick={() => setOrderType('INSIDE')}
+                className={`flex-1 justify-center md:flex-none flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold transition-all active:scale-95 ${
+                  orderType === 'INSIDE'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                    : 'text-slate-500 hover:bg-white'
+                }`}
+              >
+                <Store className="w-4 h-4" />
+                {t('orderTypeInside')}
+              </button>
+            </div>
+          </div>
+
+  );
+
+  const errorBox = (
+    <>
+          {error && (
+            <div className="mx-2 mt-2 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
+              {error}
+            </div>
+          )}
+
+    </>
+  );
+
+  const dishBlock = (
+    <>
+          {hasDishSet ? (
+            <div className="flex-1 min-h-0 overflow-y-auto p-3">
+              <div className="mb-3 px-3 py-2 rounded-lg bg-orange-100 border-l-4 border-orange-500">
+                <h3
+                  className="font-black text-orange-800 tracking-wide truncate leading-none"
+                  style={{ fontSize: hdrSize }}
+                >
+                  {t('bludiAndSet')}
+                </h3>
+              </div>
+              {renderGrid('dishset', layout.dishCardSize, false)}
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0 flex items-center justify-center text-slate-400 text-sm">
+              {t('noMenuItems')}
+            </div>
+          )}
+
+    </>
+  );
+
+  const toppingBlock = (
+    <>
+          {hasTopping && (
+            <>
+              <Resizer
+                direction="horizontal"
+                onStart={beginResize}
+                onResize={handleResizeToppings}
+                onEnd={endResize}
+              />
+              <div
+                className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
+                style={{ height: layout.toppingsHeight }}
+              >
+                <h3
+                  className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
+                  style={{ fontSize: hdrSize }}
+                >
+                  {t('type_topping')}
+                </h3>
+                <div className="overflow-y-auto h-[calc(100%-16px)]">
+                  {renderGrid('topping', layout.toppingCardSize, true)}
+                </div>
+              </div>
+            </>
+          )}
+    </>
+  );
+
+  // Меню для телефона и планшета: чипы категорий + одна сетка
+  const fluidMenu = (
+    <>
+      <div className="flex gap-2 px-3 py-2 overflow-x-auto shrink-0 bg-white border-b border-slate-200 [scrollbar-width:none]">
+        {catList.map((c) => (
+          <button
+            key={c.key}
+            onClick={() => setMenuCat(c.key)}
+            className={`shrink-0 px-4 py-2.5 rounded-full border-2 text-sm font-black whitespace-nowrap active:scale-95 transition-all ${
+              activeCat?.key === c.key
+                ? CAT_STYLE[c.key].on
+                : CAT_STYLE[c.key].off
+            }`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      {activeCat ? (
+        <div
+          className={`flex-1 min-h-0 overflow-y-auto p-3 ${
+            isPhone && hasActiveItems ? 'pb-24' : ''
+          }`}
+        >
+          {(() => {
+            const { cols, size } = fluidGrid(activeCat.key);
+            return renderGrid(activeCat.key, size, false, cols);
+          })()}
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 flex items-center justify-center text-slate-400 text-sm">
+          {t('noMenuItems')}
+        </div>
+      )}
+    </>
+  );
+
+  const phoneTabs: {
+    key: MobileTab;
+    label: string;
+    icon: ReactNode;
+    badge: number;
+  }[] = [
+    {
+      key: 'menu',
+      label: lang === 'ru' ? 'Меню' : 'Menu',
+      icon: <UtensilsCrossed className="w-5 h-5" />,
+      badge: 0,
+    },
+    {
+      key: 'cart',
+      label: lang === 'ru' ? 'Корзина' : 'Cart',
+      icon: <ShoppingCart className="w-5 h-5" />,
+      badge: cartQty,
+    },
+    {
+      key: 'orders',
+      label: lang === 'ru' ? 'Заказы' : 'Orders',
+      icon: <ClipboardList className="w-5 h-5" />,
+      badge: ordersCount,
+    },
+  ];
+
+  const phoneLayout = (
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col bg-slate-100 relative">
+        {mobileTab === 'menu' && (
+          <>
+            {renderTypeBar()}
+            {errorBox}
+            {fluidMenu}
+            {hasActiveItems && (
+              <button
+                onClick={() => setMobileTab('cart')}
+                className="absolute left-3 right-3 bottom-3 z-10 h-14 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black flex items-center justify-between px-5 shadow-xl shadow-orange-500/40 active:scale-[0.98] transition-all"
+              >
+                <span className="flex items-center gap-2">
+                  <ShoppingCart className="w-5 h-5" />
+                  {cartQty}
+                </span>
+                <span className="tabular-nums text-lg">
+                  {formatYen(cartTotal)}
+                </span>
+              </button>
+            )}
+          </>
+        )}
+        {mobileTab === 'cart' && (
+          <div className="flex-1 min-h-0 bg-white flex flex-col">
+            {errorBox}
+            {cartInner}
+          </div>
+        )}
+        {mobileTab === 'orders' && (
+          <div className="flex-1 min-h-0 bg-white flex flex-col">
+            {ordersInner}
+          </div>
+        )}
+      </div>
+
+      <nav className="shrink-0 grid grid-cols-3 bg-white border-t border-slate-300 pb-[env(safe-area-inset-bottom)]">
+        {phoneTabs.map((tab) => {
+          const active = mobileTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setMobileTab(tab.key)}
+              className={`relative flex flex-col items-center justify-center gap-0.5 py-2 min-h-[56px] text-[11px] font-black transition-colors ${
+                active ? 'text-orange-600 bg-orange-50' : 'text-slate-500'
+              }`}
+            >
+              {tab.icon}
+              {tab.label}
+              {tab.badge > 0 && (
+                <span className="absolute top-1 left-1/2 ml-2 min-w-[18px] px-1 h-[18px] rounded-full bg-orange-500 text-white text-[10px] font-black flex items-center justify-center tabular-nums">
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+    </div>
+  );
+
+  const tabletLayout = (
+    <div className="flex-1 min-h-0 flex overflow-hidden relative">
+      <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
+        {renderTypeBar(
+          <button
+            onClick={() => setOrdersOpen(true)}
+            className="shrink-0 flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-sm font-black text-slate-700 active:scale-95 transition-all"
+          >
+            <ClipboardList className="w-4 h-4" />
+            {lang === 'ru' ? 'Заказы' : 'Orders'}
+            {ordersCount > 0 && (
+              <span className="text-[11px] bg-orange-500 text-white px-2 py-0.5 rounded-full tabular-nums">
+                {ordersCount}
+              </span>
+            )}
+          </button>
+        )}
+        {errorBox}
+        {fluidMenu}
+      </div>
+
+      <div
+        className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
+        style={{ width: tabletCartW }}
+      >
+        {cartInner}
+      </div>
+
+      {ordersOpen && (
+        <div className="absolute inset-0 z-40 flex">
+          <div className="w-[min(340px,85%)] bg-white shadow-2xl flex flex-col min-h-0 border-r border-slate-300">
+            <div className="flex justify-end p-1 border-b border-slate-200 shrink-0">
+              <button
+                onClick={() => setOrdersOpen(false)}
+                aria-label="Close"
+                className="w-11 h-11 rounded-xl hover:bg-slate-100 active:scale-90 flex items-center justify-center text-slate-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 flex flex-col">{ordersInner}</div>
+          </div>
+          <button
+            aria-label="Close"
+            className="flex-1 bg-black/40"
+            onClick={() => setOrdersOpen(false)}
+          />
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="h-full min-h-0 flex flex-col bg-slate-200/70">
+      <PageActions forRole="cashier">
+        <button
+          onClick={askUndo}
+          disabled={undoStack.length === 0}
+          className="ml-auto flex items-center gap-2 px-3 py-2 sm:px-5 sm:py-3 rounded-xl text-sm font-bold border-2 border-slate-200 bg-white hover:border-orange-400 hover:bg-orange-50 text-slate-700 active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
+        >
+          <Undo2 className="w-4 h-4" />
+          <span className="hidden sm:inline">{t('undoLast')}</span>
+          {undoStack.length > 0 && (
+            <span className="text-[11px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-black">
+              {undoStack.length}
+            </span>
+          )}
+        </button>
+      </PageActions>
+
+      {isDesktop ? (
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {/* LEFT: ORDERS */}
+        <div
+          className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
+          style={{ width: layout.ordersWidth }}
+        >
+          {ordersInner}
+        </div>
+
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeOrders}
+          onEnd={endResize}
+        />
+
+        {/* CENTER */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
+          {renderTypeBar()}
+          {errorBox}
+          {dishBlock}
+          {toppingBlock}
+        </div>
+
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeMenuRight}
+          onEnd={endResize}
+        />
+
+        {/* RIGHT */}
+        <div
+          ref={drinksWrapRef}
+          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
+          style={{ width: layout.menuRightWidth }}
+        >
+          <div
+            className="flex flex-col border-b-2 border-cyan-300"
+            style={{ height: `${layout.drinksShare}%` }}
+          >
+            <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
+              <h3
+                className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
+                style={{ fontSize: hdrSize }}
+              >
+                {t('type_drink')}
+              </h3>
+            </div>
+            {hasDrink ? (
+              <div className="flex-1 min-h-0 overflow-y-auto p-2">
+                {renderGrid('drink', layout.drinkCardSize, true)}
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
+                —
+              </div>
+            )}
+          </div>
+
+          <Resizer
+            direction="horizontal"
+            onStart={beginResize}
+            onResize={handleResizeDrinks}
+            onEnd={endResize}
+          />
+
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
+              <h3
+                className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
+                style={{ fontSize: hdrSize }}
+              >
+                {t('type_sauce')}
+              </h3>
+            </div>
+            {hasSauce ? (
+              <div className="flex-1 min-h-0 overflow-y-auto p-2">
+                {renderGrid('sauce', layout.sauceCardSize, true)}
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
+                —
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Resizer
+          onStart={beginResize}
+          onResize={handleResizeCart}
+          onEnd={endResize}
+        />
+
+        {/* CART */}
+        <div
+          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
+          style={{ width: layout.cartWidth }}
+        >
+          {cartInner}
         </div>
       </div>
+
+      ) : isPhone ? (
+        phoneLayout
+      ) : (
+        tabletLayout
+      )}
 
       <ProductBuilderDialog
         open={builder !== null}
@@ -1436,179 +1558,3 @@ export default function CashierPage() {
     </div>
   );
 }
-
-// ============================================================
-// PRODUCT CARD
-// ============================================================
-const ProductCard = memo(function ProductCard({
-  item,
-  variants,
-  onClick,
-  onVariantClick,
-  size,
-  textSize,
-  compact,
-  cardRadius,
-}: {
-  item: MenuItem;
-  variants?: MenuItem[];
-  onClick: (i: MenuItem) => void;
-  onVariantClick?: (setItem: MenuItem, v: MenuItem) => void;
-  size: number;
-  textSize: number;
-  compact?: boolean;
-  cardRadius: number;
-}) {
-  const isGroup = (variants?.length ?? 0) > 0;
-  const nameSize = compact ? Math.max(8, textSize - 2) : textSize;
-  const priceSize = compact ? Math.max(8, textSize - 2) : textSize;
-
-  if (!isGroup) {
-    return (
-      <button
-        onClick={() => onClick(item)}
-        style={{ width: size }}
-        className="group flex flex-col items-center select-none active:scale-95 transition-transform"
-      >
-        <div
-          className="relative overflow-hidden border-2 border-white shadow-md group-hover:shadow-xl group-hover:-translate-y-0.5 group-active:shadow-sm transition-all"
-          style={{
-            width: size,
-            height: size,
-            borderRadius: cardRadius,
-            background:
-              item.type === 'sauce'
-                ? '#ffffff'
-                : 'linear-gradient(to bottom right, #f97316, #dc2626)',
-            borderColor:
-              item.type === 'sauce' ? item.color ?? '#e5e7eb' : undefined,
-            borderWidth: item.type === 'sauce' ? 4 : 2,
-          }}
-        >
-          {item.image_url ? (
-            <>
-              <img
-                src={item.image_url}
-                alt={item.name}
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                loading="lazy"
-                draggable={false}
-              />
-              {item.type !== 'sauce' && (
-                <div className="absolute inset-0 bg-gradient-to-t from-black/25 via-transparent to-transparent" />
-              )}
-            </>
-          ) : item.type === 'sauce' ? (
-            <div
-              className="absolute inset-0"
-              style={{
-                backgroundColor: item.color ?? '#e5e7eb',
-                opacity: 0.25,
-              }}
-            />
-          ) : null}
-        </div>
-        <div
-          className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
-          style={{ fontSize: nameSize }}
-          title={item.name}
-        >
-          {item.short_name || item.name}
-        </div>
-        <div
-          className="mt-0.5 text-center font-black text-orange-600 w-full leading-none"
-          style={{ fontSize: priceSize }}
-        >
-          {item.free ? '' : formatYen(item.price)}
-        </div>
-      </button>
-    );
-  }
-
-  const headerH = nameSize + 8;
-
-  return (
-    <div
-      style={{
-        width: '100%',
-        minHeight: headerH + size + nameSize * 2 + 4,
-        borderRadius: cardRadius,
-      }}
-      className="bg-white shadow-md ring-1 ring-slate-300 hover:ring-orange-400 flex flex-col overflow-hidden transition-all"
-    >
-      <button
-        onClick={() => onClick(item)}
-        className="flex items-center justify-between w-full px-2 py-1.5 border-b border-slate-200 bg-slate-50 hover:bg-orange-50 transition-colors shrink-0 leading-none"
-        style={{
-          borderTopLeftRadius: cardRadius,
-          borderTopRightRadius: cardRadius,
-        }}
-      >
-        <span
-          className="font-black text-slate-900 tracking-wide truncate text-left leading-none"
-          style={{ fontSize: nameSize }}
-        >
-          {item.name}
-        </span>
-        {item.type === 'set' && (
-          <span
-            className="font-black bg-orange-500 text-white px-1.5 rounded-full shrink-0 ml-1 leading-none py-0.5"
-            style={{ fontSize: Math.max(7, nameSize - 3) }}
-          >
-            SET
-          </span>
-        )}
-      </button>
-
-      <div className="flex items-stretch" style={{ gap: 8 }}>
-        {variants!.map((v) => (
-          <button
-            key={v.id}
-            onClick={() => {
-              if (onVariantClick) onVariantClick(item, v);
-              else onClick(v);
-            }}
-            style={{ width: size, flex: '0 0 auto' }}
-            className="group flex flex-col items-center active:scale-95 transition-transform"
-          >
-            <div
-              className="relative overflow-hidden border-2 border-white shadow-md group-hover:shadow-xl group-hover:-translate-y-0.5 transition-all"
-              style={{
-                width: size,
-                height: size,
-                borderRadius: cardRadius,
-                background:
-                  'linear-gradient(to bottom right, #f97316, #dc2626)',
-              }}
-            >
-              {(v.image_url || item.image_url) && (
-                <>
-                  <img
-                    src={v.image_url || item.image_url || ''}
-                    alt={v.name}
-                    className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                    loading="lazy"
-                    draggable={false}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/25 via-transparent to-transparent" />
-                </>
-              )}
-            </div>
-            <div
-              className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
-              style={{ fontSize: nameSize }}
-            >
-              {v.name}
-            </div>
-            <div
-              className="mt-0.5 text-center font-black text-orange-600 w-full leading-none"
-              style={{ fontSize: priceSize }}
-            >
-              {v.free ? '' : formatYen(v.price)}
-            </div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-});

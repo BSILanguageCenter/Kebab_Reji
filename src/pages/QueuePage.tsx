@@ -14,7 +14,7 @@ import {
   subscribeInit,
   subscribeOrders,
   emitUpdateStatus,
-} from '@/lib/socket';
+} from '@/lib/localStore';
 import { useI18n, type TranslationKey, type Lang } from '@/locale';
 import type { Order, OrderStatus } from '@/types/database';
 import {
@@ -129,7 +129,7 @@ export default function QueuePage() {
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
       <PageActions forRole="queue">
-        <span className="text-[10px] text-gray-400 font-mono">
+        <span className="hidden sm:inline text-[10px] text-gray-400 font-mono">
           {lang === 'ru'
             ? `Кухня: макс ${KITCHEN_LIMIT}`
             : `Kitchen: max ${KITCHEN_LIMIT}`}
@@ -140,7 +140,7 @@ export default function QueuePage() {
           className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Undo2 className="w-3.5 h-3.5" />
-          {t('undoLast')}
+          <span className="hidden sm:inline">{t('undoLast')}</span>
           {undoStack.length > 0 && (
             <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-black">
               {undoStack.length}
@@ -160,8 +160,8 @@ export default function QueuePage() {
           <div className="w-8 h-8 border-2 border-orange-500/30 border-t-orange-500 rounded-full animate-spin" />
         </div>
       ) : (
-        <div className="flex-1 min-h-0 grid grid-cols-2 gap-3 p-3">
-          <div className="grid grid-rows-3 gap-3 min-h-0">
+        <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden grid grid-cols-1 md:grid-cols-2 gap-3 p-3">
+          <div className="order-2 md:order-1 grid gap-3 md:grid-rows-3 md:min-h-0 [&>*]:min-h-[170px] md:[&>*]:min-h-0">
             <CompactBlock
               variant="waiting"
               title={t('columnNew')}
@@ -218,7 +218,9 @@ export default function QueuePage() {
             </CompactBlock>
           </div>
 
-          <BigFocus order={focusOrder} lang={lang} t={t} />
+          <div className="order-1 md:order-2 min-h-[260px] md:min-h-0 flex">
+            <BigFocus order={focusOrder} lang={lang} t={t} />
+          </div>
         </div>
       )}
 
@@ -305,8 +307,8 @@ function CompactBlock({
 
   const gridCols =
     size === 'large'
-      ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5'
-      : 'grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8';
+      ? 'grid-cols-3 sm:grid-cols-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'
+      : 'grid-cols-4 sm:grid-cols-6 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8';
 
   return (
     <div
@@ -318,12 +320,12 @@ function CompactBlock({
         <div className={`w-3 h-3 rounded-full ${s.dot}`} />
         <span className={s.icon}>{icon}</span>
         <span
-          className={`text-xl font-black uppercase tracking-wider ${s.title}`}
+          className={`text-base sm:text-xl font-black uppercase tracking-wider ${s.title}`}
         >
           {title}
         </span>
         <span
-          className={`ml-auto text-lg font-black px-3 py-0.5 rounded-full ${s.badge}`}
+          className={`ml-auto text-base sm:text-lg font-black px-3 py-0.5 rounded-full ${s.badge}`}
         >
           {count}
         </span>
@@ -441,11 +443,11 @@ function BigFocus({
 }) {
   if (!order) {
     return (
-      <div className="rounded-2xl border-2 border-gray-200 bg-white flex flex-col items-center justify-center shadow-md">
+      <div className="flex-1 min-w-0 rounded-2xl border-2 border-gray-200 bg-white flex flex-col items-center justify-center shadow-md">
         <p className="text-sm uppercase tracking-[0.3em] text-gray-300 font-bold mb-4">
           {t('queue')}
         </p>
-        <p className="text-[140px] leading-none font-black text-gray-200 tabular-nums select-none">
+        <p className="text-[length:clamp(88px,22vw,140px)] leading-none font-black text-gray-200 tabular-nums select-none">
           —
         </p>
       </div>
@@ -462,11 +464,11 @@ function BigFocus({
 
   return (
     <div
-      className={`rounded-2xl border-4 ${borderColor} bg-gradient-to-br from-white to-slate-50 flex flex-col items-center justify-center shadow-lg relative overflow-hidden`}
+      className={`flex-1 min-w-0 rounded-2xl border-4 ${borderColor} bg-gradient-to-br from-white to-slate-50 flex flex-col items-center justify-center shadow-lg relative overflow-hidden`}
     >
-      <div className="absolute top-6 left-0 right-0 flex justify-center">
+      <div className="absolute top-3 sm:top-6 left-0 right-0 flex justify-center">
         <div
-          className={`flex items-center gap-2 px-5 py-2 rounded-full border-2 font-black uppercase tracking-widest text-base shadow-sm ${statusColor}`}
+          className={`flex items-center gap-2 px-4 py-1.5 sm:px-5 sm:py-2 rounded-full border-2 font-black uppercase tracking-widest text-sm sm:text-base shadow-sm ${statusColor}`}
         >
           {isReady ? (
             <CheckCircle2 className="w-5 h-5" />
@@ -478,14 +480,14 @@ function BigFocus({
       </div>
 
       <div
-        className={`text-[140px] xl:text-[180px] leading-none font-black tabular-nums select-none ${numberColor}`}
+        className={`text-[length:clamp(88px,22vw,150px)] md:text-[length:clamp(96px,15vw,180px)] leading-none font-black tabular-nums select-none ${numberColor}`}
       >
         {order.order_number}
       </div>
 
-      <div className="absolute bottom-6 left-0 right-0 flex justify-center gap-3">
+      <div className="absolute bottom-3 sm:bottom-6 left-0 right-0 flex flex-wrap justify-center gap-2 sm:gap-3 px-2">
         <span
-          className={`text-sm px-4 py-1.5 rounded-full font-black uppercase tracking-wider shadow-sm ${
+          className={`text-xs sm:text-sm px-3 sm:px-4 py-1.5 rounded-full font-black uppercase tracking-wider shadow-sm ${
             order.order_type === 'INSIDE'
               ? 'bg-blue-100 text-blue-700'
               : 'bg-purple-100 text-purple-700'
@@ -495,7 +497,7 @@ function BigFocus({
             ? t('orderTypeInside')
             : t('orderTypeOutside')}
         </span>
-        <span className="text-sm px-4 py-1.5 rounded-full font-bold bg-gray-100 text-gray-600 shadow-sm">
+        <span className="text-xs sm:text-sm px-3 sm:px-4 py-1.5 rounded-full font-bold bg-gray-100 text-gray-600 shadow-sm">
           {formatTimeAgo(order.created_at, lang)}
         </span>
       </div>

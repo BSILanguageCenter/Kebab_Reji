@@ -107,3 +107,25 @@ html {
   background: #64748b;
   background-clip: padding-box;
 }
+/* Добавить в конец src/index.css */
+html, body, #root { height: 100%; }
+body {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+/* вместо 100vh: на телефонах адресная строка «прыгает» */
+.app-h { height: 100dvh; }
+.safe-t { padding-top: env(safe-area-inset-top); }
+.safe-b { padding-bottom: env(safe-area-inset-bottom); }
+
+button { touch-action: manipulation; } /* без зума по двойному тапу */
+
+@media (pointer: coarse) {
+  /* iOS Safari зумит страницу при фокусе на поле со шрифтом < 16px */
+  input:not([type='range']):not([type='checkbox']):not([type='radio']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+  input[type='range'] { min-height: 32px; }
+}

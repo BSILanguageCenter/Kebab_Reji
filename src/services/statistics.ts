@@ -1,4 +1,5 @@
-import { supabase } from '@/lib/supabase';
+import type { Order } from '@/types/database';
+import { getAllOrders, getMenuItems } from '@/lib/localStore';
 
 export interface SalesSummary {
   totalSales: number;
@@ -34,7 +35,14 @@ export interface DateRange {
   end: string;
 }
 
-export function getDateRange(preset: string, customStart?: string, customEnd?: string): DateRange {
+// ============================================================
+// ДИАПАЗОН ДАТ
+// ============================================================
+export function getDateRange(
+  preset: string,
+  customStart?: string,
+  customEnd?: string
+): DateRange {
   const now = new Date();
   const end = new Date(now);
   end.setHours(23, 59, 59, 999);
@@ -83,17 +91,23 @@ export function getDateRange(preset: string, customStart?: string, customEnd?: s
   }
 }
 
-export async function fetchSalesSummary(range: DateRange): Promise<SalesSummary> {
-  const { data, error } = await supabase
-    .from('orders')
-    .select('total_amount, order_type')
-    .gte('created_at', range.start)
-    .lte('created_at', range.end)
-    .neq('status', 'CANCELLED');
+function ordersInRange(range: DateRange): Order[] {
+  const startMs = new Date(range.start).getTime();
+  const endMs = new Date(range.end).getTime();
+  return getAllOrders().filter((o) => {
+    if (o.status === 'CANCELLED') return false;
+    const t = new Date(o.created_at).getTime();
+    return t >= startMs && t <= endMs;
+  });
+}
 
-  if (error) throw error;
-
-  const orders = data ?? [];
+// ============================================================
+// СВОДКА
+// ============================================================
+export async function fetchSalesSummary(
+  range: DateRange
+): Promise<SalesSummary> {
+  const orders = ordersInRange(range);
   const totalSales = orders.reduce((s, o) => s + o.total_amount, 0);
   const orderCount = orders.length;
   const insideOrders = orders.filter((o) => o.order_type === 'INSIDE').length;
@@ -108,17 +122,13 @@ export async function fetchSalesSummary(range: DateRange): Promise<SalesSummary>
   };
 }
 
-export async function fetchHourlySales(range: DateRange): Promise<HourlySales[]> {
-  const { data, error } = await supabase
-    .from('orders')
-    .select('created_at, total_amount')
-    .gte('created_at', range.start)
-    .lte('created_at', range.end)
-    .neq('status', 'CANCELLED');
-
-  if (error) throw error;
-
-  const orders = data ?? [];
+// ============================================================
+// ПО ЧАСАМ
+// ============================================================
+export async function fetchHourlySales(
+  range: DateRange
+): Promise<HourlySales[]> {
+  const orders = ordersInRange(range);
   const hourMap = new Map<string, { count: number; total: number }>();
 
   for (let h = 0; h < 24; h++) {
@@ -126,135 +136,103 @@ export async function fetchHourlySales(range: DateRange): Promise<HourlySales[]>
     hourMap.set(key, { count: 0, total: 0 });
   }
 
-  for (const order of orders) {
-    const d = new Date(order.created_at);
+  for (const o of orders) {
+    const d = new Date(o.created_at);
     const key = `${String(d.getHours()).padStart(2, '0')}:00`;
     const entry = hourMap.get(key);
     if (entry) {
       entry.count++;
-      entry.total += order.total_amount;
+      entry.total += o.total_amount;
     }
   }
 
   return Array.from(hourMap.entries()).map(([hour, v]) => ({ hour, ...v }));
 }
 
+// ============================================================
+// ПО БЛЮДАМ
+// ============================================================
 export async function fetchItemSales(range: DateRange): Promise<ItemSales[]> {
-  const { data: orders, error: orderError } = await supabase
-    .from('orders')
-    .select('id')
-    .gte('created_at', range.start)
-    .lte('created_at', range.end)
-    .neq('status', 'CANCELLED');
-
-  if (orderError) throw orderError;
-  if (!orders || orders.length === 0) return [];
-
-  const orderIds = orders.map((o) => o.id);
-  const { data: items, error: itemsError } = await supabase
-    .from('order_items')
-    .select('name, variant, short_name, quantity, subtotal')
-    .in('order_id', orderIds);
-
-  if (itemsError) throw itemsError;
-  if (!items || items.length === 0) return [];
-
+  const orders = ordersInRange(range);
   const itemMap = new Map<string, ItemSales>();
-  const grandTotal = items.reduce((s, i) => s + i.subtotal, 0);
+  let grandTotal = 0;
 
-  for (const item of items) {
-    const key = `${item.name}-${item.variant}`;
-    const existing = itemMap.get(key);
-    if (existing) {
-      existing.quantity += item.quantity;
-      existing.total += item.subtotal;
-    } else {
-      itemMap.set(key, {
-        name: item.name,
-        variant: item.variant,
-        short_name: item.short_name,
-        quantity: item.quantity,
-        total: item.subtotal,
-        percentage: 0,
-      });
+  for (const o of orders) {
+    for (const it of o.order_items ?? []) {
+      if (it.is_removed) continue;
+      grandTotal += it.subtotal;
+      const key = `${it.name}-${it.variant}`;
+      const existing = itemMap.get(key);
+      if (existing) {
+        existing.quantity += it.quantity;
+        existing.total += it.subtotal;
+      } else {
+        itemMap.set(key, {
+          name: it.name,
+          variant: it.variant,
+          short_name: it.short_name,
+          quantity: it.quantity,
+          total: it.subtotal,
+          percentage: 0,
+        });
+      }
     }
   }
 
   const result = Array.from(itemMap.values());
   result.forEach((i) => {
-    i.percentage = grandTotal > 0 ? Math.round((i.total / grandTotal) * 100) : 0;
+    i.percentage =
+      grandTotal > 0 ? Math.round((i.total / grandTotal) * 100) : 0;
   });
   result.sort((a, b) => b.quantity - a.quantity);
 
   return result;
 }
 
+// ============================================================
+// ПО КАТЕГОРИЯМ
+// ============================================================
+const TYPE_LABELS: Record<string, string> = {
+  dish: 'Блюда',
+  set: 'Сеты',
+  drink: 'Напитки',
+  sauce: 'Соусы',
+  topping: 'Топпинги',
+};
+
 export async function fetchCategorySales(
   range: DateRange
 ): Promise<CategorySales[]> {
-  const { data: orders, error: orderError } = await supabase
-    .from('orders')
-    .select('id')
-    .gte('created_at', range.start)
-    .lte('created_at', range.end)
-    .neq('status', 'CANCELLED');
+  const orders = ordersInRange(range);
+  const menuItems = getMenuItems();
 
-  if (orderError) throw orderError;
-  if (!orders || orders.length === 0) return [];
-
-  const orderIds = orders.map((o) => o.id);
-  const { data: items, error: itemsError } = await supabase
-    .from('order_items')
-    .select('menu_item_id, quantity, subtotal')
-    .in('order_id', orderIds);
-
-  if (itemsError) throw itemsError;
-  if (!items || items.length === 0) return [];
-
-  const menuItemIds = [
-    ...new Set(items.map((i) => i.menu_item_id).filter(Boolean)),
-  ] as string[];
-  if (menuItemIds.length === 0) return [];
-
-  // Плоское пространство: категорий как отдельной сущности больше нет.
-  // Группируем по type из menu_items (dish / set / drink / sauce / topping).
-  const { data: menuItems, error: menuError } = await supabase
-    .from('menu_items')
-    .select('id, type, parent_id')
-    .in('id', menuItemIds);
-
-  if (menuError) throw menuError;
-
-  // Для вариантов dish-group parent_id != null, но их type всё равно 'dish'
-  // → они попадут в группу «Блюда». Это корректно.
+  // id → type (включая варианты)
   const typeById = new Map<string, string>();
-  for (const mi of menuItems ?? []) {
+  for (const mi of menuItems) {
     typeById.set(mi.id, mi.type);
+    if (mi.variants) {
+      for (const v of mi.variants) typeById.set(v.id, v.type);
+    }
   }
 
-  const TYPE_LABELS: Record<string, string> = {
-    dish: 'Блюда',
-    set: 'Сеты',
-    drink: 'Напитки',
-    sauce: 'Соусы',
-    topping: 'Топпинги',
-  };
-
   const catMap = new Map<string, CategorySales>();
-  for (const item of items) {
-    const t = item.menu_item_id ? typeById.get(item.menu_item_id) : null;
-    if (!t) continue;
-    const catName = TYPE_LABELS[t] ?? t;
-    const existing = catMap.get(catName);
-    if (existing) {
-      existing.quantity += item.quantity;
-      existing.total += item.subtotal;
-    } else {
-      catMap.set(catName, {
-        name: catName,
-        quantity: item.quantity,
-        total: item.subtotal,
-      });
+  for (const o of orders) {
+    for (const it of o.order_items ?? []) {
+      if (it.is_removed) continue;
+      const t = it.menu_item_id ? typeById.get(it.menu_item_id) : null;
+      if (!t) continue;
+      const catName = TYPE_LABELS[t] ?? t;
+      const existing = catMap.get(catName);
+      if (existing) {
+        existing.quantity += it.quantity;
+        existing.total += it.subtotal;
+      } else {
+        catMap.set(catName, {
+          name: catName,
+          quantity: it.quantity,
+          total: it.subtotal,
+        });
+      }
     }
   }
 

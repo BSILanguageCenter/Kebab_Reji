@@ -5,7 +5,6 @@ import {
   useRef,
   useMemo,
   useLayoutEffect,
-  memo,
 } from 'react';
 import {
   fetchAllMenuItems,
@@ -14,6 +13,7 @@ import {
   deleteItem,
   reorderItems,
   uploadItemImage,
+  duplicateItem,
   type SaveItemPayload,
   type VariantDraftPayload,
   type SetExtraGroupPayload,
@@ -24,6 +24,12 @@ import { Resizer } from '@/components/Resizer';
 import { PanelSettings } from '@/components/PanelSettings';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { ImageCropDialog } from '@/components/ImageCropDialog';
+import { MenuCard } from '@/components/MenuCard';
+import {
+  MenuCardMenu,
+  type MenuCardMenuState,
+} from '@/components/MenuCardMenu';
+import { StorageBar } from '@/components/StorageBar';
 import {
   useLayoutSettings,
   clampLayout,
@@ -49,8 +55,6 @@ import {
   Droplet,
   Sparkles,
   LayoutGrid,
-  ChevronLeft,
-  ChevronRight,
   ImageIcon,
 } from 'lucide-react';
 
@@ -335,12 +339,12 @@ function GridSpace({
   registerCols,
   textSize,
   layout,
+  onOpenCardMenu,
 }: {
   space: CategorySpace;
   size: number;
   compact: boolean;
   allTops: MenuItem[];
-  items: MenuItem[];
   draggedId: string | null;
   dragOverSlot: { space: CategorySpace; slot: number } | null;
   setDragOverSlot: (
@@ -354,6 +358,7 @@ function GridSpace({
   registerCols: (space: CategorySpace, cols: number) => void;
   textSize: number;
   layout: LayoutSettings;
+  onOpenCardMenu?: (x: number, y: number, item: MenuItem) => void;
 }) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const cols = useGridCols(gridRef, size, layout.gridGap);
@@ -391,6 +396,8 @@ function GridSpace({
         gridTemplateColumns: `repeat(${cols}, ${size}px)`,
         gridAutoRows: `${cellH}px`,
         gap,
+        width: '100%',
+        justifyContent: 'start',
       }}
     >
       {cells.map((cell) => {
@@ -465,14 +472,16 @@ function GridSpace({
                 : ''
             }`}
           >
-            <DraggableCard
+            <MenuCard
+              mode="edit"
               item={card}
               variants={variants}
-              onEdit={startEdit}
-              onVariantClick={(v) => {
+              onClick={startEdit}
+              onVariantClick={(_parent, v) => {
                 if (card.type === 'dish') startEdit(v);
                 else startEdit(card);
               }}
+              onEdit={startEdit}
               onPointerDragStart={startPointerDrag}
               onMoveLeft={() => moveItemByOne(card, -1, cols)}
               onMoveRight={() => moveItemByOne(card, 1, cols)}
@@ -482,6 +491,12 @@ function GridSpace({
               textSize={textSize}
               compact={compact}
               cardRadius={layout.cardRadius}
+              isDragged={isDragged}
+              onOpenMenu={
+                onOpenCardMenu
+                  ? (x, y) => onOpenCardMenu(x, y, card)
+                  : undefined
+              }
             />
           </div>
         );
@@ -496,6 +511,8 @@ function GridSpace({
 export function MenuProduct() {
   const { t } = useI18n();
   const [items, setItems] = useState<MenuItem[]>([]);
+  const itemsRef = useRef<MenuItem[]>([]);
+  itemsRef.current = items;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pickingType, setPickingType] = useState(false);
@@ -508,6 +525,8 @@ export function MenuProduct() {
   const [pendingDelete, setPendingDelete] = useState<MenuItem | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+
+  const [cardMenu, setCardMenu] = useState<MenuCardMenuState | null>(null);
 
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverSlot, setDragOverSlot] = useState<{
@@ -534,8 +553,8 @@ export function MenuProduct() {
     colsRef.current[s] = c;
   }, []);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       let list = await fetchAllMenuItems();
@@ -585,7 +604,7 @@ export function MenuProduct() {
       await reorderItems(updates);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'reorder failed');
-      loadData();
+      loadData(true);
     }
   };
 
@@ -641,7 +660,7 @@ export function MenuProduct() {
   // ============================================================
   const handleSlotDrop = useCallback(
     async (space: CategorySpace, targetSlot: number, cols: number) => {
-      const fromId = draggedId;
+      const fromId = draggedId ?? pointerDragRef.current?.id ?? null;
       setDraggedId(null);
       setDragOverSlot(null);
       if (!fromId) return;
@@ -697,7 +716,7 @@ export function MenuProduct() {
               ]);
             } catch (err) {
               setError(err instanceof Error ? err.message : 'reorder failed');
-              loadData();
+              loadData(true);
             }
           })();
           return;
@@ -737,15 +756,27 @@ export function MenuProduct() {
   // ============================================================
   // POINTER DRAG (мышь + тач)
   // ============================================================
+  // Всегда актуальная версия handleSlotDrop: слушатели pointerup создаются
+  // в момент нажатия и иначе держали бы СТАРУЮ версию (draggedId = null),
+  // из-за чего drop молча ничего не делал.
+  const handleSlotDropRef = useRef(handleSlotDrop);
+  handleSlotDropRef.current = handleSlotDrop;
+
   const startPointerDrag = useCallback(
     (e: React.PointerEvent, id: string) => {
-      const target = e.target as HTMLElement;
-      if (target.closest('button')) return;
+      if (e.button !== 0) return; // только левая кнопка / тач
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // Служебные кнопки (⋮, стрелки) помечены data-no-drag
+      if (target.closest('[data-no-drag]')) return;
 
       const startX = e.clientX;
       const startY = e.clientY;
       const pointerId = e.pointerId;
       const isTouch = e.pointerType !== 'mouse';
+
+      const source = itemsRef.current.find((i) => i.id === id);
+      const dragSpace = source ? getSpaceOfType(source.type) : null;
 
       const state: NonNullable<typeof pointerDragRef.current> = {
         id,
@@ -759,10 +790,112 @@ export function MenuProduct() {
       };
       pointerDragRef.current = state;
 
+      let cancelled = false;
+      let lastX = startX;
+      let lastY = startY;
+      let ghost: HTMLDivElement | null = null;
+      let raf = 0;
+
+      // ---------- «призрак» карточки под курсором ----------
+      const createGhost = () => {
+        if (!source) return;
+        const g = document.createElement('div');
+        g.style.cssText =
+          'position:fixed;left:0;top:0;z-index:200;pointer-events:none;' +
+          'width:96px;border-radius:14px;overflow:hidden;background:#fff;' +
+          'border:2px solid #fb923c;box-shadow:0 14px 34px rgba(0,0,0,.35);' +
+          'opacity:.95;will-change:transform;';
+        if (source.image_url) {
+          const img = document.createElement('img');
+          img.src = source.image_url;
+          img.draggable = false;
+          img.style.cssText =
+            'width:100%;height:96px;object-fit:cover;display:block;';
+          g.appendChild(img);
+        }
+        const label = document.createElement('div');
+        label.textContent = source.short_name || source.name;
+        label.style.cssText =
+          'padding:4px 6px;font:800 11px/1.1 system-ui,sans-serif;' +
+          'color:#0f172a;white-space:nowrap;overflow:hidden;' +
+          'text-overflow:ellipsis;';
+        g.appendChild(label);
+        document.body.appendChild(g);
+        ghost = g;
+      };
+      const moveGhost = (x: number, y: number) => {
+        if (ghost) {
+          ghost.style.transform = `translate(${x + 14}px, ${y + 14}px) rotate(-3deg)`;
+        }
+      };
+      const removeGhost = () => {
+        ghost?.remove();
+        ghost = null;
+      };
+
+      // ---------- целевая ячейка (только своя категория) ----------
+      const updateTarget = () => {
+        const el = document.elementFromPoint(lastX, lastY);
+        const cell = el?.closest('[data-slot-space]') as HTMLElement | null;
+        const sp = cell?.dataset.slotSpace as CategorySpace | undefined;
+        const sl = cell ? Number(cell.dataset.slotIndex) : NaN;
+        if (cell && sp && !Number.isNaN(sl) && sp === dragSpace) {
+          if (state.targetSpace !== sp || state.targetSlot !== sl) {
+            state.targetSpace = sp;
+            state.targetSlot = sl;
+            setDragOverSlot({ space: sp, slot: sl });
+          }
+        } else if (state.targetSpace !== null) {
+          state.targetSpace = null;
+          state.targetSlot = null;
+          setDragOverSlot(null);
+        }
+      };
+
+      // ---------- автопрокрутка у края ----------
+      const findScrollParent = (el: Element | null): HTMLElement | null => {
+        let n = el as HTMLElement | null;
+        while (n && n !== document.body) {
+          const oy = getComputedStyle(n).overflowY;
+          if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight) {
+            return n;
+          }
+          n = n.parentElement;
+        }
+        return null;
+      };
+      const tick = () => {
+        raf = 0;
+        if (!state.activated || cancelled || pointerDragRef.current !== state) {
+          return;
+        }
+        const sp = findScrollParent(document.elementFromPoint(lastX, lastY));
+        if (sp) {
+          const r = sp.getBoundingClientRect();
+          const edge = 56;
+          let dy = 0;
+          if (lastY < r.top + edge) {
+            dy = -Math.ceil((r.top + edge - lastY) / 4);
+          } else if (lastY > r.bottom - edge) {
+            dy = Math.ceil((lastY - (r.bottom - edge)) / 4);
+          }
+          if (dy !== 0) {
+            sp.scrollTop += dy;
+            updateTarget();
+          }
+        }
+        raf = window.requestAnimationFrame(tick);
+      };
+
       const activate = () => {
+        if (state.activated) return;
         state.activated = true;
         state.longPressTimer = null;
         setDraggedId(id);
+        createGhost();
+        moveGhost(lastX, lastY);
+        document.body.style.cursor = 'grabbing';
+        raf = window.requestAnimationFrame(tick);
         try {
           if ('vibrate' in navigator) navigator.vibrate(15);
         } catch {
@@ -770,15 +903,13 @@ export function MenuProduct() {
         }
       };
 
+      // Тач — активация по долгому тапу (350мс).
+      // Мышь — активация при первом движении > 5px (см. onMove),
+      //        чтобы клик без движения открывал редактор без «прыжка».
       if (isTouch) {
         state.longPressTimer = window.setTimeout(activate, 350);
-      } else {
-        state.activated = true;
-        setDraggedId(id);
       }
 
-      // Пока карточка захвачена — не даём браузеру прокручивать страницу
-      // и открывать контекстное меню (иначе тач-перетаскивание обрывается).
       const blockScroll = (ev: TouchEvent) => {
         if (state.activated && ev.cancelable) ev.preventDefault();
       };
@@ -790,45 +921,58 @@ export function MenuProduct() {
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
         document.removeEventListener('pointercancel', onUp);
+        document.removeEventListener('keydown', onKey);
         document.removeEventListener('touchmove', blockScroll);
         document.removeEventListener('contextmenu', blockMenu);
+        if (raf) window.cancelAnimationFrame(raf);
+        raf = 0;
+        removeGhost();
+        document.body.style.cursor = '';
+      };
+
+      const onKey = (ev: KeyboardEvent) => {
+        // Esc — отмена перетаскивания
+        if (ev.key !== 'Escape' || !state.activated) return;
+        cancelled = true;
+        state.targetSpace = null;
+        state.targetSlot = null;
+        setDragOverSlot(null);
+        removeGhost();
       };
 
       const onMove = (ev: PointerEvent) => {
         if (ev.pointerId !== pointerId) return;
+        lastX = ev.clientX;
+        lastY = ev.clientY;
 
         if (!state.activated) {
-          const dx = ev.clientX - startX;
-          const dy = ev.clientY - startY;
-          if (Math.hypot(dx, dy) > 10) {
-            if (state.longPressTimer) {
-              window.clearTimeout(state.longPressTimer);
-              state.longPressTimer = null;
+          const dist = Math.hypot(ev.clientX - startX, ev.clientY - startY);
+
+          if (isTouch) {
+            // Тач: движение до long-press = пользователь скроллит — отменяем drag
+            if (dist > 10) {
+              if (state.longPressTimer) {
+                window.clearTimeout(state.longPressTimer);
+                state.longPressTimer = null;
+              }
+              pointerDragRef.current = null;
+              cleanup();
             }
-            pointerDragRef.current = null;
-            cleanup();
+            return;
           }
-          return;
+
+          // Мышь: активация только при движении > 5px
+          if (dist > 5) {
+            activate();
+          } else {
+            return;
+          }
         }
 
         ev.preventDefault();
-
-        const el = document.elementFromPoint(ev.clientX, ev.clientY);
-        const cell = el?.closest('[data-slot-space]') as HTMLElement | null;
-
-        if (cell) {
-          const sp = cell.dataset.slotSpace as CategorySpace | undefined;
-          const sl = Number(cell.dataset.slotIndex);
-          if (sp && !Number.isNaN(sl)) {
-            state.targetSpace = sp;
-            state.targetSlot = sl;
-            setDragOverSlot({ space: sp, slot: sl });
-          }
-        } else {
-          state.targetSpace = null;
-          state.targetSlot = null;
-          setDragOverSlot(null);
-        }
+        if (cancelled) return;
+        moveGhost(ev.clientX, ev.clientY);
+        updateTarget();
       };
 
       const onUp = (ev: PointerEvent) => {
@@ -841,6 +985,7 @@ export function MenuProduct() {
 
         const shouldDrop =
           state.activated &&
+          !cancelled &&
           state.targetSpace !== null &&
           state.targetSlot !== null;
 
@@ -848,12 +993,13 @@ export function MenuProduct() {
           const sp = state.targetSpace!;
           const sl = state.targetSlot!;
           const cols = colsRef.current[sp] ?? 1;
-          void handleSlotDrop(sp, sl, cols);
+          void handleSlotDropRef.current(sp, sl, cols);
         } else {
           setDraggedId(null);
           setDragOverSlot(null);
         }
 
+        // handleSlotDrop читает pointerDragRef синхронно — сбрасываем после вызова
         pointerDragRef.current = null;
         cleanup();
       };
@@ -861,8 +1007,9 @@ export function MenuProduct() {
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
       document.addEventListener('pointercancel', onUp);
+      document.addEventListener('keydown', onKey);
     },
-    [handleSlotDrop]
+    []
   );
 
   const canMoveItem = useCallback(
@@ -903,13 +1050,34 @@ export function MenuProduct() {
     try {
       await deleteItem(pendingDelete.id);
       setPendingDelete(null);
-      loadData();
+      loadData(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : t('failedToDeleteItem'));
     } finally {
       setDeleting(false);
     }
   };
+
+  const handleDuplicate = async (itemId: string) => {
+    try {
+      const copy = await duplicateItem(itemId);
+      if (copy) await loadData(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось дублировать');
+    }
+  };
+
+  const openCardMenu = useCallback(
+    (x: number, y: number, item: MenuItem) => {
+      setCardMenu({
+        itemId: item.id,
+        itemName: item.name,
+        x,
+        y,
+      });
+    },
+    []
+  );
 
   const q = query.trim().toLowerCase();
   const leftList: { item: MenuItem; kind: 'dish' | 'set' }[] = [
@@ -1143,7 +1311,6 @@ export function MenuProduct() {
               size={layout.dishCardSize}
               compact={false}
               allTops={allTops}
-              items={items}
               draggedId={draggedId}
               dragOverSlot={dragOverSlot}
               setDragOverSlot={setDragOverSlot}
@@ -1155,6 +1322,7 @@ export function MenuProduct() {
               registerCols={registerCols}
               textSize={layout.itemTextSize}
               layout={layout}
+              onOpenCardMenu={openCardMenu}
             />
           </div>
 
@@ -1182,7 +1350,6 @@ export function MenuProduct() {
                     size={layout.toppingCardSize}
                     compact={true}
                     allTops={allTops}
-                    items={items}
                     draggedId={draggedId}
                     dragOverSlot={dragOverSlot}
                     setDragOverSlot={setDragOverSlot}
@@ -1194,6 +1361,7 @@ export function MenuProduct() {
                     registerCols={registerCols}
                     textSize={layout.itemTextSize}
                     layout={layout}
+                    onOpenCardMenu={openCardMenu}
                   />
                 </div>
               </div>
@@ -1231,7 +1399,6 @@ export function MenuProduct() {
                 size={layout.drinkCardSize}
                 compact={true}
                 allTops={allTops}
-                items={items}
                 draggedId={draggedId}
                 dragOverSlot={dragOverSlot}
                 setDragOverSlot={setDragOverSlot}
@@ -1243,6 +1410,7 @@ export function MenuProduct() {
                 registerCols={registerCols}
                 textSize={layout.itemTextSize}
                 layout={layout}
+                onOpenCardMenu={openCardMenu}
               />
             </div>
           </div>
@@ -1269,7 +1437,6 @@ export function MenuProduct() {
                 size={layout.sauceCardSize}
                 compact={true}
                 allTops={allTops}
-                items={items}
                 draggedId={draggedId}
                 dragOverSlot={dragOverSlot}
                 setDragOverSlot={setDragOverSlot}
@@ -1281,6 +1448,7 @@ export function MenuProduct() {
                 registerCols={registerCols}
                 textSize={layout.itemTextSize}
                 layout={layout}
+                onOpenCardMenu={openCardMenu}
               />
             </div>
           </div>
@@ -1292,12 +1460,12 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* COLUMN 4: ADD BUTTON + PANEL SETTINGS */}
+        {/* COLUMN 4: ADD BUTTON + STORAGE + PANEL SETTINGS */}
         <div
           className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.cartWidth }}
         >
-          <div className="p-3 border-b border-slate-200 shrink-0 bg-slate-50">
+          <div className="p-3 border-b border-slate-200 shrink-0 bg-slate-50 space-y-2">
             <button
               onClick={() => setPickingType(true)}
               className="w-full flex items-center justify-center gap-2 px-3 py-3.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-black shadow-lg shadow-orange-500/30 active:scale-[0.97] transition-all"
@@ -1305,6 +1473,8 @@ export function MenuProduct() {
               <Plus className="w-4 h-4" />
               {t('addProduct')}
             </button>
+
+            <StorageBar onImportComplete={() => loadData(true)} />
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto">
             <PanelSettings />
@@ -1332,7 +1502,7 @@ export function MenuProduct() {
           onSaved={() => {
             setFormType(null);
             setEditingItem(null);
-            loadData();
+            loadData(true);
           }}
           onDelete={
             editingItem
@@ -1343,6 +1513,24 @@ export function MenuProduct() {
                 }
               : undefined
           }
+        />
+      )}
+
+      {cardMenu && (
+        <MenuCardMenu
+          state={cardMenu}
+          onEdit={() => {
+            const item = items.find((i) => i.id === cardMenu.itemId);
+            if (item) startEdit(item);
+          }}
+          onDuplicate={() => {
+            void handleDuplicate(cardMenu.itemId);
+          }}
+          onDelete={() => {
+            const item = items.find((i) => i.id === cardMenu.itemId);
+            if (item) setPendingDelete(item);
+          }}
+          onClose={() => setCardMenu(null)}
         />
       )}
 
@@ -1381,270 +1569,6 @@ export function MenuProduct() {
     </div>
   );
 }
-
-// ============================================================
-// DRAGGABLE CARD
-// ============================================================
-const DraggableCard = memo(function DraggableCard({
-  item,
-  variants,
-  onEdit,
-  onVariantClick,
-  onPointerDragStart,
-  onMoveLeft,
-  onMoveRight,
-  canMoveLeft,
-  canMoveRight,
-  size,
-  textSize,
-  compact,
-  cardRadius,
-}: {
-  item: MenuItem;
-  variants?: MenuItem[];
-  onEdit: (i: MenuItem) => void;
-  onVariantClick?: (v: MenuItem) => void;
-  onPointerDragStart: (e: React.PointerEvent, id: string) => void;
-  onMoveLeft?: () => void;
-  onMoveRight?: () => void;
-  canMoveLeft?: boolean;
-  canMoveRight?: boolean;
-  size: number;
-  textSize: number;
-  compact?: boolean;
-  cardRadius: number;
-}) {
-  const { t } = useI18n();
-  const isGroup = (variants?.length ?? 0) > 0;
-  const nameSize = compact ? Math.max(8, textSize - 2) : textSize;
-  const priceSize = compact ? Math.max(8, textSize - 2) : textSize;
-
-  const leftBtn = (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        onMoveLeft?.();
-      }}
-      onPointerDown={(e) => e.stopPropagation()}
-      disabled={!canMoveLeft}
-      className={`absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-20 w-7 h-7 rounded-full border-2 shadow-md flex items-center justify-center transition-all ${
-        canMoveLeft
-          ? 'bg-white border-slate-300 opacity-70 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
-          : 'bg-slate-100 border-slate-200 opacity-30 cursor-not-allowed'
-      }`}
-      title={canMoveLeft ? t('moveLeftTitle') : t('moveLeftBusy')}
-    >
-      <ChevronLeft
-        className={`w-4 h-4 ${
-          canMoveLeft ? 'text-slate-700' : 'text-slate-400'
-        }`}
-      />
-    </button>
-  );
-
-  const rightBtn = (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        onMoveRight?.();
-      }}
-      onPointerDown={(e) => e.stopPropagation()}
-      disabled={!canMoveRight}
-      className={`absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-20 w-7 h-7 rounded-full border-2 shadow-md flex items-center justify-center transition-all ${
-        canMoveRight
-          ? 'bg-white border-slate-300 opacity-70 group-hover:opacity-100 hover:bg-orange-100 hover:border-orange-400 cursor-pointer'
-          : 'bg-slate-100 border-slate-200 opacity-30 cursor-not-allowed'
-      }`}
-      title={canMoveRight ? t('moveRightTitle') : t('moveRightBusy')}
-    >
-      <ChevronRight
-        className={`w-4 h-4 ${
-          canMoveRight ? 'text-slate-700' : 'text-slate-400'
-        }`}
-      />
-    </button>
-  );
-
-  const dragProps = {
-    onPointerDown: (e: React.PointerEvent) => onPointerDragStart(e, item.id),
-    style: {
-      touchAction: 'manipulation' as const,
-      WebkitTouchCallout: 'none' as const,
-      userSelect: 'none' as const,
-    },
-  };
-
-  if (!isGroup) {
-    const hasImage = Boolean(item.image_url);
-    return (
-      <div className="relative group" style={{ width: size }}>
-        <div
-          {...dragProps}
-          onClick={() => onEdit(item)}
-          className="flex flex-col items-center select-none cursor-pointer"
-        >
-          <div
-            className={`relative overflow-hidden border-2 border-white shadow-md hover:shadow-xl transition-all ${
-              hasImage
-                ? 'bg-white'
-                : 'bg-gradient-to-br from-orange-500 to-red-500'
-            }`}
-            style={{
-              width: size,
-              height: size,
-              borderRadius: cardRadius,
-            }}
-          >
-            {hasImage ? (
-              <img
-                src={item.image_url ?? ''}
-                alt={item.name}
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                loading="lazy"
-                draggable={false}
-              />
-            ) : null}
-            {!item.active && (
-              <div className="absolute inset-0 bg-slate-900/70 backdrop-blur-[1px] flex items-center justify-center">
-                <span
-                  className="text-white font-black tracking-widest"
-                  style={{ fontSize: Math.max(8, nameSize - 2) }}
-                >
-                  {t('menuInactiveBadge')}
-                </span>
-              </div>
-            )}
-            {item.type === 'sauce' && item.color && !hasImage && (
-              <div
-                className="absolute inset-0"
-                style={{ backgroundColor: item.color, opacity: 0.3 }}
-              />
-            )}
-          </div>
-          <div
-            className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
-            style={{ fontSize: nameSize }}
-            title={item.name}
-          >
-            {item.short_name || item.name}
-          </div>
-          <div
-            className="mt-0.5 text-center font-black text-orange-600 w-full leading-none"
-            style={{ fontSize: priceSize }}
-          >
-            {item.free ? '' : formatYen(item.price)}
-          </div>
-        </div>
-        {leftBtn}
-        {rightBtn}
-      </div>
-    );
-  }
-
-  const headerH = nameSize + 8;
-
-  return (
-    <div className="relative group" style={{ width: '100%' }}>
-      <div
-        {...dragProps}
-        style={{
-          width: '100%',
-          minHeight: headerH + size + nameSize * 2 + 4,
-          touchAction: 'manipulation',
-          WebkitTouchCallout: 'none',
-          userSelect: 'none',
-        }}
-        className="bg-white transition-all select-none cursor-pointer shadow-md ring-1 ring-slate-300 hover:ring-orange-400 flex flex-col overflow-hidden"
-      >
-        <button
-          onClick={() => onEdit(item)}
-          onPointerDown={(e) => e.stopPropagation()}
-          className="flex items-center justify-between w-full px-2 py-1 border-b border-slate-200 bg-slate-50 hover:bg-orange-50 transition-colors shrink-0 leading-none"
-          style={{
-            borderTopLeftRadius: cardRadius,
-            borderTopRightRadius: cardRadius,
-          }}
-        >
-          <span
-            className="font-black text-slate-900 tracking-wide truncate text-left leading-none"
-            style={{ fontSize: nameSize }}
-          >
-            {item.name}
-          </span>
-          {item.type === 'set' && (
-            <span
-              className="font-black bg-orange-500 text-white px-1.5 rounded-full shrink-0 ml-1 leading-none py-0.5"
-              style={{ fontSize: Math.max(7, nameSize - 3) }}
-            >
-              SET
-            </span>
-          )}
-        </button>
-
-        <div className="flex items-stretch" style={{ gap: 8 }}>
-          {variants!.map((v) => {
-            const hasImage = Boolean(v.image_url);
-            const src = v.image_url || '';
-            return (
-              <div
-                key={v.id}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onVariantClick) onVariantClick(v);
-                  else onEdit(v);
-                }}
-                onPointerDown={(e) => e.stopPropagation()}
-                style={{ width: size, flex: '0 0 auto' }}
-                className="flex flex-col items-center cursor-pointer active:scale-95 transition-transform"
-              >
-                <div
-                  className={`relative overflow-hidden border-2 border-white shadow-md hover:shadow-xl transition-all ${
-                    hasImage
-                      ? 'bg-white'
-                      : 'bg-gradient-to-br from-orange-500 to-red-500'
-                  }`}
-                  style={{
-                    width: size,
-                    height: size,
-                    borderRadius: cardRadius,
-                  }}
-                >
-                  {hasImage && (
-                    <img
-                      src={src}
-                      alt={v.name}
-                      className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                      loading="lazy"
-                      draggable={false}
-                    />
-                  )}
-                </div>
-                <div
-                  className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
-                  style={{ fontSize: nameSize }}
-                >
-                  {v.name}
-                </div>
-                <div
-                  className="mt-0.5 text-center font-black text-orange-600 w-full leading-none"
-                  style={{ fontSize: priceSize }}
-                >
-                  {v.free ? '' : formatYen(v.price)}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      {leftBtn}
-      {rightBtn}
-    </div>
-  );
-});
 
 // ============================================================
 // TYPE PICKER
@@ -2217,6 +2141,18 @@ function ItemFormModal({
     if (isBusy) return;
     onClose();
   };
+
+  // Ctrl/Cmd + Enter — быстро сохранить
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (!(ev.ctrlKey || ev.metaKey) || ev.key !== 'Enter') return;
+      if (cropState || saving || !name || pendingOpsCount > 0) return;
+      ev.preventDefault();
+      void handleSave();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  });
 
   return (
     <>
@@ -3065,6 +3001,7 @@ function ItemFormModal({
               </button>
               <button
                 onClick={handleSave}
+                title="Ctrl + Enter"
                 disabled={saving || !name || pendingOpsCount > 0}
                 className="flex-1 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold shadow-md shadow-orange-500/30 disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
