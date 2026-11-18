@@ -91,7 +91,7 @@ export function MenuCardMenu({
       style={{ left: pos.left, top: pos.top }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="px-3 py-1.5 text-[10px] font-black text-slate-400 uppercase tracking-wider truncate">
+      <div className="px-3 py-1.5 text-[0.625rem] font-black text-slate-400 uppercase tracking-wider truncate">
         {state.itemName}
       </div>
 

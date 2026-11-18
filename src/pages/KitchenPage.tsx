@@ -17,21 +17,21 @@ import {
   emitUpdateStatus,
 } from '@/lib/localStore';
 import { useI18n, type TranslationKey, type Lang } from '@/locale';
-import type { Order, OrderStatus } from '@/types/database';
+import type { Order, OrderStatus, OrderType } from '@/types/database';
 import {
   ChefHat,
   Clock,
   CheckCircle2,
-  ShoppingBag,
-  Store,
   Undo2,
   AlertTriangle,
+  Pencil,
+  Bell,
 } from 'lucide-react';
 
 const FRESH_MS = 15_000;
 const CRITICAL_MIN = 10;
+const MODIFIED_MS = 30_000;
 
-// Ширина карточки + отступ между карточками (для стрелок скролла)
 const CARD_W = 360;
 const CARD_GAP = 16;
 
@@ -47,7 +47,7 @@ interface Urgency {
   headerBg: string;
   cardBg: string;
   ring: string;
-  label: string;
+  labelKey: TranslationKey;
   pulse: boolean;
 }
 
@@ -65,7 +65,7 @@ function getUrgency(createdAt: string, now: number): Urgency {
       headerBg: 'bg-gradient-to-r from-red-700 to-red-600',
       cardBg: 'bg-red-50',
       ring: 'ring-red-600/40',
-      label: 'СРОЧНО!',
+      labelKey: 'urgencyCritical',
       pulse: true,
     };
   }
@@ -77,7 +77,7 @@ function getUrgency(createdAt: string, now: number): Urgency {
       headerBg: 'bg-gradient-to-r from-red-600 to-red-500',
       cardBg: 'bg-red-50',
       ring: 'ring-red-500/30',
-      label: 'ЗАДЕРЖКА',
+      labelKey: 'urgencyDelay',
       pulse: false,
     };
   }
@@ -89,7 +89,7 @@ function getUrgency(createdAt: string, now: number): Urgency {
       headerBg: 'bg-gradient-to-r from-amber-500 to-yellow-400',
       cardBg: 'bg-amber-50',
       ring: 'ring-amber-400/30',
-      label: 'В РАБОТЕ',
+      labelKey: 'urgencyInWork',
       pulse: false,
     };
   }
@@ -100,21 +100,18 @@ function getUrgency(createdAt: string, now: number): Urgency {
     headerBg: 'bg-gradient-to-r from-emerald-600 to-green-500',
     cardBg: 'bg-white',
     ring: 'ring-emerald-500/20',
-    label: 'СВЕЖИЙ',
+    labelKey: 'urgencyFresh',
     pulse: false,
   };
 }
 
 // ============================================================
-// СКЛОНЕНИЕ "заказ / заказа / заказов"
+// ЭМОДЗИ ТИПА ЗАКАЗА
 // ============================================================
-function pluralZakaz(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return 'заказ';
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20))
-    return 'заказа';
-  return 'заказов';
+function typeEmoji(t: OrderType): string {
+  if (t === 'INSIDE') return '🍽️';
+  if (t === 'ON_THE_WAY') return '🚶';
+  return '🥡';
 }
 
 // ============================================================
@@ -133,9 +130,11 @@ export default function KitchenPage() {
 
   const undoStack = useUndoStack('kitchen');
 
-  // На телефоне карточка занимает почти всю ширину экрана
-  const { width: vw } = useViewport();
-  const cardW = Math.min(CARD_W, Math.max(240, vw - 32));
+  const { width: vw, scale: ui } = useViewport();
+  const cardW = Math.min(
+    Math.round(CARD_W * ui),
+    Math.max(200, vw - Math.round(32 * ui))
+  );
 
   // ---------- Подписка на заказы ----------
   useEffect(() => {
@@ -160,12 +159,10 @@ export default function KitchenPage() {
     return () => window.clearInterval(id);
   }, []);
 
-  // ---------- Все активные заказы ----------
   const rawKitchen = orders.filter(
     (o) => o.status === 'NEW' || o.status === 'PREPARING'
   );
 
-  // ---------- Отслеживание «новизны» ----------
   const seen = seenRef.current;
   if (!loading) {
     const current = new Set(rawKitchen.map((o) => o.id));
@@ -185,7 +182,6 @@ export default function KitchenPage() {
     initializedRef.current = true;
   }
 
-  // ---------- НОВЫЕ СЛЕВА: сортировка по created_at DESC ----------
   const kitchen = [...rawKitchen].sort(
     (a, b) =>
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
@@ -196,11 +192,12 @@ export default function KitchenPage() {
     return at > 0 && now - at < FRESH_MS;
   };
 
-  const freshOrders = kitchen.filter((o) => isFresh(o.id));
-
-  const criticalCount = kitchen.filter(
-    (o) => getUrgency(o.created_at, now).level === 'critical'
-  ).length;
+  const isModified = (order: Order): boolean => {
+    const created = new Date(order.created_at).getTime();
+    const updated = new Date(order.updated_at).getTime();
+    if (updated <= created + 1000) return false;
+    return now - updated < MODIFIED_MS;
+  };
 
   // ---------- Действия ----------
   const handleReady = async (order: Order) => {
@@ -260,17 +257,12 @@ export default function KitchenPage() {
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
       <style>{`
-        /* ============================================ */
-        /* ВСЁ ПЛАВНОЕ — никаких steps, никаких вспышек */
-        /* ============================================ */
-
         @keyframes kitchen-card-in {
           from { opacity: 0; transform: translateY(6px); }
           to   { opacity: 1; transform: translateY(0); }
         }
         .kitchen-card-in { animation: kitchen-card-in 0.3s ease-out; }
 
-        /* Плавное мигание фона новых (мягкое, 2 сек) */
         @keyframes kitchen-flash {
           0%, 100% {
             background-color: #fef9c3;
@@ -281,80 +273,99 @@ export default function KitchenPage() {
             box-shadow: 0 4px 20px rgba(249, 115, 22, 0.35);
           }
         }
-        .kitchen-flash {
-          animation: kitchen-flash 2s ease-in-out infinite;
-        }
+        .kitchen-flash { animation: kitchen-flash 2s ease-in-out infinite; }
 
-        /* Жёлто-оранжевый баннер «НОВЫЙ ЗАКАЗ» (плавный) */
         @keyframes kitchen-fresh-banner {
-          0%, 100% {
-            background-color: #fbbf24;
-            color: #78350f;
-          }
-          50% {
-            background-color: #f97316;
-            color: #ffffff;
-          }
+          0%, 100% { background-color: #fbbf24; color: #78350f; }
+          50%      { background-color: #f97316; color: #ffffff; }
         }
-        .kitchen-fresh-banner {
-          animation: kitchen-fresh-banner 2s ease-in-out infinite;
-        }
-
-        /* ============================================ */
-        /* КРАСНАЯ МИГАЮЩАЯ ПЛАШКА — СРОЧНЫЕ            */
-        /* ============================================ */
-        @keyframes kitchen-critical-banner {
-          0%, 100% {
-            background: linear-gradient(90deg, #dc2626 0%, #b91c1c 100%);
-            box-shadow: 0 4px 16px rgba(220, 38, 38, 0.4);
-          }
-          50% {
-            background: linear-gradient(90deg, #7f1d1d 0%, #450a0a 100%);
-            box-shadow: 0 4px 24px rgba(127, 29, 29, 0.6);
-          }
-        }
-        .kitchen-critical-banner {
-          animation: kitchen-critical-banner 1.2s ease-in-out infinite;
-        }
+        .kitchen-fresh-banner { animation: kitchen-fresh-banner 2s ease-in-out infinite; }
 
         @keyframes kitchen-icon-pulse {
           0%, 100% { opacity: 1; transform: scale(1); }
           50%      { opacity: 0.75; transform: scale(1.08); }
         }
-        .kitchen-icon-pulse {
-          animation: kitchen-icon-pulse 1.2s ease-in-out infinite;
-        }
+        .kitchen-icon-pulse { animation: kitchen-icon-pulse 1.2s ease-in-out infinite; }
 
-        /* Critical (10+ мин) — мягкая пульсация карточки */
         @keyframes kitchen-critical-pulse {
-          0%, 100% {
-            box-shadow: 0 4px 16px rgba(220, 38, 38, 0.25);
-          }
-          50% {
-            box-shadow: 0 6px 24px rgba(220, 38, 38, 0.5);
-          }
+          0%, 100% { box-shadow: 0 4px 16px rgba(220, 38, 38, 0.25); }
+          50%      { box-shadow: 0 6px 24px rgba(220, 38, 38, 0.5); }
         }
-        .kitchen-critical {
-          animation: kitchen-critical-pulse 2.2s ease-in-out infinite;
-        }
+        .kitchen-critical { animation: kitchen-critical-pulse 2.2s ease-in-out infinite; }
 
         @keyframes kitchen-critical-header {
           0%, 100% { filter: brightness(1); }
           50%      { filter: brightness(1.08); }
         }
-        .kitchen-critical-header {
-          animation: kitchen-critical-header 2.2s ease-in-out infinite;
+        .kitchen-critical-header { animation: kitchen-critical-header 2.2s ease-in-out infinite; }
+
+        @keyframes kitchen-modified-blink {
+          0%, 100% {
+            border-color: #f97316;
+            box-shadow:
+              0 0 0 4px rgba(249, 115, 22, 0.25),
+              0 8px 24px rgba(249, 115, 22, 0.35);
+          }
+          50% {
+            border-color: #ea580c;
+            box-shadow:
+              0 0 0 10px rgba(249, 115, 22, 0.55),
+              0 8px 32px rgba(249, 115, 22, 0.7);
+          }
+        }
+        .kitchen-modified { animation: kitchen-modified-blink 1.1s ease-in-out infinite; }
+
+        @keyframes kpulse-soft {
+          0%, 100% { opacity: 1; }
+          50%      { opacity: 0.45; }
+        }
+        .animate-kpulse-soft { animation: kpulse-soft 1.4s ease-in-out infinite; }
+
+        @keyframes kpulse-amber {
+          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.65); }
+          50%      { opacity: 0.6; box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+        }
+        .animate-kpulse-amber { animation: kpulse-amber 1.1s ease-in-out infinite; }
+
+        @keyframes kpulse-urgent {
+          0%, 100% {
+            opacity: 1;
+            transform: scale(1);
+            box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.75);
+          }
+          50% {
+            opacity: 0.55;
+            transform: scale(1.06);
+            box-shadow: 0 0 0 7px rgba(220, 38, 38, 0);
+          }
+        }
+        .animate-kpulse-urgent { animation: kpulse-urgent 0.9s ease-in-out infinite; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .animate-kpulse-soft,
+          .animate-kpulse-amber,
+          .animate-kpulse-urgent,
+          .kitchen-flash,
+          .kitchen-modified,
+          .kitchen-critical,
+          .kitchen-fresh-banner,
+          .kitchen-icon-pulse,
+          .kitchen-critical-header {
+            animation: none !important;
+          }
         }
       `}</style>
 
       {/* ============================================ */}
-      {/* ВЕРХНЯЯ ПАНЕЛЬ                                */}
+      {/* ВЕРХНЯЯ ПАНЕЛЬ (портал в App header)         */}
       {/* ============================================ */}
       <PageActions forRole="kitchen">
         <div className="flex items-center gap-2 sm:gap-2.5 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-white text-slate-900 font-black shadow-md border-2 border-slate-200">
           <ChefHat className="w-5 h-5 sm:w-6 sm:h-6 text-orange-500" />
-          <span className="hidden sm:inline text-base">Заказов</span>
-          <span className="text-xl sm:text-2xl tabular-nums">{kitchen.length}</span>
+          <span className="hidden sm:inline text-base">{t('ordersCount')}</span>
+          <span className="text-xl sm:text-2xl tabular-nums">
+            {kitchen.length}
+          </span>
         </div>
 
         <button
@@ -383,32 +394,6 @@ export default function KitchenPage() {
       </PageActions>
 
       {/* ============================================ */}
-      {/* 🚨 КРАСНАЯ МИГАЮЩАЯ ПЛАШКА — СРОЧНЫЕ         */}
-      {/* ============================================ */}
-      {criticalCount > 0 && (
-        <div className="kitchen-critical-banner shrink-0 px-3 py-2 sm:px-4 sm:py-4 shadow-lg">
-          <div className="flex items-center justify-center gap-2 sm:gap-3 text-white">
-            <AlertTriangle className="w-6 h-6 sm:w-8 sm:h-8 kitchen-icon-pulse shrink-0" />
-            <span className="text-sm sm:text-2xl xl:text-3xl font-black uppercase tracking-wider text-center">
-              СРОЧНО! {criticalCount} {pluralZakaz(criticalCount)} ждёт больше{' '}
-              {CRITICAL_MIN} минут
-            </span>
-            <AlertTriangle className="w-6 h-6 sm:w-8 sm:h-8 kitchen-icon-pulse shrink-0" />
-          </div>
-        </div>
-      )}
-
-      {/* ============================================ */}
-      {/* ЖЁЛТЫЙ БАННЕР «НОВЫЙ ЗАКАЗ»                  */}
-      {/* ============================================ */}
-      {freshOrders.length > 0 && (
-        <div className="kitchen-fresh-banner shrink-0 px-3 py-2 sm:px-4 sm:py-3 text-center text-base sm:text-2xl font-black uppercase tracking-wider shadow-md">
-          🔔 {lang === 'ru' ? 'Новый заказ' : 'New order'}:{' '}
-          {freshOrders.map((o) => `#${o.order_number}`).join(' · ')}
-        </div>
-      )}
-
-      {/* ============================================ */}
       {/* ОШИБКА                                        */}
       {/* ============================================ */}
       {error && (
@@ -433,11 +418,15 @@ export default function KitchenPage() {
       ) : kitchen.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
           <ChefHat className="w-20 h-20 sm:w-32 sm:h-32 mb-4 sm:mb-6 opacity-30" />
-          <p className="text-2xl sm:text-4xl font-black">Нет заказов</p>
-          <p className="text-base sm:text-xl mt-2 px-4 text-center">Ожидание заказов от кассы...</p>
+          <p className="text-2xl sm:text-4xl font-black">
+            {t('noOrdersTitle')}
+          </p>
+          <p className="text-base sm:text-xl mt-2 px-4 text-center">
+            {t('waitingForOrders')}
+          </p>
         </div>
       ) : (
-        <KitchenScroller itemWidth={cardW + CARD_GAP}>
+        <KitchenScroller itemWidth={cardW + Math.round(CARD_GAP * ui)}>
           <div className="flex gap-4 items-stretch h-full">
             {kitchen.map((order) => (
               <div
@@ -449,6 +438,7 @@ export default function KitchenPage() {
                   order={order}
                   now={now}
                   fresh={isFresh(order.id)}
+                  modified={isModified(order)}
                   onReady={handleReady}
                   lang={lang}
                   t={t}
@@ -493,6 +483,7 @@ function KitchenOrderCard({
   order,
   now,
   fresh,
+  modified,
   onReady,
   lang,
   t,
@@ -500,6 +491,7 @@ function KitchenOrderCard({
   order: Order;
   now: number;
   fresh: boolean;
+  modified: boolean;
   onReady: (order: Order) => void;
   lang: Lang;
   t: (key: TranslationKey) => string;
@@ -507,56 +499,82 @@ function KitchenOrderCard({
   const urgency = getUrgency(order.created_at, now);
   const isInside = order.order_type === 'INSIDE';
   const isCritical = urgency.level === 'critical';
+  const emoji = typeEmoji(order.order_type);
+
+  const blinkClass = fresh
+    ? 'kitchen-flash'
+    : modified
+    ? 'kitchen-modified'
+    : isCritical
+    ? 'kitchen-critical'
+    : 'kitchen-card-in';
 
   return (
     <div
-      className={`rounded-2xl border-4 ${urgency.border} ${
-        urgency.cardBg
-      } shadow-lg flex flex-col overflow-hidden ring-2 ${
-        urgency.ring
-      } h-full transition-shadow duration-500 ${
-        fresh ? 'kitchen-flash' : 'kitchen-card-in'
-      } ${isCritical && !fresh ? 'kitchen-critical' : ''}`}
+      className={`rounded-2xl border-4 ${urgency.border} ${urgency.cardBg} shadow-lg flex flex-col overflow-hidden ring-2 ${urgency.ring} h-full transition-shadow duration-500 ${blinkClass}`}
     >
       {fresh && (
         <div className="kitchen-fresh-banner text-center text-lg font-black tracking-[0.25em] py-1.5">
-          🔔 {lang === 'ru' ? 'НОВЫЙ ЗАКАЗ' : 'NEW ORDER'}
+          🔔 {t('newOrderBadge')}
         </div>
       )}
 
       {/* ШАПКА */}
       <div
-        className={`${urgency.headerBg} text-white px-4 py-3 flex items-center justify-between gap-3 shrink-0 ${
-          isCritical ? 'kitchen-critical-header' : ''
+        className={`${urgency.headerBg} text-white px-4 py-3 flex items-start justify-between gap-3 shrink-0 ${
+          isCritical && !fresh ? 'kitchen-critical-header' : ''
         }`}
       >
-        <div className="flex flex-col">
-          <span className="text-5xl sm:text-6xl xl:text-7xl font-black leading-none tabular-nums drop-shadow-lg">
-            #{order.order_number}
-          </span>
-          <span className="mt-1 text-xs font-black uppercase tracking-[0.2em] opacity-90">
-            {urgency.label}
+        <div className="flex flex-col min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-3xl sm:text-4xl xl:text-5xl font-black leading-none tabular-nums drop-shadow-lg">
+              #{order.order_number}
+            </span>
+            <span
+              className="text-4xl sm:text-5xl xl:text-6xl leading-none drop-shadow-lg select-none"
+              aria-label={order.order_type}
+            >
+              {emoji}
+            </span>
+          </div>
+          <span className="mt-1 text-sm font-black uppercase tracking-wide opacity-95 truncate">
+            {isInside
+              ? t('orderTypeInside')
+              : order.order_type === 'ON_THE_WAY'
+              ? t('orderTypeOnTheWay')
+              : t('orderTypeOutside')}
           </span>
         </div>
 
-        <div className="flex flex-col items-end gap-1.5">
-          <span className="flex items-center gap-1.5 text-base font-black uppercase tracking-wide px-2.5 py-1 rounded-lg bg-white text-slate-900 shadow-sm whitespace-nowrap">
-            {isInside ? (
-              <Store className="w-4 h-4" />
-            ) : (
-              <ShoppingBag className="w-4 h-4" />
-            )}
-            {isInside ? t('orderTypeInside') : t('orderTypeOutside')}
-          </span>
-          <span className="flex items-center gap-1.5 text-lg font-black tabular-nums whitespace-nowrap">
-            <Clock className="w-4 h-4" />
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          {modified && !fresh ? (
+            <span className="animate-kpulse-amber inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md">
+              <Pencil className="w-3 h-3" />
+              {t('modified')}
+            </span>
+          ) : isCritical && !fresh ? (
+            <span className="animate-kpulse-urgent inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-700 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md">
+              <AlertTriangle className="w-3 h-3" />
+              {t('urgencyCritical')} · {urgency.min}м
+            </span>
+          ) : fresh ? (
+            <span className="animate-kpulse-soft inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md">
+              <Bell className="w-3 h-3" />
+              {t('newOrderBadge')}
+            </span>
+          ) : null}
+
+          <span className="flex items-center gap-1 text-sm font-black tabular-nums whitespace-nowrap opacity-95">
+            <Clock className="w-3.5 h-3.5" />
             {formatTimeAgo(order.created_at, lang)}
           </span>
         </div>
       </div>
 
-      {/* ПОЗИЦИИ */}
-      <div className="flex-1 px-4 py-2 overflow-y-auto">
+      {/* ============================================ */}
+      {/* ПОЗИЦИИ — УМЕНЬШЕННЫЙ ТЕКСТ                   */}
+      {/* ============================================ */}
+      <div className="flex-1 px-3 py-1.5 overflow-y-auto">
         {order.order_items?.map((item, idx) => {
           const displayName = item.variant
             ? `${item.name} ${item.variant}`
@@ -567,13 +585,14 @@ function KitchenOrderCard({
           return (
             <div
               key={idx}
-              className={`py-3 border-b-2 border-slate-200/70 last:border-b-0 ${
-                isNew && !removed ? '-mx-4 px-4 bg-orange-100/80' : ''
+              className={`py-1.5 border-b border-slate-200/70 last:border-b-0 ${
+                isNew && !removed ? '-mx-3 px-3 bg-orange-100/80' : ''
               } ${removed ? 'opacity-60' : ''}`}
             >
-              <div className="flex items-start gap-3">
+              <div className="flex items-start gap-2">
+                {/* Бейдж количества — маленький */}
                 <span
-                  className={`inline-flex items-center justify-center min-w-[2.75rem] h-11 px-2 rounded-xl text-2xl font-black shrink-0 tabular-nums shadow-md ${
+                  className={`inline-flex items-center justify-center min-w-[1.9rem] h-7 px-1.5 rounded-md text-sm font-black shrink-0 tabular-nums shadow-sm ${
                     removed
                       ? 'bg-slate-300 text-slate-600'
                       : 'bg-slate-900 text-white'
@@ -583,8 +602,9 @@ function KitchenOrderCard({
                 </span>
 
                 <div className="flex-1 min-w-0">
+                  {/* Название блюда — компактнее */}
                   <div
-                    className={`text-xl sm:text-2xl font-black leading-tight break-words ${
+                    className={`text-sm sm:text-base font-black leading-tight break-words ${
                       removed
                         ? 'text-red-700 line-through'
                         : isNew
@@ -597,7 +617,7 @@ function KitchenOrderCard({
 
                   {(removed || isNew) && (
                     <span
-                      className={`inline-block mt-1 text-sm font-black uppercase px-2 py-0.5 rounded ${
+                      className={`inline-block mt-0.5 text-[10px] font-black uppercase px-1.5 py-0 rounded ${
                         removed
                           ? 'bg-red-600 text-white'
                           : 'bg-orange-500 text-white'
@@ -607,12 +627,13 @@ function KitchenOrderCard({
                     </span>
                   )}
 
+                  {/* Опции (соус/капуста/напиток) — мелкие */}
                   {item.options && item.options.length > 0 && (
-                    <div className="mt-1.5 space-y-0.5">
+                    <div className="mt-0.5 space-y-0">
                       {item.options.map((o, optIdx) => (
                         <div
                           key={optIdx}
-                          className="text-lg font-extrabold text-slate-800 flex items-baseline gap-2 leading-snug"
+                          className="text-xs sm:text-sm font-bold text-slate-700 flex items-baseline gap-1 leading-snug"
                         >
                           <span className="text-orange-600 font-black">+</span>
                           <span>
@@ -634,12 +655,12 @@ function KitchenOrderCard({
         })}
       </div>
 
-      {/* КОММЕНТАРИЙ */}
+      {/* КОММЕНТАРИЙ — компактнее */}
       {order.comment && order.comment.trim() && (
-        <div className="mx-4 mb-3 p-3 rounded-xl bg-yellow-300 border-2 border-yellow-600 text-lg font-black text-slate-900 leading-snug flex items-start gap-2 shadow-inner shrink-0">
-          <AlertTriangle className="w-5 h-5 text-red-700 shrink-0 mt-0.5" />
+        <div className="mx-3 mb-2 px-2 py-1.5 rounded-lg bg-yellow-300 border border-yellow-600 text-sm font-black text-slate-900 leading-snug flex items-start gap-1.5 shadow-inner shrink-0">
+          <AlertTriangle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
           <div>
-            <div className="text-[10px] font-black uppercase tracking-widest text-red-700">
+            <div className="text-[9px] font-black uppercase tracking-widest text-red-700">
               {t('note')}
             </div>
             {order.comment}

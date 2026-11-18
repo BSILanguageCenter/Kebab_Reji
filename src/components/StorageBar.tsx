@@ -1,148 +1,128 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Database, Download, Upload, AlertTriangle } from 'lucide-react';
+// src/components/StorageBar.tsx
+import { useEffect, useState } from 'react';
+import { Database, Cloud, Image, ListChecks, RefreshCw } from 'lucide-react';
 import { getStorageInfo } from '@/lib/storageUsage';
-
-const STORAGE_KEY = 'kebab-pos-data-v1';
+import { getSyncStatus } from '@/services/googleSheetsSync';
+import { useI18n } from '@/locale';
+import type { SyncStatusSnapshot } from '@/types/sync';
 
 export function StorageBar({
   onImportComplete,
 }: {
   onImportComplete?: () => void;
 }) {
-  const [info, setInfo] = useState(() => getStorageInfo());
-  const [busy, setBusy] = useState(false);
+  const { lang } = useI18n();
+  const ru = lang === 'ru';
 
-  const refresh = useCallback(() => {
-    setInfo(getStorageInfo());
+  const [info, setInfo] = useState(getStorageInfo);
+  const [syncStatus, setSyncStatus] =
+    useState<SyncStatusSnapshot>(getSyncStatus);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setInfo(getStorageInfo());
+      setSyncStatus(getSyncStatus());
+    }, 2000);
+    return () => window.clearInterval(id);
   }, []);
 
   useEffect(() => {
-    const id = window.setInterval(refresh, 2000);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+    void onImportComplete;
+  }, [onImportComplete]);
 
-  const danger = info.usedPct > 85;
-  const warn = info.usedPct > 65;
-
-  const barColor = danger
-    ? 'bg-red-500'
-    : warn
-    ? 'bg-amber-500'
-    : 'bg-green-500';
-
-  const bgClass = danger
-    ? 'bg-red-50 border-red-300'
-    : warn
-    ? 'bg-amber-50 border-amber-300'
-    : 'bg-slate-50 border-slate-200';
-
-  const handleExport = () => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      alert('Нечего экспортировать — данных нет');
-      return;
-    }
-    const blob = new Blob([raw], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const date = new Date().toISOString().slice(0, 10);
-    a.href = url;
-    a.download = `kebab-pos-backup-${date}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImport = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/json,.json';
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-      setBusy(true);
-      try {
-        const text = await file.text();
-        const parsed = JSON.parse(text);
-        if (!parsed || typeof parsed !== 'object') {
-          throw new Error('Неверный формат файла');
-        }
-        if (!Array.isArray(parsed.menuItems)) {
-          throw new Error('Файл не содержит "menuItems"');
-        }
-        if (
-          !window.confirm(
-            'Заменить текущее меню и заказы данными из файла? Действие необратимо.'
-          )
-        ) {
-          return;
-        }
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-        refresh();
-        onImportComplete?.();
-        alert('Импорт завершён ✓');
-      } catch (err) {
-        alert(
-          'Ошибка импорта: ' +
-            (err instanceof Error ? err.message : String(err))
-        );
-      } finally {
-        setBusy(false);
-      }
-    };
-    input.click();
-  };
+  const barColor =
+    info.usedPct < 50
+      ? 'bg-green-500'
+      : info.usedPct < 80
+      ? 'bg-yellow-500'
+      : 'bg-red-500';
 
   return (
-    <div className={`rounded-xl border ${bgClass} p-2.5`}>
-      <div className="flex items-center gap-2 mb-1.5">
-        <Database className="w-3.5 h-3.5 text-slate-600 shrink-0" />
-        <span className="text-[11px] font-bold text-slate-700 truncate">
-          {info.usedMB} / {info.totalMB} МБ · {info.usedPct.toFixed(0)}%
-        </span>
-        {danger && (
-          <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
-        )}
-        <div className="flex-1" />
-        <button
-          onClick={handleExport}
-          disabled={busy}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-[10px] font-bold text-slate-700 disabled:opacity-40 transition-colors shrink-0"
-          title="Скачать меню и заказы в JSON"
-        >
-          <Download className="w-3 h-3" />
-          Экспорт
-        </button>
-        <button
-          onClick={handleImport}
-          disabled={busy}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-[10px] font-bold text-slate-700 disabled:opacity-40 transition-colors shrink-0"
-          title="Загрузить меню из JSON-файла"
-        >
-          <Upload className="w-3 h-3" />
-          Импорт
-        </button>
+    <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-[0.6875rem]">
+      {/* localStorage */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center gap-1 font-black uppercase tracking-wider text-slate-600">
+            <Database className="w-3 h-3" />
+            localStorage
+          </div>
+          <div className="font-mono tabular-nums text-slate-500">
+            {info.usedMB} / {info.totalMB} MB
+          </div>
+        </div>
+        <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${barColor}`}
+            style={{ width: `${Math.min(100, info.usedPct)}%` }}
+          />
+        </div>
       </div>
 
-      <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
+      {/* Фото */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1 font-bold text-slate-600">
+          <Image className="w-3 h-3 text-orange-500" />
+          {ru ? 'Фото' : 'Photos'}
+        </div>
+        <div className="font-mono tabular-nums text-slate-500">
+          {info.imagesCount} → Supabase
+        </div>
+      </div>
+
+      {/* Очередь заказов */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1 font-bold text-slate-600">
+          <Cloud className="w-3 h-3 text-blue-500" />
+          {ru ? 'Заказы в Sheets' : 'Orders to Sheets'}
+        </div>
         <div
-          className={`h-full ${barColor} transition-all duration-300`}
-          style={{ width: `${Math.min(100, info.usedPct)}%` }}
-        />
+          className={`font-mono tabular-nums ${
+            (syncStatus.ordersFailed ?? 0) > 0
+              ? 'text-red-600 font-bold'
+              : (syncStatus.ordersPending ?? 0) > 0
+              ? 'text-blue-600 font-bold'
+              : 'text-green-600'
+          }`}
+        >
+          {syncStatus.ordersPending ?? 0} / {syncStatus.ordersFailed ?? 0}
+        </div>
       </div>
 
-      <div className="mt-1 text-[10px] text-slate-500 flex items-center justify-between gap-2">
-        <span className="truncate">
-          Фото: {info.imagesCount} шт ·{' '}
-          {(info.imagesBytes / (1024 * 1024)).toFixed(2)} МБ
-        </span>
-        {danger && (
-          <span className="text-red-600 font-bold shrink-0">
-            мало места!
-          </span>
-        )}
+      {/* Очередь MENU */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1 font-bold text-slate-600">
+          <ListChecks className="w-3 h-3 text-purple-500" />
+          {ru ? 'Меню в Sheets' : 'Menu to Sheets'}
+        </div>
+        <div
+          className={`font-mono tabular-nums ${
+            (syncStatus.menuFailed ?? 0) > 0
+              ? 'text-red-600 font-bold'
+              : (syncStatus.menuPending ?? 0) > 0
+              ? 'text-blue-600 font-bold'
+              : 'text-green-600'
+          }`}
+        >
+          {syncStatus.menuPending ?? 0} / {syncStatus.menuFailed ?? 0}
+        </div>
       </div>
+
+      {/* Last sync */}
+      {syncStatus.lastSyncAt && (
+        <div className="flex items-center gap-1 text-[0.625rem] text-slate-400 pt-1 border-t border-slate-200">
+          <RefreshCw className="w-2.5 h-2.5" />
+          <span className="font-mono">
+            {new Date(syncStatus.lastSyncAt).toLocaleTimeString('en-GB', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}
+          </span>
+          {!syncStatus.isOnline && (
+            <span className="text-red-500 font-bold ml-auto">OFFLINE</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

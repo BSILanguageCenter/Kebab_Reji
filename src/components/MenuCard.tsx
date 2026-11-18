@@ -235,8 +235,8 @@ export const MenuCard = memo(function MenuCard({
 }: MenuCardProps) {
   const isGroup = (variants?.length ?? 0) > 0;
   const isInactive = !item.active;
-  const nameSize = compact ? Math.max(8, textSize - 2) : textSize;
-  const priceSize = compact ? Math.max(8, textSize - 2) : textSize;
+  const nameSize = compact ? textSize * 0.85 : textSize;
+  const priceSize = compact ? textSize * 0.85 : textSize;
   const { onPointerDown, shouldClick } = useClickOrDrag();
 
   const onContextMenu = (e: React.MouseEvent) => {
@@ -304,7 +304,15 @@ export const MenuCard = memo(function MenuCard({
         >
           <div className="relative">
             <ImageSquare
-              src={item.image_url}
+              src={
+                item.image_url
+                  ? item.image_url
+                  : item.type === 'set'
+                  ? (item.set_main?.variants?.[0]?.image_url ??
+                    item.set_main?.image_url ??
+                    null)
+                  : null
+              }
               name={item.name}
               type={item.type}
               color={item.color}
@@ -317,7 +325,7 @@ export const MenuCard = memo(function MenuCard({
               {item.type === 'set' && (
                 <span
                   className="font-black bg-purple-600 text-white px-1.5 py-0.5 rounded shadow-md"
-                  style={{ fontSize: Math.max(7, nameSize - 4) }}
+                  style={{ fontSize: nameSize * 0.65 }}
                 >
                   SET
                 </span>
@@ -325,7 +333,7 @@ export const MenuCard = memo(function MenuCard({
               {item.free && (
                 <span
                   className="font-black bg-green-500 text-white px-1.5 py-0.5 rounded shadow-md"
-                  style={{ fontSize: Math.max(7, nameSize - 4) }}
+                  style={{ fontSize: nameSize * 0.65 }}
                 >
                   FREE
                 </span>
@@ -339,7 +347,7 @@ export const MenuCard = memo(function MenuCard({
               >
                 <span
                   className="text-white font-black tracking-wider uppercase"
-                  style={{ fontSize: Math.max(7, nameSize - 3) }}
+                  style={{ fontSize: nameSize * 0.75 }}
                 >
                   неактивно
                 </span>
@@ -385,7 +393,7 @@ export const MenuCard = memo(function MenuCard({
   }
 
   // ---------- Группа ----------
-  const headerH = nameSize + 8;
+  const headerH = nameSize * 2;
 
   return (
     <div
@@ -453,21 +461,21 @@ export const MenuCard = memo(function MenuCard({
             {item.type === 'set' && (
               <span
                 className="font-black bg-purple-600 text-white px-1.5 rounded-full leading-none py-0.5"
-                style={{ fontSize: Math.max(7, nameSize - 3) }}
+                style={{ fontSize: nameSize * 0.75 }}
               >
                 SET
               </span>
             )}
             <span
               className="font-black bg-orange-500 text-white px-1.5 rounded-full leading-none py-0.5"
-              style={{ fontSize: Math.max(7, nameSize - 3) }}
+              style={{ fontSize: nameSize * 0.75 }}
             >
               ×{variants!.length}
             </span>
             {isInactive && (
               <span
                 className="font-black bg-slate-700 text-white px-1.5 rounded-full leading-none py-0.5 uppercase tracking-wider"
-                style={{ fontSize: Math.max(7, nameSize - 3) }}
+                style={{ fontSize: nameSize * 0.75 }}
               >
                 off
               </span>
@@ -479,13 +487,17 @@ export const MenuCard = memo(function MenuCard({
           className={`flex items-stretch p-1 ${
             wrapVariants ? 'flex-wrap justify-center' : ''
           }`}
-          style={{ gap: 6 }}
+          style={{ gap: '0.375rem' }}
         >
           {variants!.map((v) => (
             <button
               key={v.id}
               data-variant-id={v.id}
               onClick={(e) => {
+                // ✅ ФИКС: останавливаем всплытие клика, иначе он долетит
+                // до контейнера карточки и снова вызовет onClick(item)
+                e.stopPropagation();
+
                 if (mode !== 'view' && e.detail !== 0) return;
                 if (onVariantClick) onVariantClick(item, v);
                 else onClick(v);

@@ -1,38 +1,96 @@
+// src/App.tsx
 import { useState, useEffect } from 'react';
 import CashierPage from '@/pages/CashierPage';
 import KitchenPage from '@/pages/KitchenPage';
 import ManagerPage from '@/pages/ManagerPage';
 import QueuePage from '@/pages/QueuePage';
+import LoginPage from '@/pages/LoginPage';
 import { useI18n, languages, type Lang, type TranslationKey } from '@/locale';
 import {
   PageActionsContext,
   ActiveRoleContext,
   type PageRole,
 } from '@/components/PageActions';
-import { getSocket, subscribeClientsCount } from '@/lib/localStore';
+import { SyncIndicator } from '@/components/SyncIndicator';
+import { KitchenAlerts } from '@/components/KitchenAlerts'; // ← NEW
+import { getSocket } from '@/lib/localStore';
+import {
+  startGoogleSheetsSync,
+  stopGoogleSheetsSync,
+} from '@/services/googleSheetsSync';
+import { listenToOrders } from '@/services/firebaseSync';
+import {
+  fetchAllProductsFromDb,
+  subscribeProductsFromDb,
+} from '@/services/supabaseDb';
+import { applyRemoteOrders, applyRemoteMenu } from '@/lib/localStore';
+import {
+  getCurrentUser,
+  logout,
+  allowedRoles,
+  type AuthUser,
+} from '@/lib/auth';
+import type { Order, MenuItem } from '@/types/database';
 import {
   UtensilsCrossed,
   ChefHat,
   BarChart3,
   ListOrdered,
   LogOut,
+  UserCircle2,
 } from 'lucide-react';
 
 type Role = 'cashier' | 'queue' | 'kitchen' | 'manager';
 
 export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(() => getCurrentUser());
   const [role, setRole] = useState<Role | null>(null);
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
-  const [clientsCount, setClientsCount] = useState(1);
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const { t, lang, setLang } = useI18n();
 
   const [visited, setVisited] = useState<Set<Role>>(() => new Set());
 
   useEffect(() => {
-    const unsubscribe = subscribeClientsCount(setClientsCount);
     getSocket();
-    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    startGoogleSheetsSync();
+    return () => {
+      stopGoogleSheetsSync();
+    };
+  }, []);
+
+  // Firebase RTDB — заказы
+  useEffect(() => {
+    const unsubOrders = listenToOrders((orders: Order[]) => {
+      applyRemoteOrders(orders);
+    });
+    return () => {
+      unsubOrders();
+    };
+  }, []);
+
+  // Supabase DB — меню
+  useEffect(() => {
+    let cancelled = false;
+
+    void fetchAllProductsFromDb()
+      .then((items: MenuItem[]) => {
+        if (!cancelled) applyRemoteMenu(items);
+      })
+      .catch((e: unknown) => {
+        console.error('[App] fetchAllProductsFromDb failed:', e);
+      });
+
+    const unsub = subscribeProductsFromDb((items: MenuItem[]) => {
+      applyRemoteMenu(items);
+    });
+
+    return () => {
+      cancelled = true;
+      unsub();
+    };
   }, []);
 
   useEffect(() => {
@@ -46,32 +104,38 @@ export default function App() {
     }
   }, [role]);
 
-  useEffect(() => {
-    const onOnline = () => setIsOnline(true);
-    const onOffline = () => setIsOnline(false);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-    };
-  }, []);
+  const handleLogout = () => {
+    logout();
+    setUser(null);
+    setRole(null);
+    setVisited(new Set());
+  };
 
+  // ---------- 1. Нет пользователя → логин ----------
+  if (!user) {
+    return <LoginPage onLoggedIn={setUser} />;
+  }
+
+  // ---------- 2. Роль не выбрана → выбор роли с фильтром ----------
   if (!role) {
     return (
       <RoleSelectionScreen
-        isOnline={isOnline}
-        clientsCount={clientsCount}
+        user={user}
         lang={lang}
         setLang={setLang}
         onSelectRole={setRole}
+        onLogout={handleLogout}
       />
     );
   }
 
+  // ---------- 3. Роль выбрана → сам экран ----------
+  const roleLabel =
+    user.role === 'admin' ? 'ADMIN' : user.role === 'manager' ? 'MANAGER' : 'CASHIER';
+
   return (
     <PageActionsContext.Provider value={slot}>
-      <div className="h-dvh bg-slate-100 text-gray-900 flex flex-col overflow-hidden">
+      <div className="h-dvh w-full bg-slate-100 text-gray-900 flex flex-col overflow-hidden">
         <header className="flex items-center gap-3 px-4 py-2.5 bg-white border-b border-gray-200 shrink-0 shadow-sm">
           <div className="flex items-center gap-2">
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-md shadow-orange-500/20">
@@ -93,8 +157,19 @@ export default function App() {
             className="flex items-center gap-2 flex-1 min-w-0"
           />
 
+          {/* ← NEW: мигающие счётчики для кухни */}
+          {role === 'kitchen' && <KitchenAlerts />}
+
           <div className="flex items-center gap-3 shrink-0">
-            <ClientsBadge count={clientsCount} isOnline={isOnline} />
+            {/* Бейдж пользователя */}
+            <span className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-[11px] font-bold text-slate-600">
+              <UserCircle2 className="w-3.5 h-3.5" />
+              {user.login}
+              <span className="ml-1 text-[9px] uppercase text-orange-600">
+                {roleLabel}
+              </span>
+            </span>
+            <SyncIndicator />
             <DateLabel lang={lang} />
             {languages.length > 1 && (
               <LanguageSwitcher lang={lang} setLang={setLang} />
@@ -112,46 +187,22 @@ export default function App() {
         <ActiveRoleContext.Provider value={role as PageRole}>
           <main className="flex-1 min-h-0 overflow-hidden relative">
             {visited.has('cashier') && (
-              <div
-                className={
-                  role === 'cashier'
-                    ? 'absolute inset-0 flex flex-col'
-                    : 'hidden'
-                }
-              >
+              <div className={role === 'cashier' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
                 <CashierPage />
               </div>
             )}
             {visited.has('queue') && (
-              <div
-                className={
-                  role === 'queue'
-                    ? 'absolute inset-0 flex flex-col'
-                    : 'hidden'
-                }
-              >
+              <div className={role === 'queue' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
                 <QueuePage />
               </div>
             )}
             {visited.has('kitchen') && (
-              <div
-                className={
-                  role === 'kitchen'
-                    ? 'absolute inset-0 flex flex-col'
-                    : 'hidden'
-                }
-              >
+              <div className={role === 'kitchen' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
                 <KitchenPage />
               </div>
             )}
             {visited.has('manager') && (
-              <div
-                className={
-                  role === 'manager'
-                    ? 'absolute inset-0 flex flex-col'
-                    : 'hidden'
-                }
-              >
+              <div className={role === 'manager' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
                 <ManagerPage />
               </div>
             )}
@@ -166,24 +217,41 @@ export default function App() {
 // ROLE SELECTION SCREEN
 // ============================================================
 function RoleSelectionScreen({
-  isOnline,
-  clientsCount,
+  user,
   lang,
   setLang,
   onSelectRole,
+  onLogout,
 }: {
-  isOnline: boolean;
-  clientsCount: number;
+  user: AuthUser;
   lang: Lang;
   setLang: (l: Lang) => void;
   onSelectRole: (role: Role) => void;
+  onLogout: () => void;
 }) {
   const { t } = useI18n();
+  const allowed = allowedRoles(user.role);
+
+  const roleCards: Array<{
+    key: Role;
+    icon: React.ReactNode;
+    label: string;
+    color: 'orange' | 'yellow' | 'blue' | 'purple';
+  }> = [
+    { key: 'cashier', icon: <UtensilsCrossed className="w-9 h-9" />, label: t('cashier'), color: 'orange' },
+    { key: 'queue',   icon: <ListOrdered className="w-9 h-9" />,     label: t('queue'),   color: 'purple' },
+    { key: 'kitchen', icon: <ChefHat className="w-9 h-9" />,         label: t('kitchen'), color: 'yellow' },
+    { key: 'manager', icon: <BarChart3 className="w-9 h-9" />,       label: t('manager'), color: 'blue' },
+  ];
+
+  const visibleCards = roleCards.filter((c) => allowed.includes(c.key));
+  const roleLabel =
+    user.role === 'admin' ? 'ADMIN' : user.role === 'manager' ? 'MANAGER' : 'CASHIER';
 
   return (
-    <div className="h-dvh bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200 flex flex-col">
-      <div className="flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
-        <div className="flex flex-col items-center gap-3 mb-10">
+    <div className="h-dvh w-full bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200 flex flex-col">
+      <div className="flex-1 min-h-0 w-full flex flex-col p-6 overflow-y-auto">
+        <div className="shrink-0 flex flex-col items-center gap-3 mb-8">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-lg shadow-orange-500/30">
             <UtensilsCrossed className="w-9 h-9 text-white" />
           </div>
@@ -194,46 +262,51 @@ function RoleSelectionScreen({
             <p className="text-sm text-gray-500 font-medium mt-0.5">
               {t('selectRole')}
             </p>
+            <p className="mt-2 text-xs font-bold text-slate-600">
+              <UserCircle2 className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
+              {user.login}
+              <span className="ml-2 px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 text-[10px] uppercase">
+                {roleLabel}
+              </span>
+            </p>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 md:gap-5 max-w-3xl w-full">
-          <RoleCard
-            icon={<UtensilsCrossed className="w-9 h-9" />}
-            label={t('cashier')}
-            color="orange"
-            onClick={() => onSelectRole('cashier')}
-          />
-          <RoleCard
-            icon={<ListOrdered className="w-9 h-9" />}
-            label={t('queue')}
-            color="purple"
-            onClick={() => onSelectRole('queue')}
-          />
-          <RoleCard
-            icon={<ChefHat className="w-9 h-9" />}
-            label={t('kitchen')}
-            color="yellow"
-            onClick={() => onSelectRole('kitchen')}
-          />
-          <RoleCard
-            icon={<BarChart3 className="w-9 h-9" />}
-            label={t('manager')}
-            color="blue"
-            onClick={() => onSelectRole('manager')}
-          />
+        <div
+          className={`flex-1 w-full grid gap-4 md:gap-5 ${
+            visibleCards.length === 1
+              ? 'grid-cols-1 max-w-md mx-auto'
+              : 'grid-cols-2 auto-rows-fr'
+          }`}
+        >
+          {visibleCards.map((c) => (
+            <RoleCard
+              key={c.key}
+              icon={c.icon}
+              label={c.label}
+              color={c.color}
+              onClick={() => onSelectRole(c.key)}
+            />
+          ))}
         </div>
       </div>
 
       <footer className="flex items-center justify-between gap-3 px-4 py-2.5 bg-white border-t border-gray-200 shrink-0 shadow-sm">
         <div className="flex items-center gap-3">
-          <ClientsBadge count={clientsCount} isOnline={isOnline} />
+          <SyncIndicator />
           <DateLabel lang={lang} />
         </div>
         <div className="flex items-center gap-2">
           {languages.length > 1 && (
             <LanguageSwitcher lang={lang} setLang={setLang} />
           )}
+          <button
+            onClick={onLogout}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold transition-colors active:scale-[0.98] border border-red-200"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Выйти
+          </button>
         </div>
       </footer>
     </div>
@@ -267,7 +340,7 @@ function RoleCard({
   return (
     <button
       onClick={onClick}
-      className={`group flex flex-col items-center justify-center gap-4 p-8 md:p-10 rounded-3xl bg-white border-2 border-gray-200 hover:border-transparent hover:shadow-2xl ring-4 ring-transparent transition-all active:scale-[0.98] ${rings[color]}`}
+      className={`group w-full h-full flex flex-col items-center justify-center gap-4 p-8 md:p-10 rounded-3xl bg-white border-2 border-gray-200 hover:border-transparent hover:shadow-2xl ring-4 ring-transparent transition-all active:scale-[0.98] ${rings[color]}`}
     >
       <div
         className={`w-20 h-20 rounded-2xl bg-gradient-to-br ${colors[color]} flex items-center justify-center text-white shadow-lg transition-transform group-hover:scale-110`}
@@ -278,33 +351,6 @@ function RoleCard({
         {label}
       </span>
     </button>
-  );
-}
-
-function ClientsBadge({
-  count,
-  isOnline,
-}: {
-  count: number;
-  isOnline: boolean;
-}) {
-  const { t } = useI18n();
-
-  if (!isOnline) {
-    return (
-      <span className="flex items-center gap-1.5 text-red-600 text-xs font-medium bg-red-50 px-2.5 py-1 rounded-lg border border-red-200">
-        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-        {t('offline')}
-      </span>
-    );
-  }
-
-  return (
-    <span className="flex items-center gap-1.5 text-green-600 text-xs font-medium bg-green-50 px-2.5 py-1 rounded-lg border border-green-200">
-      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-      <span className="font-bold">{count}</span>
-      <span className="opacity-80">{t('devicesOnline')}</span>
-    </span>
   );
 }
 

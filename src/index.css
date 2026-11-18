@@ -2,17 +2,21 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   КОМПОНЕНТЫ
+   ============================================================ */
 @layer components {
   .form-input {
     @apply w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-colors;
   }
 }
 
-html,
-body,
-#root {
+/* ============================================================
+   БАЗОВЫЙ СБРОС / КОРЕНЬ
+   ============================================================ */
+html, body, #root {
+  width: 100%;
   height: 100%;
-  height: 100dvh;
   overflow: hidden;
   overscroll-behavior: none;
 }
@@ -22,80 +26,44 @@ body,
   flex-direction: column;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+  background-color: #f1f5f9;
+}
+
 body {
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
   user-select: none;
   background-color: #f1f5f9;
   color: #0f172a;
-}
-
-/* Скроллбар */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
-/* Отключаем «резинку» на iOS при скролле внутренних панелей */
-* {
-  -webkit-overflow-scrolling: touch;
-}
-
-/* ============================================================ */
-/* ТАЧ-ОПТИМИЗАЦИЯ */
-/* ============================================================ */
-
-/* Все интерактивные элементы реагируют на тап без задержки 300ms,
-   и не дают браузеру самому решать — zoom или scroll */
-button,
-[role='button'],
-input,
-select,
-textarea,
-a {
-  touch-action: manipulation;
-}
-
-/* Убираем подсветку тапа (сине-серый прямоугольник на Android/iOS) */
-button,
-[role='button'],
-a {
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* Активное состояние для тач-устройств (без :hover) */
-@media (hover: none) and (pointer: coarse) {
-  /* Скрываем hover-эффекты */
-  .group:hover .group-hover\:opacity-100 {
-    opacity: 1;
-  }
-  /* Увеличиваем активный отклик на тап */
-  button:active,
-  [role='button']:active {
-    transition: transform 0.06s ease-out;
-  }
-}
-
-/* Не даём iOS Safari зуммить при двойном тапе */
-html {
+  overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;
-  touch-action: manipulation;
 }
 
-/* Скроллбары больше — удобнее для пальцев */
+/* ============================================================
+   МАСШТАБ ИНТЕРФЕЙСА
+   Tailwind работает в rem, поэтому ВЕСЬ интерфейс масштабируется одним
+   числом — размером шрифта <html>. Его ставит useViewport.ts (единственный
+   источник истины, эталон 1366x768 = 16px); приложение всегда занимает
+   100% окна, никакой фиксированной «сцены» и transform нет.
+   Правила ниже — лишь запасной вариант на долю секунды до загрузки JS;
+   inline-стиль от useViewport перекрывает их.
+   ============================================================ */
+html { font-size: 2.8vw; }
+@media (min-width: 640px)  { html { font-size: min(1.5vw, 1.6vh); } }
+@media (min-width: 1024px) { html { font-size: min(1.17vw, 2.08vh); } }
+
+/* ============================================================
+   СКРОЛЛБАР
+   ============================================================ */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: #94a3b8;
@@ -107,25 +75,70 @@ html {
   background: #64748b;
   background-clip: padding-box;
 }
-/* Добавить в конец src/index.css */
-html, body, #root { height: 100%; }
-body {
-  overscroll-behavior: none;
-  -webkit-text-size-adjust: 100%;
+
+/* «Резинка» на iOS при скролле внутренних панелей */
+* {
+  -webkit-overflow-scrolling: touch;
 }
-/* вместо 100vh: на телефонах адресная строка «прыгает» */
-.app-h { height: 100dvh; }
-.safe-t { padding-top: env(safe-area-inset-top); }
-.safe-b { padding-bottom: env(safe-area-inset-bottom); }
 
-button { touch-action: manipulation; } /* без зума по двойному тапу */
+/* ============================================================
+   ТАЧ-ОПТИМИЗАЦИЯ
+   ============================================================ */
+button,
+[role='button'],
+input,
+select,
+textarea,
+a {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
 
+@media (hover: none) and (pointer: coarse) {
+  .group:hover .group-hover\:opacity-100 {
+    opacity: 1;
+  }
+  button:active,
+  [role='button']:active {
+    transition: transform 0.06s ease-out;
+  }
+}
+
+/* iOS Safari зумит страницу при фокусе на поле со шрифтом < 16px */
 @media (pointer: coarse) {
-  /* iOS Safari зумит страницу при фокусе на поле со шрифтом < 16px */
   input:not([type='range']):not([type='checkbox']):not([type='radio']),
   textarea,
   select {
     font-size: 16px !important;
   }
   input[type='range'] { min-height: 32px; }
+}
+
+/* ============================================================
+   УТИЛИТЫ (safe-area, высота)
+   ============================================================ */
+.app-h  { height: 100dvh; }
+.safe-t { padding-top: env(safe-area-inset-top); }
+.safe-b { padding-bottom: env(safe-area-inset-bottom); }
+@keyframes kpulse-urgent {
+  0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.75); }
+  50%      { opacity: 0.5; transform: scale(1.06); box-shadow: 0 0 0 7px rgba(220, 38, 38, 0); }
+}
+@keyframes kpulse-soft {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+@keyframes kpulse-amber {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.65); }
+  50%      { opacity: 0.55; box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+}
+.animate-kpulse-urgent { animation: kpulse-urgent 0.9s ease-in-out infinite; }
+.animate-kpulse-soft   { animation: kpulse-soft   1.4s ease-in-out infinite; }
+.animate-kpulse-amber  { animation: kpulse-amber  1.1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .animate-kpulse-urgent,
+  .animate-kpulse-soft,
+  .animate-kpulse-amber {
+    animation: none; opacity: 1; transform: none; box-shadow: none;
+  }
 }

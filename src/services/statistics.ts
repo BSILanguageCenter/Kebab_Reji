@@ -111,7 +111,9 @@ export async function fetchSalesSummary(
   const totalSales = orders.reduce((s, o) => s + o.total_amount, 0);
   const orderCount = orders.length;
   const insideOrders = orders.filter((o) => o.order_type === 'INSIDE').length;
-  const outsideOrders = orders.filter((o) => o.order_type === 'OUTSIDE').length;
+  const outsideOrders = orders.filter(
+    (o) => o.order_type === 'OUTSIDE' || o.order_type === 'ON_THE_WAY'
+  ).length;
 
   return {
     totalSales,

@@ -71,7 +71,7 @@ export function PanelSettings() {
         </h3>
         <button
           onClick={() => setLayout(DEFAULT_LAYOUT)}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-[10px] font-bold active:scale-[0.97] transition-colors"
+          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-[0.625rem] font-bold active:scale-[0.97] transition-colors"
         >
           <RotateCcw className="w-3 h-3" />
           {t('reset')}
@@ -80,7 +80,7 @@ export function PanelSettings() {
 
       {/* Presets */}
       <div>
-        <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">
+        <div className="text-[0.625rem] font-bold text-gray-500 uppercase tracking-wider mb-2">
           {t('preset')}
         </div>
         <div className="grid grid-cols-3 gap-1.5">
@@ -89,7 +89,7 @@ export function PanelSettings() {
             className="flex flex-col items-center gap-1 p-2 rounded-lg border-2 border-gray-200 hover:border-orange-400 hover:bg-orange-50 transition-all active:scale-[0.97]"
           >
             <Minimize2 className="w-4 h-4 text-gray-600" />
-            <span className="text-[10px] font-bold text-gray-700">
+            <span className="text-[0.625rem] font-bold text-gray-700">
               {t('presetCompact')}
             </span>
           </button>
@@ -98,7 +98,7 @@ export function PanelSettings() {
             className="flex flex-col items-center gap-1 p-2 rounded-lg border-2 border-gray-200 hover:border-orange-400 hover:bg-orange-50 transition-all active:scale-[0.97]"
           >
             <Sparkles className="w-4 h-4 text-gray-600" />
-            <span className="text-[10px] font-bold text-gray-700">
+            <span className="text-[0.625rem] font-bold text-gray-700">
               {t('presetNormal')}
             </span>
           </button>
@@ -107,7 +107,7 @@ export function PanelSettings() {
             className="flex flex-col items-center gap-1 p-2 rounded-lg border-2 border-gray-200 hover:border-orange-400 hover:bg-orange-50 transition-all active:scale-[0.97]"
           >
             <Maximize2 className="w-4 h-4 text-gray-600" />
-            <span className="text-[10px] font-bold text-gray-700">
+            <span className="text-[0.625rem] font-bold text-gray-700">
               {t('presetLarge')}
             </span>
           </button>
@@ -259,7 +259,7 @@ function Section({
 }) {
   return (
     <div className="border-t border-gray-200 pt-3">
-      <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+      <div className="text-[0.625rem] font-black text-gray-400 uppercase tracking-widest mb-2">
         {title}
       </div>
       <div className="space-y-3">{children}</div>
@@ -285,10 +285,10 @@ function SliderField({
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+        <label className="text-[0.625rem] font-bold text-gray-500 uppercase tracking-wider">
           {label}
         </label>
-        <span className="text-[10px] font-black text-orange-600 tabular-nums bg-orange-50 px-1.5 py-0.5 rounded">
+        <span className="text-[0.625rem] font-black text-orange-600 tabular-nums bg-orange-50 px-1.5 py-0.5 rounded">
           {value}
           {suffix}
         </span>

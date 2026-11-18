@@ -1,3 +1,4 @@
+// src/lib/localStore.ts
 import type {
   MenuItem,
   Order,
@@ -7,27 +8,49 @@ import type {
   OrderType,
   OptionType,
 } from '@/types/database';
-import { buildTestMenu } from './seedMenu';
+import {
+  enqueueForSync,
+  enqueueMenuForSync,
+} from '@/services/googleSheetsSync';
+import { saveOrder, updateOrderStatus } from '@/services/firebaseSync';
+import { upsertProductsToDb } from '@/services/supabaseDb';
 
 // ============================================================
 // STORAGE SHAPE
 // ============================================================
 const STORAGE_KEY = 'kebab-pos-data-v1';
 const CHANNEL_NAME = 'kebab-pos-sync';
-const CURRENT_VERSION = 2; // bump: убрали printerSettings
+const CURRENT_VERSION = 3; // ← NEW: подняли версию из-за нового поля
+
+/**
+ * Стартовый номер заказа в начале каждого дня.
+ * Если хотите начинать с 1 — поменяйте на 1.
+ */
+const START_ORDER_NUMBER = 1; // ← NEW
 
 export interface LocalData {
   menuItems: MenuItem[];
   orders: Order[];
   nextOrderNumber: number;
+  counterDate: string; // ← NEW: 'YYYY-MM-DD', к какому дню относится счётчик
   version: number;
+}
+
+/** Локальная дата в формате YYYY-MM-DD (часовой пояс браузера). */
+function todayStr(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 function defaultData(): LocalData {
   return {
     menuItems: [],
     orders: [],
-    nextOrderNumber: 100,
+    nextOrderNumber: START_ORDER_NUMBER,
+    counterDate: todayStr(), // ← NEW
     version: CURRENT_VERSION,
   };
 }
@@ -44,6 +67,13 @@ function loadData(): LocalData {
     if (typeof parsed.nextOrderNumber === 'number') {
       d.nextOrderNumber = parsed.nextOrderNumber;
     }
+    // ← NEW: подхватываем counterDate; если его нет (старое хранилище) —
+    // считаем, что счётчик относится к сегодняшнему дню
+    if (typeof parsed.counterDate === 'string' && parsed.counterDate) {
+      d.counterDate = parsed.counterDate;
+    } else {
+      d.counterDate = todayStr();
+    }
     d.version = CURRENT_VERSION;
     return d;
   } catch {
@@ -53,38 +83,29 @@ function loadData(): LocalData {
 
 let data: LocalData = loadData();
 
-// Автосид: если меню пустое — заполняем тестовым (только при первом запуске)
-if (data.menuItems.length === 0) {
-  try {
-    data.menuItems = buildTestMenu();
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch {
-      /* ignore */
-    }
-    console.log(
-      `[localStore] ✓ Загружено тестовое меню: ${data.menuItems.length} позиций`
-    );
-  } catch (e) {
-    console.warn('[localStore] Не удалось загрузить тестовое меню:', e);
-  }
+// ============================================================
+// DAILY COUNTER RESET  ← NEW
+// ============================================================
+/**
+ * Если счётчик относится к прошлому дню — сбрасываем его.
+ * Возвращает true, если сброс произошёл (нужно сохранить данные).
+ */
+function resetCounterIfNewDay(): boolean {
+  const today = todayStr();
+  if (data.counterDate === today) return false;
+  data.counterDate = today;
+  data.nextOrderNumber = START_ORDER_NUMBER;
+  return true;
 }
 
-// Автосид: если меню пустое — заполняем тестовым (только при первом запуске)
-if (data.menuItems.length === 0) {
-  try {
-    // Динамический импорт, чтобы избежать цикла
-    // (на самом деле seedMenu.ts импортирует только типы, цикла нет,
-    //  но так безопаснее)
-    const { buildTestMenu } = await import('./seedMenu');
-    data.menuItems = buildTestMenu();
+// Сброс при загрузке модуля (если приложение не перезагружалось ночью)
+if (typeof window !== 'undefined') {
+  if (resetCounterIfNewDay()) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch {
       /* ignore */
     }
-  } catch (e) {
-    console.warn('[localStore] Не удалось загрузить тестовое меню:', e);
   }
 }
 
@@ -106,11 +127,8 @@ function persist() {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch (e) {
-    console.error(
-      '[localStore] Не удалось сохранить (возможно, превышен лимит localStorage):',
-      e
-    );
+  } catch (e: unknown) {
+    console.error('[localStore] localStorage persist failed:', e);
   }
   try {
     bc?.postMessage({ type: 'update' });
@@ -194,6 +212,10 @@ if (typeof window !== 'undefined') {
     const msg = ev.data as { type?: string; id?: string; from?: string };
     if (msg?.type === 'update') {
       data = loadData();
+      // ← NEW: при получении обновления из другой вкладки тоже проверяем смену дня
+      if (resetCounterIfNewDay()) {
+        persist();
+      }
       notifyAll();
     }
     if (msg?.type === 'clients-ping' && msg.id) {
@@ -216,6 +238,10 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key === STORAGE_KEY) {
       data = loadData();
+      // ← NEW: и здесь тоже
+      if (resetCounterIfNewDay()) {
+        persist();
+      }
       notifyAll();
     }
   });
@@ -229,10 +255,20 @@ if (typeof window !== 'undefined') {
     clientsSeen.set(CLIENT_ID, Date.now());
     notifyClients();
   }, 5000);
+
+  // ← NEW: если приложение открыто в фоне и не перезагружается —
+  // раз в минуту проверяем смену дня, чтобы счётчик сбросился
+  // до создания первого заказа нового дня.
+  setInterval(() => {
+    if (resetCounterIfNewDay()) {
+      schedulePersist();
+      notifyAll();
+    }
+  }, 60_000);
 }
 
 // ============================================================
-// COMPAT STUBS (для старых импортов из socket.ts)
+// COMPAT STUBS
 // ============================================================
 export function getSocket(): {
   connected: boolean;
@@ -395,6 +431,12 @@ export async function emitCreateOrder(payload: {
   comment: string;
   order_items: OrderItemPayload[];
 }): Promise<Order> {
+  // ← NEW: перед выдачей номера проверяем, не наступил ли новый день
+  // (на случай, если приложение не перезагружалось всю ночь)
+  if (resetCounterIfNewDay()) {
+    schedulePersist();
+  }
+
   const id = newId();
   const orderNumber = data.nextOrderNumber;
   data.nextOrderNumber += 1;
@@ -417,6 +459,16 @@ export async function emitCreateOrder(payload: {
   data.orders.push(order);
   schedulePersist();
   notifyAll();
+
+  saveOrder(order).catch((e: unknown) => {
+    console.warn('[localStore] RTDB saveOrder (create) failed:', e);
+  });
+
+  try {
+    enqueueForSync(order, 'create');
+  } catch (syncErr: unknown) {
+    console.warn('[localStore] enqueue create sync failed:', syncErr);
+  }
 
   return order;
 }
@@ -446,6 +498,17 @@ export async function emitUpdateOrder(payload: {
   data.orders[idx] = updated;
   schedulePersist();
   notifyAll();
+
+  saveOrder(updated).catch((e: unknown) => {
+    console.warn('[localStore] RTDB saveOrder (update) failed:', e);
+  });
+
+  try {
+    enqueueForSync(updated, 'update');
+  } catch (syncErr: unknown) {
+    console.warn('[localStore] enqueue update sync failed:', syncErr);
+  }
+
   return updated;
 }
 
@@ -468,6 +531,17 @@ export async function emitUpdateStatus(
   data.orders[idx] = updated;
   schedulePersist();
   notifyAll();
+
+  updateOrderStatus(orderId, status).catch((e: unknown) => {
+    console.warn('[localStore] RTDB updateOrderStatus failed:', e);
+  });
+
+  try {
+    enqueueForSync(updated, 'status');
+  } catch (syncErr: unknown) {
+    console.warn('[localStore] enqueue status sync failed:', syncErr);
+  }
+
   return updated;
 }
 
@@ -475,11 +549,7 @@ export async function emitForceSync(): Promise<SyncStats> {
   return { unsyncedCount: 0, totalOrders: data.orders.length };
 }
 
-// ============================================================
-// LAYOUT (no-op, для совместимости)
-// ============================================================
 export function emitLayoutSettings(settings: unknown): void {
-  // Layout синкается через свой BroadcastChannel в layoutSettings.ts
   void settings;
 }
 
@@ -490,29 +560,42 @@ export function setMenuItems(items: MenuItem[]): void {
   data.menuItems = items;
   schedulePersist();
   notifyAll();
+
+  upsertProductsToDb(items).catch((e: unknown) => {
+    console.warn('[localStore] Supabase upsertProductsToDb failed:', e);
+  });
+
+  try {
+    enqueueMenuForSync(items);
+  } catch (e: unknown) {
+    console.warn('[localStore] enqueueMenuForSync failed:', e);
+  }
 }
 
 export function addMenuItem(item: MenuItem): void {
-  data.menuItems.push(item);
-  schedulePersist();
-  notifyAll();
+  setMenuItems([...data.menuItems, item]);
 }
 
 export function updateMenuItem(itemId: string, patch: Partial<MenuItem>): void {
   const idx = data.menuItems.findIndex((i) => i.id === itemId);
   if (idx !== -1) {
-    data.menuItems[idx] = { ...data.menuItems[idx], ...patch };
-    schedulePersist();
-    notifyAll();
+    const next = [...data.menuItems];
+    next[idx] = { ...next[idx], ...patch };
+    setMenuItems(next);
     return;
   }
-  for (const parent of data.menuItems) {
+  for (let i = 0; i < data.menuItems.length; i++) {
+    const parent = data.menuItems[i];
     if (!parent.variants) continue;
     const vIdx = parent.variants.findIndex((v) => v.id === itemId);
     if (vIdx !== -1) {
-      parent.variants[vIdx] = { ...parent.variants[vIdx], ...patch };
-      schedulePersist();
-      notifyAll();
+      const next = [...data.menuItems];
+      const nextParent = { ...next[i] };
+      nextParent.variants = nextParent.variants!.map((v, j) =>
+        j === vIdx ? { ...v, ...patch } : v
+      );
+      next[i] = nextParent;
+      setMenuItems(next);
       return;
     }
   }
@@ -520,26 +603,64 @@ export function updateMenuItem(itemId: string, patch: Partial<MenuItem>): void {
 
 export function removeMenuItem(itemId: string): void {
   const before = data.menuItems.length;
-  data.menuItems = data.menuItems.filter((i) => i.id !== itemId);
-  if (data.menuItems.length !== before) {
-    schedulePersist();
-    notifyAll();
+  const filtered = data.menuItems.filter((i) => i.id !== itemId);
+  if (filtered.length !== before) {
+    setMenuItems(filtered);
     return;
   }
-  for (const parent of data.menuItems) {
+  for (let i = 0; i < data.menuItems.length; i++) {
+    const parent = data.menuItems[i];
     if (!parent.variants) continue;
-    const idx = parent.variants.findIndex((v) => v.id === itemId);
-    if (idx !== -1) {
-      parent.variants.splice(idx, 1);
-      schedulePersist();
-      notifyAll();
+    const vIdx = parent.variants.findIndex((v) => v.id === itemId);
+    if (vIdx !== -1) {
+      const next = [...data.menuItems];
+      next[i] = {
+        ...next[i],
+        variants: next[i].variants!.filter((_, j) => j !== vIdx),
+      };
+      setMenuItems(next);
       return;
     }
   }
 }
 
 // ============================================================
-// RESET (для разработки)
+// PULL (входящие)
+// ============================================================
+export function applyRemoteOrders(remote: Order[]): void {
+  if (!Array.isArray(remote)) return;
+
+  const remoteIds = new Set(remote.map((o) => o.id));
+  const now = Date.now();
+  const pending = data.orders.filter((o) => {
+    if (remoteIds.has(o.id)) return false;
+    const age = now - new Date(o.created_at).getTime();
+    return age < 5000;
+  });
+
+  data.orders = [...remote, ...pending];
+  schedulePersist();
+  notifyAll();
+}
+
+export function applyRemoteMenu(remote: MenuItem[]): void {
+  if (!Array.isArray(remote)) return;
+
+  try {
+    if (JSON.stringify(data.menuItems) === JSON.stringify(remote)) {
+      return;
+    }
+  } catch {
+    /* ignore */
+  }
+
+  data.menuItems = remote;
+  schedulePersist();
+  notifyAll();
+}
+
+// ============================================================
+// RESET
 // ============================================================
 export function resetAllData(): void {
   data = defaultData();

@@ -136,7 +136,6 @@ function PropertyOptionsLayout({
         : 'bg-white border-2 border-orange-400 text-gray-800 hover:bg-orange-50'
     }`;
 
-  // 1 вариант — центр
   if (count === 1) {
     const opt = options[0];
     const selected = selectedValue === opt;
@@ -144,7 +143,7 @@ function PropertyOptionsLayout({
       <div className="flex justify-center">
         <button
           onClick={() => onPick(opt)}
-          className={`${btnClass(selected)} min-w-[55%] max-w-[240px]`}
+          className={`${btnClass(selected)} min-w-[55%] max-w-[15rem]`}
         >
           {opt}
         </button>
@@ -152,7 +151,6 @@ function PropertyOptionsLayout({
     );
   }
 
-  // 2 варианта — по краям
   if (count === 2) {
     return (
       <div className="flex justify-between gap-2">
@@ -172,7 +170,6 @@ function PropertyOptionsLayout({
     );
   }
 
-  // 3+ — сетка по 3
   return (
     <div className="grid grid-cols-3 gap-2">
       {options.map((opt) => {
@@ -193,59 +190,62 @@ function PropertyOptionsLayout({
 
 // ============================================================
 // ПОРЯДОК ШАГОВ
-//
-// Свойства (properties) идут В САМОМ КОНЦЕ:
-//   1. variant           (если main — group)
-//   2. sauce main        (если main — with sauce)
-//   3. extra-option      (выбор доп. блюда в сете)
-//   4. sauce extra       (соус к доп. блюду)
-//   ---- сюда переехали все properties ----
-//   5. properties main
-//   6. properties extra
 // ============================================================
-function computeSteps(item: MenuItem, selections: Selections): Step[] {
-  const preSteps: Step[] = [];   // всё, что не properties
-  const propSteps: Step[] = [];  // сюда — все properties
+function computeSteps(
+  item: MenuItem,
+  selections: Selections,
+  initialVariantId?: string
+): Step[] {
+  const steps: Step[] = [];
 
   const mainItem = item.type === 'set' ? item.set_main : item;
-  if (!mainItem) return [];
+  if (!mainItem) return steps;
 
-  let resolvedMain: MenuItem | null = mainItem;
+  let resolvedMain: MenuItem = mainItem;
 
-  // 1. Variant главного
+  // 1. Variant главного (ДОБАВЛЯЕМ, ТОЛЬКО ЕСЛИ НЕ ПЕРЕДАН initialVariantId)
   if (
     mainItem.dish_kind === 'group' &&
     mainItem.variants &&
     mainItem.variants.length > 0
   ) {
-    preSteps.push({ kind: 'variant', variants: mainItem.variants });
-    const v = selections.variantId
-      ? mainItem.variants.find((x) => x.id === selections.variantId)
-      : null;
-    if (!v) return preSteps;
+    if (!initialVariantId) {
+      steps.push({ kind: 'variant', variants: mainItem.variants });
+    }
+
+    const vId = selections.variantId || initialVariantId;
+    const v = vId ? mainItem.variants.find((x) => x.id === vId) : null;
+
+    // Если варианта нет (и не был передан) — ждем выбора
+    if (!v) return steps;
     resolvedMain = v;
   }
 
-  // 2. Соус главного
+  // 2. Свойства главного
+  const mainProps = validProps(resolvedMain.properties);
+  if (mainProps.length > 0) {
+    steps.push({ kind: 'properties', ctx: 'main', props: mainProps });
+  }
+
+  // 3. Соусы главного
   if (
     resolvedMain.sauce_mode === 'with' &&
     (resolvedMain.allowed_sauces?.length ?? 0) > 0
   ) {
-    preSteps.push({
+    steps.push({
       kind: 'sauce',
       ctx: 'main',
       sauces: resolvedMain.allowed_sauces!,
     });
   }
 
-  // 3–4. Extras сета (выбор + соус) и сбор их properties в propSteps
+  // 4. Extras сета
   if (item.type === 'set' && item.set_extra_groups) {
     for (const group of item.set_extra_groups) {
       const ex = selections.extras[group.id];
 
-      // Выбор extra-option
       if (!ex?.optionId && group.options.length > 1) {
-        preSteps.push({ kind: 'extra-option', group });
+        steps.push({ kind: 'extra-option', group });
         continue;
       }
 
@@ -257,41 +257,29 @@ function computeSteps(item: MenuItem, selections: Selections): Step[] {
       const optItem = group.options.find((o) => o.item.id === optId)?.item;
       if (!optItem) continue;
 
-      // Соус extra
-      if (
-        optItem.sauce_mode === 'with' &&
-        (optItem.allowed_sauces?.length ?? 0) > 0
-      ) {
-        preSteps.push({
-          kind: 'sauce',
-          ctx: { extra: group.id },
-          sauces: optItem.allowed_sauces!,
-        });
-      }
-
-      // Properties extra — в конец, но сразу после main props
       const extraProps = validProps(optItem.properties);
       if (extraProps.length > 0) {
-        propSteps.push({
+        steps.push({
           kind: 'properties',
           ctx: { extra: group.id },
           props: extraProps,
         });
       }
+
+      if (
+        optItem.sauce_mode === 'with' &&
+        (optItem.allowed_sauces?.length ?? 0) > 0
+      ) {
+        steps.push({
+          kind: 'sauce',
+          ctx: { extra: group.id },
+          sauces: optItem.allowed_sauces!,
+        });
+      }
     }
   }
 
-  // Properties главного — тоже в конец, но ПЕРЕД extra props
-  const mainProps = validProps(resolvedMain.properties);
-  if (mainProps.length > 0) {
-    propSteps.unshift({
-      kind: 'properties',
-      ctx: 'main',
-      props: mainProps,
-    });
-  }
-
-  return [...preSteps, ...propSteps];
+  return steps;
 }
 
 function computePrice(item: MenuItem, selections: Selections): number {
@@ -306,7 +294,6 @@ function computePrice(item: MenuItem, selections: Selections): number {
       );
       return v ? v.price : 0;
     }
-
     return mainItem.price;
   }
 
@@ -334,21 +321,7 @@ function buildResult(item: MenuItem, selections: Selections): BuilderResult {
     const v = mainItem.variants?.find((x) => x.id === selections.variantId);
     if (v) {
       variantName = v.name;
-      options.push({
-        type: 'variant',
-        name: v.name,
-        price: 0,
-        quantity: 1,
-      });
-    }
-  }
-
-  if (selections.mainSauceId) {
-    const s = mainItem?.allowed_sauces?.find(
-      (x) => x.id === selections.mainSauceId
-    );
-    if (s) {
-      options.push({ type: 'sauce', name: s.name, price: 0, quantity: 1 });
+      options.push({ type: 'variant', name: v.name, price: 0, quantity: 1 });
     }
   }
 
@@ -369,6 +342,15 @@ function buildResult(item: MenuItem, selections: Selections): BuilderResult {
     });
   }
 
+  if (selections.mainSauceId) {
+    const s = mainItem?.allowed_sauces?.find(
+      (x) => x.id === selections.mainSauceId
+    );
+    if (s) {
+      options.push({ type: 'sauce', name: s.name, price: 0, quantity: 1 });
+    }
+  }
+
   if (item.type === 'set' && item.set_extra_groups) {
     for (const group of item.set_extra_groups) {
       const ex = selections.extras[group.id];
@@ -386,18 +368,6 @@ function buildResult(item: MenuItem, selections: Selections): BuilderResult {
         quantity: 1,
       });
 
-      if (ex?.sauceId) {
-        const s = optItem.allowed_sauces?.find((x) => x.id === ex.sauceId);
-        if (s) {
-          options.push({
-            type: 'sauce',
-            name: `${optItem.name}: ${s.name}`,
-            price: 0,
-            quantity: 1,
-          });
-        }
-      }
-
       const extraProps = validProps(optItem.properties);
       for (const p of extraProps) {
         const value = ex?.props?.[p.id];
@@ -408,6 +378,18 @@ function buildResult(item: MenuItem, selections: Selections): BuilderResult {
           price: 0,
           quantity: 1,
         });
+      }
+
+      if (ex?.sauceId) {
+        const s = optItem.allowed_sauces?.find((x) => x.id === ex.sauceId);
+        if (s) {
+          options.push({
+            type: 'sauce',
+            name: `${optItem.name}: ${s.name}`,
+            price: 0,
+            quantity: 1,
+          });
+        }
       }
     }
   }
@@ -474,12 +456,12 @@ export function ProductBuilderDialog({
     }
 
     setSelections(initSel);
-    setStepIndex(initialVariantId ? 1 : 0);
+    setStepIndex(0); // Всегда начинаем с 0. Если передан initialVariantId, шаг вариант просто не добавится в массив.
   }, [open, itemId, initialVariantId, item]);
 
   const steps = useMemo(
-    () => (item ? computeSteps(item, selections) : []),
-    [item, selections]
+    () => (item ? computeSteps(item, selections, initialVariantId) : []),
+    [item, selections, initialVariantId]
   );
 
   useEffect(() => {
@@ -499,7 +481,7 @@ export function ProductBuilderDialog({
   const advance = useCallback(
     (newSel: Selections, reuse: boolean) => {
       if (!item) return;
-      const newSteps = computeSteps(item, newSel);
+      const newSteps = computeSteps(item, newSel, initialVariantId);
       const nextIdx = reuse ? stepIndex : stepIndex + 1;
 
       if (nextIdx >= newSteps.length) {
@@ -509,7 +491,7 @@ export function ProductBuilderDialog({
         setStepIndex(nextIdx);
       }
     },
-    [item, stepIndex, doFinish]
+    [item, stepIndex, doFinish, initialVariantId]
   );
 
   const goNext = () => {
@@ -550,15 +532,7 @@ export function ProductBuilderDialog({
   };
 
   const selectVariant = (v: MenuItem) => {
-    advance(
-      {
-        ...selections,
-        variantId: v.id,
-        mainSauceId: null,
-        mainProps: {},
-      },
-      false
-    );
+    advance({ ...selections, variantId: v.id, mainSauceId: null, mainProps: {} }, false);
   };
 
   const selectMainSauce = (sauceId: string) => {
@@ -566,101 +540,38 @@ export function ProductBuilderDialog({
   };
 
   const selectExtraSauce = (groupId: string, sauceId: string) => {
-    const cur = selections.extras[groupId] ?? {
-      optionId: null,
-      sauceId: null,
-      props: {},
-    };
-    advance(
-      {
-        ...selections,
-        extras: {
-          ...selections.extras,
-          [groupId]: { ...cur, sauceId },
-        },
-      },
-      false
-    );
+    const cur = selections.extras[groupId] ?? { optionId: null, sauceId: null, props: {} };
+    advance({ ...selections, extras: { ...selections.extras, [groupId]: { ...cur, sauceId } } }, false);
   };
 
   const selectExtraOption = (groupId: string, optionId: string) => {
-    advance(
-      {
-        ...selections,
-        extras: {
-          ...selections.extras,
-          [groupId]: {
-            optionId,
-            sauceId: null,
-            props: {},
-          },
-        },
-      },
-      true
-    );
+    advance({ ...selections, extras: { ...selections.extras, [groupId]: { optionId, sauceId: null, props: {} } } }, true);
   };
 
-  const skipExtraOption = (groupId: string) => {
+  const skipExtraOption = (_groupId: string) => {
     const nextIdx = stepIndex + 1;
-    if (nextIdx >= steps.length) {
-      doFinish(selections);
-    } else {
-      setStepIndex(nextIdx);
-    }
-    void groupId;
+    if (nextIdx >= steps.length) doFinish(selections);
+    else setStepIndex(nextIdx);
   };
 
   const setMainPropOption = (pid: string, opt: string) => {
-    setSelections((s) => ({
-      ...s,
-      mainProps: { ...s.mainProps, [pid]: opt },
-    }));
+    setSelections((s) => ({ ...s, mainProps: { ...s.mainProps, [pid]: opt } }));
   };
 
   const setExtraPropOption = (groupId: string, pid: string, opt: string) => {
     setSelections((s) => {
-      const cur = s.extras[groupId] ?? {
-        optionId: null,
-        sauceId: null,
-        props: {},
-      };
-      return {
-        ...s,
-        extras: {
-          ...s.extras,
-          [groupId]: { ...cur, props: { ...cur.props, [pid]: opt } },
-        },
-      };
+      const cur = s.extras[groupId] ?? { optionId: null, sauceId: null, props: {} };
+      return { ...s, extras: { ...s.extras, [groupId]: { ...cur, props: { ...cur.props, [pid]: opt } } } };
     });
   };
 
   const answerMainPropOption = (pid: string, opt: string) => {
-    advance(
-      { ...selections, mainProps: { ...selections.mainProps, [pid]: opt } },
-      false
-    );
+    advance({ ...selections, mainProps: { ...selections.mainProps, [pid]: opt } }, false);
   };
 
-  const answerExtraPropOption = (
-    groupId: string,
-    pid: string,
-    opt: string
-  ) => {
-    const cur = selections.extras[groupId] ?? {
-      optionId: null,
-      sauceId: null,
-      props: {},
-    };
-    advance(
-      {
-        ...selections,
-        extras: {
-          ...selections.extras,
-          [groupId]: { ...cur, props: { ...cur.props, [pid]: opt } },
-        },
-      },
-      false
-    );
+  const answerExtraPropOption = (groupId: string, pid: string, opt: string) => {
+    const cur = selections.extras[groupId] ?? { optionId: null, sauceId: null, props: {} };
+    advance({ ...selections, extras: { ...selections.extras, [groupId]: { ...cur, props: { ...cur.props, [pid]: opt } } } }, false);
   };
 
   const skipMainProp = (pid: string) => {
@@ -670,23 +581,10 @@ export function ProductBuilderDialog({
   };
 
   const skipExtraProp = (groupId: string, pid: string) => {
-    const cur = selections.extras[groupId] ?? {
-      optionId: null,
-      sauceId: null,
-      props: {},
-    };
+    const cur = selections.extras[groupId] ?? { optionId: null, sauceId: null, props: {} };
     const np = { ...cur.props };
     delete np[pid];
-    advance(
-      {
-        ...selections,
-        extras: {
-          ...selections.extras,
-          [groupId]: { ...cur, props: np },
-        },
-      },
-      false
-    );
+    advance({ ...selections, extras: { ...selections.extras, [groupId]: { ...cur, props: np } } }, false);
   };
 
   const back = () => {
@@ -708,25 +606,33 @@ export function ProductBuilderDialog({
     return currentStep.group.label || t('chooseExtra');
   })();
 
+  const mainItem = item.type === 'set' ? item.set_main : item;
+  const selectedVariant = mainItem?.variants?.find(
+    (x) => x.id === selections.variantId
+  );
+  const selectedVariantName = selectedVariant?.name;
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={onCancel}
-    >
-      <div
-        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-lg max-h-[92dvh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onCancel}>
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-lg max-h-[92dvh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between gap-3 p-4 border-b border-gray-200 shrink-0">
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] font-bold text-orange-600 uppercase tracking-wider">
+            <div className="text-[0.625rem] font-bold text-orange-600 uppercase tracking-wider">
               {stepLabel}
               {steps.length > 0 && ` · ${stepIndex + 1}/${steps.length}`}
             </div>
-            <h3 className="text-lg font-black text-gray-900 truncate">
-              {item.name}
+
+            {/* ✅ Обновленный вывод названия с выбранным вариантом */}
+            <h3 className="text-lg font-black text-gray-900 flex items-center gap-2 min-w-0">
+              <span className="truncate">{item.name}</span>
+              {selectedVariantName && (
+                <span className="text-xs font-black text-orange-600 bg-orange-100 px-2 py-1 rounded-md shrink-0 border border-orange-200">
+                  {selectedVariantName}
+                </span>
+              )}
             </h3>
+
           </div>
           <button
             onClick={onCancel}
@@ -736,19 +642,12 @@ export function ProductBuilderDialog({
           </button>
         </div>
 
-        {/* Progress */}
         {steps.length > 0 && (
           <div className="h-1 bg-gray-100 shrink-0">
-            <div
-              className="h-full bg-gradient-to-r from-orange-500 to-red-500 transition-all"
-              style={{
-                width: `${((stepIndex + 1) / steps.length) * 100}%`,
-              }}
-            />
+            <div className="h-full bg-gradient-to-r from-orange-500 to-red-500 transition-all" style={{ width: `${((stepIndex + 1) / steps.length) * 100}%` }} />
           </div>
         )}
 
-        {/* Body */}
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
           {currentStep?.kind === 'variant' && (
             <div className="grid grid-cols-2 gap-2">
@@ -763,13 +662,7 @@ export function ProductBuilderDialog({
                   }`}
                 >
                   <div className="text-base font-black">{v.name}</div>
-                  <div
-                    className={`text-sm font-bold ${
-                      selections.variantId === v.id
-                        ? 'text-white/90'
-                        : 'text-orange-600'
-                    }`}
-                  >
+                  <div className={`text-sm font-bold ${selections.variantId === v.id ? 'text-white/90' : 'text-orange-600'}`}>
                     {v.free ? '' : formatYen(v.price)}
                   </div>
                 </button>
@@ -780,190 +673,83 @@ export function ProductBuilderDialog({
           {currentStep?.kind === 'sauce' && (
             <div className="grid grid-cols-3 gap-3">
               {currentStep.sauces.map((s) => {
-                const selected =
-                  currentStep.ctx === 'main'
-                    ? selections.mainSauceId === s.id
-                    : selections.extras[currentStep.ctx.extra]?.sauceId ===
-                      s.id;
+                const selected = currentStep.ctx === 'main' ? selections.mainSauceId === s.id : selections.extras[currentStep.ctx.extra]?.sauceId === s.id;
                 return (
                   <button
                     key={s.id}
-                    onClick={() => {
-                      if (currentStep.ctx === 'main')
-                        selectMainSauce(s.id);
-                      else selectExtraSauce(currentStep.ctx.extra, s.id);
-                    }}
-                    className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-[0.97] ${
-                      selected
-                        ? 'bg-orange-50 ring-4 ring-orange-300'
-                        : 'bg-white hover:bg-gray-50'
-                    }`}
+                    onClick={() => currentStep.ctx === 'main' ? selectMainSauce(s.id) : selectExtraSauce(currentStep.ctx.extra, s.id)}
+                    className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-[0.97] ${selected ? 'bg-orange-50 ring-4 ring-orange-300' : 'bg-white hover:bg-gray-50'}`}
                   >
-                    <div
-                      className="relative rounded-lg overflow-hidden w-full max-w-[88px] aspect-square"
-                      style={{
-                        borderWidth: 3,
-                        borderStyle: 'solid',
-                        borderColor: s.color ?? '#e5e7eb',
-                        background: '#ffffff',
-                      }}
-                    >
-                      {s.image_url ? (
-                        <img
-                          src={s.image_url}
-                          alt={s.name}
-                          className="absolute inset-0 w-full h-full object-cover"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div
-                          className="absolute inset-0"
-                          style={{
-                            backgroundColor: s.color ?? '#e5e7eb',
-                            opacity: 0.25,
-                          }}
-                        />
-                      )}
-                      {selected && (
-                        <div className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-orange-500 text-white flex items-center justify-center shadow-md">
-                          <Check className="w-2.5 h-2.5" />
-                        </div>
-                      )}
+                    <div className="relative rounded-lg overflow-hidden w-full max-w-[5.5rem] aspect-square" style={{ borderWidth: 3, borderStyle: 'solid', borderColor: s.color ?? '#e5e7eb', background: '#ffffff' }}>
+                      {s.image_url ? <img src={s.image_url} alt={s.name} className="absolute inset-0 w-full h-full object-cover" loading="lazy" /> : <div className="absolute inset-0" style={{ backgroundColor: s.color ?? '#e5e7eb', opacity: 0.25 }} />}
+                      {selected && <div className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-orange-500 text-white flex items-center justify-center shadow-md"><Check className="w-2.5 h-2.5" /></div>}
                     </div>
-                    <span className="text-[11px] font-black text-gray-900 truncate w-full text-center leading-tight">
-                      {s.name}
-                    </span>
+                    <span className="text-[0.6875rem] font-black text-gray-900 truncate w-full text-center leading-tight">{s.name}</span>
                   </button>
                 );
               })}
             </div>
           )}
 
-          {/* PROPERTIES */}
-          {currentStep?.kind === 'properties' &&
-            (() => {
-              const ctx = currentStep.ctx;
-              const isMain = ctx === 'main';
-              const getVal = (pid: string): string | undefined =>
-                isMain
-                  ? selections.mainProps[pid]
-                  : selections.extras[(ctx as { extra: string }).extra]?.props[
-                      pid
-                    ];
+          {currentStep?.kind === 'properties' && (() => {
+            const ctx = currentStep.ctx;
+            const isMain = ctx === 'main';
+            const getVal = (pid: string): string | undefined => isMain ? selections.mainProps[pid] : selections.extras[(ctx as { extra: string }).extra]?.props[pid];
 
-              if (currentStep.props.length === 1) {
-                const p = currentStep.props[0];
-                const val = getVal(p.id);
-
-                const handlePick = (opt: string) => {
-                  if (isMain) answerMainPropOption(p.id, opt);
-                  else
-                    answerExtraPropOption(
-                      (ctx as { extra: string }).extra,
-                      p.id,
-                      opt
-                    );
-                };
-
-                return (
-                  <div className="py-2">
-                    <div className="text-center text-xl font-black text-gray-900 mb-4">
-                      {p.name}
-                    </div>
-                    <PropertyOptionsLayout
-                      options={p.options}
-                      selectedValue={val}
-                      onPick={handlePick}
-                      size="large"
-                    />
-                  </div>
-                );
-              }
-
+            if (currentStep.props.length === 1) {
+              const p = currentStep.props[0];
+              const val = getVal(p.id);
+              const handlePick = (opt: string) => {
+                if (isMain) answerMainPropOption(p.id, opt);
+                else answerExtraPropOption((ctx as { extra: string }).extra, p.id, opt);
+              };
               return (
-                <div className="space-y-3">
-                  {currentStep.props.map((p) => {
-                    const val = getVal(p.id);
-
-                    const handlePick = (opt: string) => {
-                      if (isMain) setMainPropOption(p.id, opt);
-                      else
-                        setExtraPropOption(
-                          (ctx as { extra: string }).extra,
-                          p.id,
-                          opt
-                        );
-                    };
-
-                    return (
-                      <div
-                        key={p.id}
-                        className="border-2 border-gray-200 rounded-xl p-3 bg-white"
-                      >
-                        <div className="text-sm font-black text-gray-900 mb-2">
-                          {p.name}
-                        </div>
-                        <PropertyOptionsLayout
-                          options={p.options}
-                          selectedValue={val}
-                          onPick={handlePick}
-                          size="small"
-                        />
-                      </div>
-                    );
-                  })}
+                <div className="py-2">
+                  <div className="text-center text-xl font-black text-gray-900 mb-4">{p.name}</div>
+                  <PropertyOptionsLayout options={p.options} selectedValue={val} onPick={handlePick} size="large" />
                 </div>
               );
-            })()}
+            }
+
+            return (
+              <div className="space-y-3">
+                {currentStep.props.map((p) => {
+                  const val = getVal(p.id);
+                  const handlePick = (opt: string) => {
+                    if (isMain) setMainPropOption(p.id, opt);
+                    else setExtraPropOption((ctx as { extra: string }).extra, p.id, opt);
+                  };
+                  return (
+                    <div key={p.id} className="border-2 border-gray-200 rounded-xl p-3 bg-white">
+                      <div className="text-sm font-black text-gray-900 mb-2">{p.name}</div>
+                      <PropertyOptionsLayout options={p.options} selectedValue={val} onPick={handlePick} size="small" />
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
           {currentStep?.kind === 'extra-option' && (
             <div className="space-y-2">
               <div className="text-sm text-gray-500 mb-2">
                 {currentStep.group.label || t('chooseExtra')}
-                {currentStep.group.required && (
-                  <span className="text-red-500 ml-1">*</span>
-                )}
+                {currentStep.group.required && <span className="text-red-500 ml-1">*</span>}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {currentStep.group.options.map((o) => {
-                  const selected =
-                    selections.extras[currentStep.group.id]?.optionId ===
-                    o.item.id;
+                  const selected = selections.extras[currentStep.group.id]?.optionId === o.item.id;
                   return (
                     <button
                       key={o.option_id}
-                      onClick={() =>
-                        selectExtraOption(currentStep.group.id, o.item.id)
-                      }
-                      className={`p-3 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${
-                        selected
-                          ? 'bg-purple-500 border-purple-500 text-white shadow-md'
-                          : 'bg-white border-gray-200 hover:border-purple-300'
-                      }`}
+                      onClick={() => selectExtraOption(currentStep.group.id, o.item.id)}
+                      className={`p-3 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${selected ? 'bg-purple-500 border-purple-500 text-white shadow-md' : 'bg-white border-gray-200 hover:border-purple-300'}`}
                     >
                       <div className="flex items-center gap-2">
-                        {o.item.image_url && (
-                          <img
-                            src={o.item.image_url}
-                            alt=""
-                            className="w-8 h-8 rounded object-cover shrink-0"
-                          />
-                        )}
+                        {o.item.image_url && <img src={o.item.image_url} alt="" className="w-8 h-8 rounded object-cover shrink-0" />}
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm font-bold truncate">
-                            {o.item.name}
-                          </div>
-                          {!o.item.free && (
-                            <div
-                              className={`text-[11px] font-bold ${
-                                selected
-                                  ? 'text-white/80'
-                                  : 'text-orange-600'
-                              }`}
-                            >
-                              {formatYen(o.item.price)}
-                            </div>
-                          )}
+                          <div className="text-sm font-bold truncate">{o.item.name}</div>
+                          {!o.item.free && <div className={`text-[0.6875rem] font-bold ${selected ? 'text-white/80' : 'text-orange-600'}`}>{formatYen(o.item.price)}</div>}
                         </div>
                       </div>
                     </button>
@@ -971,66 +757,36 @@ export function ProductBuilderDialog({
                 })}
               </div>
               {!currentStep.group.required && (
-                <button
-                  onClick={() => skipExtraOption(currentStep.group.id)}
-                  className="w-full py-2 text-xs text-gray-500 underline"
-                >
+                <button onClick={() => skipExtraOption(currentStep.group.id)} className="w-full py-2 text-xs text-gray-500 underline">
                   {t('skip')}
                 </button>
               )}
             </div>
           )}
 
-          {error && (
-            <div className="mt-3 p-2.5 bg-red-50 border border-red-300 rounded-lg text-red-700 text-xs font-bold">
-              {error}
-            </div>
-          )}
+          {error && <div className="mt-3 p-2.5 bg-red-50 border border-red-300 rounded-lg text-red-700 text-xs font-bold">{error}</div>}
         </div>
 
-        {/* Footer */}
         <div className="p-3 border-t border-gray-200 flex gap-2 shrink-0">
-          <button
-            onClick={back}
-            className="flex items-center justify-center gap-1 px-4 py-3 rounded-xl bg-gray-100 active:bg-gray-200 text-gray-800 text-sm font-bold"
-          >
+          <button onClick={back} className="flex items-center justify-center gap-1 px-4 py-3 rounded-xl bg-gray-100 active:bg-gray-200 text-gray-800 text-sm font-bold">
             <ChevronLeft className="w-4 h-4" />
             {stepIndex === 0 ? t('cancel') : t('back')}
           </button>
 
           {(() => {
-            const singlePropStep =
-              currentStep?.kind === 'properties' &&
-              currentStep.props.length === 1
-                ? currentStep
-                : null;
-
-            const showNext =
-              currentStep &&
-              !(
-                currentStep.kind === 'variant' ||
-                currentStep.kind === 'sauce' ||
-                currentStep.kind === 'extra-option' ||
-                singlePropStep
-              );
+            const singlePropStep = currentStep?.kind === 'properties' && currentStep.props.length === 1 ? currentStep : null;
+            const showNext = currentStep && !(currentStep.kind === 'variant' || currentStep.kind === 'sauce' || currentStep.kind === 'extra-option' || singlePropStep);
 
             if (singlePropStep) {
               const p = singlePropStep.props[0];
               const ctx = singlePropStep.ctx;
               const isMain = ctx === 'main';
-
               const handleSkip = () => {
                 if (isMain) skipMainProp(p.id);
-                else
-                  skipExtraProp((ctx as { extra: string }).extra, p.id);
+                else skipExtraProp((ctx as { extra: string }).extra, p.id);
               };
-
               return (
-                <button
-                  onClick={handleSkip}
-                  className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold flex items-center justify-center active:scale-[0.98] shadow-md shadow-orange-500/30 transition-all"
-                  title={t('skip')}
-                >
+                <button onClick={handleSkip} className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold flex items-center justify-center active:scale-[0.98] shadow-md shadow-orange-500/30 transition-all" title={t('skip')}>
                   {currentPrice > 0 ? formatYen(currentPrice) : t('addToCartBtn')}
                 </button>
               );
@@ -1045,14 +801,10 @@ export function ProductBuilderDialog({
             }
 
             return (
-              <button
-                onClick={goNext}
-                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold transition-all active:scale-[0.98] shadow-md shadow-orange-500/30 flex items-center justify-center gap-1"
-              >
+              <button onClick={goNext} className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold transition-all active:scale-[0.98] shadow-md shadow-orange-500/30 flex items-center justify-center gap-1">
                 {stepIndex >= steps.length - 1 ? (
                   <>
-                    {t('addToCartBtn')} ·{' '}
-                    {currentPrice > 0 ? formatYen(currentPrice) : ''}
+                    {t('addToCartBtn')} · {currentPrice > 0 ? formatYen(currentPrice) : ''}
                   </>
                 ) : (
                   <>

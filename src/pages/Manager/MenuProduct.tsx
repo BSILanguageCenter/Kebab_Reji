@@ -25,6 +25,7 @@ import { PanelSettings } from '@/components/PanelSettings';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { ImageCropDialog } from '@/components/ImageCropDialog';
 import { MenuCard } from '@/components/MenuCard';
+import { useViewport } from '@/lib/useViewport';
 import {
   MenuCardMenu,
   type MenuCardMenuState,
@@ -55,7 +56,6 @@ import {
   Droplet,
   Sparkles,
   LayoutGrid,
-  ImageIcon,
 } from 'lucide-react';
 
 // ============================================================
@@ -75,9 +75,6 @@ function getSpaceItems(tops: MenuItem[], space: CategorySpace): MenuItem[] {
   return tops.filter((i) => i.type === space);
 }
 
-// ============================================================
-// ШИРИНА КАРТОЧКИ
-// ============================================================
 function getItemWidth(item: MenuItem): number {
   if (item.type === 'dish' && item.dish_kind === 'group') {
     return Math.max(1, item.variants?.length ?? 1);
@@ -90,9 +87,6 @@ function getItemWidth(item: MenuItem): number {
 
 const EMPTY_ROWS_AFTER = 3;
 
-// ============================================================
-// Конфликты sort_order
-// ============================================================
 function hasSortConflicts(tops: MenuItem[]): boolean {
   const spaces: CategorySpace[] = ['dishset', 'drink', 'sauce', 'topping'];
   for (const sp of spaces) {
@@ -149,9 +143,6 @@ function buildCategorizedOrder(
   return updates;
 }
 
-// ============================================================
-// Проверка диапазона
-// ============================================================
 function isRangeFree(
   spaceItems: MenuItem[],
   start: number,
@@ -246,9 +237,6 @@ function findNearestFreeSlot(
   return best;
 }
 
-// ============================================================
-// useGridCols
-// ============================================================
 function useGridCols(
   ref: React.RefObject<HTMLDivElement | null>,
   size: number,
@@ -274,9 +262,6 @@ function useGridCols(
   return cols;
 }
 
-// ============================================================
-// Layout-ячейка
-// ============================================================
 type LayoutCell = {
   row: number;
   col: number;
@@ -322,9 +307,6 @@ function buildRenderLayout(
   return cells;
 }
 
-// ============================================================
-// GridSpace
-// ============================================================
 function GridSpace({
   space,
   size,
@@ -377,7 +359,9 @@ function GridSpace({
     [spaceItems, cols]
   );
 
-  const cellH = compact ? size + 32 : size + 50;
+  const cellH = Math.round(
+    size + (compact ? 32 : 50) * (layout.itemTextSize / 12)
+  );
   const gap = layout.gridGap;
 
   const highlightSlot =
@@ -505,9 +489,6 @@ function GridSpace({
   );
 }
 
-// ============================================================
-// MenuProduct
-// ============================================================
 export function MenuProduct() {
   const { t } = useI18n();
   const [items, setItems] = useState<MenuItem[]>([]);
@@ -545,7 +526,30 @@ export function MenuProduct() {
     targetSlot: number | null;
   } | null>(null);
 
-  const [layout, setLayout] = useLayoutSettings();
+  const [rawLayout, setLayout] = useLayoutSettings();
+  const { scale: ui } = useViewport();
+
+  const layout = useMemo(() => {
+    const s = (v: number) => Math.round(v * ui);
+    return {
+      ...rawLayout,
+      ordersWidth: s(rawLayout.ordersWidth),
+      menuRightWidth: s(rawLayout.menuRightWidth),
+      cartWidth: s(rawLayout.cartWidth),
+      dishCardSize: s(rawLayout.dishCardSize),
+      toppingCardSize: s(rawLayout.toppingCardSize),
+      drinkCardSize: s(rawLayout.drinkCardSize),
+      sauceCardSize: s(rawLayout.sauceCardSize),
+      cardRadius: s(rawLayout.cardRadius),
+      gridGap: s(rawLayout.gridGap),
+      ordersRowGap: s(rawLayout.ordersRowGap),
+      cartItemGap: s(rawLayout.cartItemGap),
+      itemTextSize: s(rawLayout.itemTextSize),
+      panelHeaderSize: s(rawLayout.panelHeaderSize),
+      orderNumberSize: s(rawLayout.orderNumberSize),
+      toppingsHeight: s(rawLayout.toppingsHeight),
+    };
+  }, [rawLayout, ui]);
   const drinksWrapRef = useRef<HTMLDivElement>(null);
 
   const colsRef = useRef<Partial<Record<CategorySpace, number>>>({});
@@ -558,14 +562,12 @@ export function MenuProduct() {
     setError(null);
     try {
       let list = await fetchAllMenuItems();
-
       const tops = list.filter((i) => !i.parent_id);
       if (hasSortConflicts(tops)) {
         const updates = buildCategorizedOrder(tops);
         await reorderItems(updates);
         list = await fetchAllMenuItems();
       }
-
       setItems(list);
     } catch (e) {
       setError(e instanceof Error ? e.message : t('failedToLoadMenu'));
@@ -599,7 +601,6 @@ export function MenuProduct() {
         return newOrder != null ? { ...it, sort_order: newOrder } : it;
       })
     );
-
     try {
       await reorderItems(updates);
     } catch (err) {
@@ -610,12 +611,8 @@ export function MenuProduct() {
 
   const allTops = useMemo(() => items.filter((i) => !i.parent_id), [items]);
 
-  // ============================================================
-  // История свойств
-  // ============================================================
   const propertyHistory = useMemo<HydratedProperty[]>(() => {
     const byName = new Map<string, HydratedProperty>();
-
     for (const top of items) {
       const variants = top.variants ?? [];
       const sources: HydratedProperty[][] = [
@@ -629,35 +626,22 @@ export function MenuProduct() {
           const key = name.toLowerCase();
           const prev = byName.get(key);
           if (!prev) {
-            byName.set(key, {
-              ...p,
-              id: '',
-              item_id: '',
-            });
+            byName.set(key, { ...p, id: '', item_id: '' });
             continue;
           }
-          const prevScore =
-            prev.options.length * 10 + (prev.required ? 5 : 0);
+          const prevScore = prev.options.length * 10 + (prev.required ? 5 : 0);
           const nextScore = p.options.length * 10 + (p.required ? 5 : 0);
           if (nextScore > prevScore) {
-            byName.set(key, {
-              ...p,
-              id: '',
-              item_id: '',
-            });
+            byName.set(key, { ...p, id: '', item_id: '' });
           }
         }
       }
     }
-
     return [...byName.values()].sort((a, b) =>
       a.name.localeCompare(b.name, 'ru')
     );
   }, [items]);
 
-  // ============================================================
-  // DROP
-  // ============================================================
   const handleSlotDrop = useCallback(
     async (space: CategorySpace, targetSlot: number, cols: number) => {
       const fromId = draggedId ?? pointerDragRef.current?.id ?? null;
@@ -753,21 +737,14 @@ export function MenuProduct() {
     [draggedId, items, allTops]
   );
 
-  // ============================================================
-  // POINTER DRAG (мышь + тач)
-  // ============================================================
-  // Всегда актуальная версия handleSlotDrop: слушатели pointerup создаются
-  // в момент нажатия и иначе держали бы СТАРУЮ версию (draggedId = null),
-  // из-за чего drop молча ничего не делал.
   const handleSlotDropRef = useRef(handleSlotDrop);
   handleSlotDropRef.current = handleSlotDrop;
 
   const startPointerDrag = useCallback(
     (e: React.PointerEvent, id: string) => {
-      if (e.button !== 0) return; // только левая кнопка / тач
+      if (e.button !== 0) return;
       const target = e.target as HTMLElement | null;
       if (!target) return;
-      // Служебные кнопки (⋮, стрелки) помечены data-no-drag
       if (target.closest('[data-no-drag]')) return;
 
       const startX = e.clientX;
@@ -796,7 +773,6 @@ export function MenuProduct() {
       let ghost: HTMLDivElement | null = null;
       let raf = 0;
 
-      // ---------- «призрак» карточки под курсором ----------
       const createGhost = () => {
         if (!source) return;
         const g = document.createElement('div');
@@ -833,7 +809,6 @@ export function MenuProduct() {
         ghost = null;
       };
 
-      // ---------- целевая ячейка (только своя категория) ----------
       const updateTarget = () => {
         const el = document.elementFromPoint(lastX, lastY);
         const cell = el?.closest('[data-slot-space]') as HTMLElement | null;
@@ -852,12 +827,14 @@ export function MenuProduct() {
         }
       };
 
-      // ---------- автопрокрутка у края ----------
       const findScrollParent = (el: Element | null): HTMLElement | null => {
         let n = el as HTMLElement | null;
         while (n && n !== document.body) {
           const oy = getComputedStyle(n).overflowY;
-          if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight) {
+          if (
+            (oy === 'auto' || oy === 'scroll') &&
+            n.scrollHeight > n.clientHeight
+          ) {
             return n;
           }
           n = n.parentElement;
@@ -903,9 +880,6 @@ export function MenuProduct() {
         }
       };
 
-      // Тач — активация по долгому тапу (350мс).
-      // Мышь — активация при первом движении > 5px (см. onMove),
-      //        чтобы клик без движения открывал редактор без «прыжка».
       if (isTouch) {
         state.longPressTimer = window.setTimeout(activate, 350);
       }
@@ -931,7 +905,6 @@ export function MenuProduct() {
       };
 
       const onKey = (ev: KeyboardEvent) => {
-        // Esc — отмена перетаскивания
         if (ev.key !== 'Escape' || !state.activated) return;
         cancelled = true;
         state.targetSpace = null;
@@ -947,9 +920,7 @@ export function MenuProduct() {
 
         if (!state.activated) {
           const dist = Math.hypot(ev.clientX - startX, ev.clientY - startY);
-
           if (isTouch) {
-            // Тач: движение до long-press = пользователь скроллит — отменяем drag
             if (dist > 10) {
               if (state.longPressTimer) {
                 window.clearTimeout(state.longPressTimer);
@@ -960,8 +931,6 @@ export function MenuProduct() {
             }
             return;
           }
-
-          // Мышь: активация только при движении > 5px
           if (dist > 5) {
             activate();
           } else {
@@ -999,7 +968,6 @@ export function MenuProduct() {
           setDragOverSlot(null);
         }
 
-        // handleSlotDrop читает pointerDragRef синхронно — сбрасываем после вызова
         pointerDragRef.current = null;
         cleanup();
       };
@@ -1048,7 +1016,7 @@ export function MenuProduct() {
     if (!pendingDelete) return;
     setDeleting(true);
     try {
-      await deleteItem(pendingDelete.id);
+      await deleteItem(pendingDelete.id, pendingDelete.type);
       setPendingDelete(null);
       loadData(true);
     } catch (e) {
@@ -1069,12 +1037,7 @@ export function MenuProduct() {
 
   const openCardMenu = useCallback(
     (x: number, y: number, item: MenuItem) => {
-      setCardMenu({
-        itemId: item.id,
-        itemName: item.name,
-        x,
-        y,
-      });
+      setCardMenu({ itemId: item.id, itemName: item.name, x, y });
     },
     []
   );
@@ -1100,7 +1063,7 @@ export function MenuProduct() {
   const startLayoutRef = useRef<typeof layout | null>(null);
 
   const beginResize = () => {
-    startLayoutRef.current = { ...layout };
+    startLayoutRef.current = { ...rawLayout };
   };
 
   const endResize = () => {
@@ -1131,39 +1094,39 @@ export function MenuProduct() {
   };
 
   const handleResizeOrders = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      ordersWidth: clampLayout('ordersWidth', base.ordersWidth + d),
+      ordersWidth: clampLayout('ordersWidth', base.ordersWidth + d / ui),
     }));
   };
 
   const handleResizeMenuRight = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      menuRightWidth: clampLayout('menuRightWidth', base.menuRightWidth - d),
+      menuRightWidth: clampLayout('menuRightWidth', base.menuRightWidth - d / ui),
     }));
   };
 
   const handleResizeCart = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      cartWidth: clampLayout('cartWidth', base.cartWidth - d),
+      cartWidth: clampLayout('cartWidth', base.cartWidth - d / ui),
     }));
   };
 
   const handleResizeToppings = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      toppingsHeight: clampLayout('toppingsHeight', base.toppingsHeight - d),
+      toppingsHeight: clampLayout('toppingsHeight', base.toppingsHeight - d / ui),
     }));
   };
 
   const handleResizeDrinks = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     const containerH = drinksWrapRef.current?.clientHeight ?? 400;
     const pctDelta = (d / containerH) * 100;
     setLayout((prev) => ({
@@ -1195,7 +1158,6 @@ export function MenuProduct() {
       )}
 
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* COLUMN 1: PRODUCTS LIST */}
         <div
           className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.ordersWidth }}
@@ -1227,7 +1189,7 @@ export function MenuProduct() {
                 <button
                   key={k}
                   onClick={() => setKindFilter(k)}
-                  className={`flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
+                  className={`flex-1 py-1.5 rounded-lg text-[0.6875rem] font-bold transition-colors ${
                     kindFilter === k
                       ? 'bg-slate-900 text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -1261,7 +1223,7 @@ export function MenuProduct() {
                     {item.name}
                   </span>
                   <span
-                    className={`text-[9px] font-black px-1.5 py-0.5 rounded-full shrink-0 ${
+                    className={`text-[0.5625rem] font-black px-1.5 py-0.5 rounded-full shrink-0 ${
                       kind === 'set'
                         ? 'bg-orange-100 text-orange-700'
                         : 'bg-blue-100 text-blue-700'
@@ -1270,7 +1232,7 @@ export function MenuProduct() {
                     {kind === 'set' ? 'SET' : 'DSH'}
                   </span>
                 </div>
-                <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                <div className="text-[0.6875rem] text-slate-500 mt-0.5 tabular-nums">
                   {item.free ? '' : formatYen(item.price)}
                 </div>
               </button>
@@ -1284,7 +1246,6 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* COLUMN 2: БЛЮДА И СЕТЫ + ТОППИНГИ */}
         <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
             <div className="flex items-center gap-2 mb-3">
@@ -1375,7 +1336,6 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* COLUMN 3: НАПИТКИ + СОУСЫ */}
         <div
           ref={drinksWrapRef}
           className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
@@ -1460,7 +1420,6 @@ export function MenuProduct() {
           onEnd={endResize}
         />
 
-        {/* COLUMN 4: ADD BUTTON + STORAGE + PANEL SETTINGS */}
         <div
           className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
           style={{ width: layout.cartWidth }}
@@ -1473,7 +1432,6 @@ export function MenuProduct() {
               <Plus className="w-4 h-4" />
               {t('addProduct')}
             </button>
-
             <StorageBar onImportComplete={() => loadData(true)} />
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto">
@@ -1570,9 +1528,6 @@ export function MenuProduct() {
   );
 }
 
-// ============================================================
-// TYPE PICKER
-// ============================================================
 function TypePicker({
   onPick,
   onCancel,
@@ -1651,9 +1606,6 @@ function TypePicker({
   );
 }
 
-// ============================================================
-// ITEM FORM MODAL
-// ============================================================
 type MenuVariantForm = {
   id?: string;
   name: string;
@@ -1677,6 +1629,51 @@ type ExtraGroupForm = {
     image_override: string | null;
   }[];
 };
+
+// ============================================================
+// ⚠️ ФИКС: mainOverrides ключуется id ОРИГИНАЛЬНЫХ вариантов
+// главного блюда (из allItems), а НЕ клонов из item.set_main.
+// Раньше при handleSave mainOverrides[v.id] (v — оригинал) не
+// находился → в базу уходили null.
+// ============================================================
+function initMainOverrides(
+  item: MenuItem | null,
+  allItems: MenuItem[]
+): Record<
+  string,
+  { price_override: number | null; image_override: string | null }
+> {
+  const out: Record<
+    string,
+    { price_override: number | null; image_override: string | null }
+  > = {};
+
+  const setMain = item?.set_main;
+  if (!setMain) return out;
+
+  const originalMain = allItems.find((i) => i.id === setMain.id);
+  const origVariants = originalMain?.variants ?? [];
+  const clonedVariants = setMain.variants ?? [];
+
+  for (let i = 0; i < clonedVariants.length; i++) {
+    const orig = origVariants[i];
+    const cl = clonedVariants[i];
+    if (!orig) continue;
+
+    // «своё» фото сета = image_url клона, если он не совпадает с фото базового блюда
+    const customImage =
+      cl.image_url && cl.image_url !== orig.image_url
+        ? cl.image_url
+        : null;
+
+    out[orig.id] = {
+      price_override: cl.price,
+      image_override: customImage,
+    };
+  }
+
+  return out;
+}
 
 function ItemFormModal({
   type,
@@ -1742,27 +1739,9 @@ function ItemFormModal({
 
   const [setMainId, setSetMainId] = useState<string>(item?.set_main?.id ?? '');
 
-  const [mainOverrides, setMainOverrides] = useState<
-    Record<
-      string,
-      { price_override: number | null; image_override: string | null }
-    >
-  >(() => {
-    const out: Record<
-      string,
-      { price_override: number | null; image_override: string | null }
-    > = {};
-    if (item?.set_main?.variants) {
-      for (const v of item.set_main.variants) {
-        const hasOwnImage = Boolean(v.image_url);
-        out[v.id] = {
-          price_override: v.price,
-          image_override: hasOwnImage ? v.image_url ?? null : null,
-        };
-      }
-    }
-    return out;
-  });
+  const [mainOverrides, setMainOverrides] = useState(() =>
+    initMainOverrides(item, allItems)
+  );
 
   const [extraGroups, setExtraGroups] = useState<ExtraGroupForm[]>(
     (item?.set_extra_groups ?? []).map((g) => ({
@@ -2033,7 +2012,8 @@ function ItemFormModal({
         type,
         name,
         short_name: shortName,
-        image_url: type === 'set' ? null : imageUrl || null,
+        // ⚠️ ФИКС: больше не затираем image_url сета в null
+        image_url: imageUrl || null,
         price: type === 'set' ? 0 : free ? 0 : price,
         free: type === 'set' ? false : free,
         active,
@@ -2097,6 +2077,9 @@ function ItemFormModal({
 
         const main = allItems.find((i) => i.id === setMainId);
         if (main && main.dish_kind === 'group' && main.variants) {
+          // ⚠️ v.id здесь — ОРИГИНАЛЬНЫЙ id варианта главного блюда
+          // (не клон). mainOverrides после фикса инициализируется
+          // именно по этим id — совпадает.
           base.set_main_overrides = main.variants.map((v) => {
             const ov = mainOverrides[v.id];
             return {
@@ -2142,7 +2125,6 @@ function ItemFormModal({
     onClose();
   };
 
-  // Ctrl/Cmd + Enter — быстро сохранить
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (!(ev.ctrlKey || ev.metaKey) || ev.key !== 'Enter') return;
@@ -2156,7 +2138,6 @@ function ItemFormModal({
 
   return (
     <>
-      {/* Закрытие только кнопками «×» и «Отмена» — клик по фону не сбрасывает ввод */}
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
         <div
           className="bg-white rounded-3xl border border-slate-200 w-full max-w-3xl max-h-[92vh] m-4 shadow-2xl relative flex flex-col overflow-hidden"
@@ -2174,7 +2155,6 @@ function ItemFormModal({
             </div>
           )}
 
-          {/* ШАПКА */}
           <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
             <h3 className="text-xl font-black text-slate-900">{title}</h3>
             <button
@@ -2187,7 +2167,6 @@ function ItemFormModal({
             </button>
           </div>
 
-          {/* ТЕЛО (прокручивается) */}
           <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-1">
             {error && (
               <div className="mb-3 p-2.5 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
@@ -2505,9 +2484,7 @@ function ItemFormModal({
                                   updateVariant(i, 'image_url', url)
                                 )
                               }
-                              onClear={() =>
-                                updateVariant(i, 'image_url', '')
-                              }
+                              onClear={() => updateVariant(i, 'image_url', '')}
                               t={t}
                               compact
                             />
@@ -2632,7 +2609,20 @@ function ItemFormModal({
                   setShortName={setShortName}
                   t={t}
                 />
-                <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-800 font-medium leading-snug">
+
+                {/* ⚠️ ФИКС: даём загрузить обложку сета — раньше сохранение
+                    всегда писало image_url = null */}
+                <Field label={t('image')}>
+                  <ImageUploader
+                    imageUrl={imageUrl}
+                    uploading={uploading}
+                    onUpload={(f) => requestCrop(f, (url) => setImageUrl(url))}
+                    onClear={() => setImageUrl('')}
+                    t={t}
+                  />
+                </Field>
+
+                <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[0.6875rem] text-blue-800 font-medium leading-snug">
                   {t('menuSetPriceHint')}
                 </div>
 
@@ -2644,6 +2634,7 @@ function ItemFormModal({
                       setSetMainId(newMainId);
                       const newMain = allItems.find((i) => i.id === newMainId);
                       if (newMain?.dish_kind === 'group' && newMain.variants) {
+                        // Инициализируем оверрайды по id ОРИГИНАЛЬНЫХ вариантов
                         const auto: Record<
                           string,
                           {
@@ -2684,7 +2675,7 @@ function ItemFormModal({
 
                   if (main.dish_kind !== 'group' || !main.variants) {
                     return (
-                      <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-800 leading-snug">
+                      <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[0.6875rem] text-blue-800 leading-snug">
                         {t('menuSetNoVariantsHint')}
                       </div>
                     );
@@ -2692,7 +2683,7 @@ function ItemFormModal({
 
                   return (
                     <Field label={t('menuSetPhotoByVariant')}>
-                      <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800 leading-snug">
+                      <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-xl text-[0.6875rem] text-amber-800 leading-snug">
                         {t('menuSetPhotoIsSetHint')}
                       </div>
 
@@ -2714,7 +2705,7 @@ function ItemFormModal({
                               <div className="flex items-center justify-between gap-2">
                                 <span className="text-xs font-bold text-slate-800 truncate">
                                   {v.name}
-                                  <span className="ml-1 text-[10px] text-slate-400 font-normal">
+                                  <span className="ml-1 text-[0.625rem] text-slate-400 font-normal">
                                     (база {formatYen(v.price)})
                                   </span>
                                 </span>
@@ -2730,7 +2721,7 @@ function ItemFormModal({
                                         },
                                       }))
                                     }
-                                    className="text-[10px] text-orange-600 font-bold hover:underline shrink-0"
+                                    className="text-[0.625rem] text-orange-600 font-bold hover:underline shrink-0"
                                   >
                                     {t('menuSetPhotoReset')}
                                   </button>
@@ -2773,14 +2764,14 @@ function ItemFormModal({
                                     </div>
                                   )}
                                   <div className="flex-1 min-w-0">
-                                    <div className="text-[11px] font-bold text-slate-800 truncate">
+                                    <div className="text-[0.6875rem] font-bold text-slate-800 truncate">
                                       {usingOverride
                                         ? t('menuSetOwnPhoto')
                                         : effectiveImage
                                         ? t('menuSetCurrentDishPhoto')
                                         : t('menuSetUploadPhoto')}
                                     </div>
-                                    <div className="text-[10px] text-slate-500 truncate">
+                                    <div className="text-[0.625rem] text-slate-500 truncate">
                                       {usingOverride
                                         ? t('menuSetClickToReplace')
                                         : t('menuSetClickToSet')}
@@ -2979,7 +2970,6 @@ function ItemFormModal({
             </Field>
           </div>
 
-          {/* ПОДВАЛ (всегда виден) */}
           <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 shrink-0">
             <div className="flex gap-2">
               {onDelete && (
@@ -3003,16 +2993,16 @@ function ItemFormModal({
                 onClick={handleSave}
                 title="Ctrl + Enter"
                 disabled={saving || !name || pendingOpsCount > 0}
-                className="flex-1 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold shadow-md shadow-orange-500/30 disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="flex-1 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 active:scale-[0.98] text-white text-sm font-black shadow-lg shadow-orange-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
               >
                 {saving ? (
                   <>
-                    <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     {t('saving')}
                   </>
                 ) : pendingOpsCount > 0 ? (
                   <>
-                    <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     {t('menuWaitingPhoto')}
                   </>
                 ) : (
@@ -3020,51 +3010,9 @@ function ItemFormModal({
                 )}
               </button>
             </div>
-
-            {pendingOpsCount > 0 && (
-              <p className="mt-2 text-[10px] text-orange-700 text-center leading-snug flex items-center justify-center gap-1.5">
-                <ImageIcon className="w-3 h-3" />
-                {t('menuDoNotClosePhoto')}
-              </p>
-            )}
           </div>
         </div>
       </div>
-
-      {pickingOption && (
-        <ItemPickerModal
-          items={extraCandidates.filter(
-            (x) =>
-              !extraGroups[pickingOption.groupIndex].options.some(
-                (o) => o.item_id === x.id
-              )
-          )}
-          onCancel={() => setPickingOption(null)}
-          onPick={(itemId) => {
-            addOptionToGroup(pickingOption.groupIndex, itemId);
-            setPickingOption(null);
-          }}
-          t={t}
-        />
-      )}
-
-      {pickingSaucesFor && (
-        <SaucePickerModal
-          sauces={allSauces}
-          selectedIds={
-            pickingSaucesFor.kind === 'main'
-              ? allowedSauceIds
-              : variants[pickingSaucesFor.index]?.allowed_sauce_ids ?? []
-          }
-          onCancel={() => setPickingSaucesFor(null)}
-          onSave={(ids) => {
-            if (pickingSaucesFor.kind === 'main') setAllowedSauceIds(ids);
-            else updateVariant(pickingSaucesFor.index, 'allowed_sauce_ids', ids);
-            setPickingSaucesFor(null);
-          }}
-          t={t}
-        />
-      )}
 
       <ImageCropDialog
         open={cropState !== null}
@@ -3072,13 +3020,47 @@ function ItemFormModal({
         onCancel={cancelCrop}
         onConfirm={handleCropConfirm}
       />
+
+      {pickingSaucesFor && (
+        <SaucePicker
+          sauces={allSauces}
+          initial={
+            pickingSaucesFor.kind === 'main'
+              ? allowedSauceIds
+              : variants[pickingSaucesFor.index]?.allowed_sauce_ids ?? []
+          }
+          onCancel={() => setPickingSaucesFor(null)}
+          onSave={(ids) => {
+            if (pickingSaucesFor.kind === 'main') {
+              setAllowedSauceIds(ids);
+            } else {
+              updateVariant(pickingSaucesFor.index, 'allowed_sauce_ids', ids);
+            }
+            setPickingSaucesFor(null);
+          }}
+          t={t}
+        />
+      )}
+
+      {pickingOption && (
+        <ItemPicker
+          items={extraCandidates}
+          onCancel={() => setPickingOption(null)}
+          onPick={(item) => {
+            addOptionToGroup(pickingOption.groupIndex, item.id);
+            setPickingOption(null);
+          }}
+          t={t}
+        />
+      )}
     </>
   );
 }
 
 // ============================================================
-// SHARED SUB-COMPONENTS
+// ХЕЛПЕР-КОМПОНЕНТЫ
 // ============================================================
+
 function NameAndShort({
   name,
   shortName,
@@ -3093,12 +3075,13 @@ function NameAndShort({
   t: (k: TranslationKey) => string;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="grid grid-cols-2 gap-2">
       <Field label={t('name')}>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           className="form-input"
+          placeholder={t('fullName')}
         />
       </Field>
       <Field label={t('shortName')}>
@@ -3121,97 +3104,31 @@ function PriceAndFree({
 }: {
   price: number;
   free: boolean;
-  setPrice: (v: number) => void;
-  setFree: (v: boolean) => void;
+  setPrice: (n: number) => void;
+  setFree: (b: boolean) => void;
   t: (k: TranslationKey) => string;
 }) {
   return (
-    <Field label={t('price')}>
-      <div className="flex items-center gap-2">
+    <div className="grid grid-cols-2 gap-2 items-end">
+      <Field label={t('price')}>
         <input
           type="number"
           value={price}
           onChange={(e) => setPrice(Number(e.target.value))}
-          className="form-input flex-1"
+          className="form-input"
           disabled={free}
         />
-        <label className="flex items-center gap-1.5 text-xs font-bold whitespace-nowrap">
+      </Field>
+      <Field label={t('free')}>
+        <label className="flex items-center gap-2 h-[42px]">
           <input
             type="checkbox"
             checked={free}
             onChange={(e) => setFree(e.target.checked)}
           />
-          {t('free')}
+          <span className="text-sm font-bold">{t('free')}</span>
         </label>
-      </div>
-    </Field>
-  );
-}
-
-function StationPicker({
-  station,
-  setStation,
-  t,
-}: {
-  station: Station;
-  setStation: (s: Station) => void;
-  t: (k: TranslationKey) => string;
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-2">
-      <RadioCard
-        active={station === 'kitchen'}
-        onClick={() => setStation('kitchen')}
-        title={t('stationKitchen')}
-        hint=""
-      />
-      <RadioCard
-        active={station === 'ready'}
-        onClick={() => setStation('ready')}
-        title={t('stationReady')}
-        hint=""
-      />
-    </div>
-  );
-}
-
-function ColorPicker({
-  color,
-  setColor,
-}: {
-  color: string;
-  setColor: (c: string) => void;
-}) {
-  const palette = [
-    '#ef4444',
-    '#f97316',
-    '#f59e0b',
-    '#eab308',
-    '#84cc16',
-    '#10b981',
-    '#06b6d4',
-    '#3b82f6',
-    '#8b5cf6',
-    '#ec4899',
-    '#78716c',
-    '#1f2937',
-    '#ffffff',
-  ];
-  return (
-    <div className="flex items-center gap-2 flex-wrap">
-      {palette.map((c) => (
-        <button
-          key={c}
-          type="button"
-          onClick={() => setColor(c)}
-          className={`w-9 h-9 rounded-full border-2 transition-transform active:scale-90 ${
-            color === c
-              ? 'border-slate-900 ring-2 ring-orange-400 scale-110'
-              : 'border-slate-300'
-          }`}
-          style={{ backgroundColor: c }}
-        />
-      ))}
+      </Field>
     </div>
   );
 }
@@ -3224,278 +3141,11 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="mb-3">
-      <label className="block text-xs font-bold text-slate-500 mb-1.5">
+    <div>
+      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">
         {label}
       </label>
       {children}
-    </div>
-  );
-}
-
-function RadioCard({
-  active,
-  onClick,
-  title,
-  hint,
-}: {
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  hint: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex flex-col items-start gap-1 p-3 rounded-xl border-2 text-left transition-all ${
-        active
-          ? 'bg-orange-50 border-orange-500 shadow-sm ring-2 ring-orange-200'
-          : 'bg-white border-slate-200 hover:border-slate-300'
-      }`}
-    >
-      <span className="text-sm font-bold text-slate-900">{title}</span>
-      {hint && (
-        <span className="text-[11px] text-slate-500 leading-tight">{hint}</span>
-      )}
-    </button>
-  );
-}
-
-function PropertiesEditor({
-  properties,
-  history,
-  onChange,
-  onAdd,
-  onRemove,
-  t,
-}: {
-  properties: HydratedProperty[];
-  history: HydratedProperty[];
-  onChange: (idx: number, patch: Partial<HydratedProperty>) => void;
-  onAdd: () => void;
-  onRemove: (idx: number) => void;
-  t: (k: TranslationKey) => string;
-}) {
-  return (
-    <div className="space-y-3">
-      {properties.map((p, i) => (
-        <PropertyEditor
-          key={p.id ?? i}
-          property={p}
-          history={history}
-          onChange={(patch) => onChange(i, patch)}
-          onRemove={() => onRemove(i)}
-          t={t}
-        />
-      ))}
-      <button
-        type="button"
-        onClick={onAdd}
-        className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold"
-      >
-        <Plus className="w-3.5 h-3.5" /> {t('addProperty')}
-      </button>
-    </div>
-  );
-}
-
-function PropertyEditor({
-  property,
-  history,
-  onChange,
-  onRemove,
-  t,
-}: {
-  property: HydratedProperty;
-  history: HydratedProperty[];
-  onChange: (patch: Partial<HydratedProperty>) => void;
-  onRemove: () => void;
-  t: (k: TranslationKey) => string;
-}) {
-  const [newOption, setNewOption] = useState('');
-  const [suggestOpen, setSuggestOpen] = useState(false);
-  const blurTimer = useRef<number | null>(null);
-
-  const suggestions = useMemo(() => {
-    const q = property.name.trim().toLowerCase();
-    if (!q) return history.slice(0, 12);
-    return history
-      .filter((h) => h.name.toLowerCase().startsWith(q))
-      .filter((h) => h.name.toLowerCase() !== q)
-      .slice(0, 12);
-  }, [property.name, history]);
-
-  const addOption = () => {
-    const v = newOption.trim();
-    if (!v) return;
-    if (property.options.includes(v)) {
-      setNewOption('');
-      return;
-    }
-    onChange({ options: [...property.options, v] });
-    setNewOption('');
-  };
-
-  const applyFromHistory = (h: HydratedProperty) => {
-    setSuggestOpen(false);
-    onChange({
-      name: h.name,
-      options: [...h.options],
-      required: h.required,
-    });
-  };
-
-  return (
-    <div className="border border-slate-200 rounded-2xl p-3 bg-slate-50/80 space-y-2.5">
-      <div className="relative">
-        <div className="flex items-center gap-2">
-          <input
-            value={property.name}
-            onChange={(e) => {
-              onChange({ name: e.target.value });
-              setSuggestOpen(true);
-            }}
-            onFocus={() => setSuggestOpen(true)}
-            onBlur={() => {
-              if (blurTimer.current) window.clearTimeout(blurTimer.current);
-              blurTimer.current = window.setTimeout(
-                () => setSuggestOpen(false),
-                180
-              );
-            }}
-            className="form-input flex-1 text-sm"
-            placeholder={t('menuPropertyNamePlaceholder')}
-          />
-          <button
-            type="button"
-            onClick={onRemove}
-            className="p-2 text-slate-400 hover:text-red-600 shrink-0"
-            title={t('menuPropertyDeleteTitle')}
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {suggestOpen && suggestions.length > 0 && (
-          <div
-            onMouseDown={(e) => e.stopPropagation()}
-            className="absolute left-0 right-12 z-30 mt-1 bg-white border-2 border-orange-300 rounded-xl shadow-2xl max-h-64 overflow-y-auto"
-          >
-            <div className="px-3 py-1.5 text-[11px] font-black text-orange-700 bg-orange-50 border-b border-orange-200 sticky top-0">
-              {t('menuPropertyFromHistory').replace(
-                '{n}',
-                String(suggestions.length)
-              )}
-            </div>
-            {suggestions.map((h, idx) => (
-              <button
-                key={`${h.name}-${idx}`}
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  applyFromHistory(h);
-                }}
-                className="w-full text-left px-3 py-2 hover:bg-orange-50 active:bg-orange-100 transition-colors border-b border-slate-100 last:border-b-0"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-slate-900 truncate flex-1">
-                    {h.name}
-                  </span>
-                  {h.required && (
-                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">
-                      {t('menuPropertyRequiredBadge')}
-                    </span>
-                  )}
-                </div>
-                {h.options.length > 0 && (
-                  <div className="text-[11px] text-slate-500 mt-0.5 truncate">
-                    {h.options.join(' · ')}
-                  </div>
-                )}
-                {h.options.length === 0 && (
-                  <div className="text-[11px] text-slate-400 mt-0.5 italic">
-                    {t('menuPropertyCheckboxBadge')}
-                  </div>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {property.options.length > 0 && (
-        <div>
-          <div className="text-[11px] font-black text-slate-500 mb-1.5">
-            {t('menuPropertyVariants')}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {property.options.map((opt, idx) => (
-              <span
-                key={`${opt}-${idx}`}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-300 text-xs font-bold text-slate-800"
-              >
-                {opt}
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChange({
-                      options: property.options.filter((_, j) => j !== idx),
-                    })
-                  }
-                  className="text-slate-400 hover:text-red-600"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="flex items-center gap-2">
-        <input
-          value={newOption}
-          onChange={(e) => setNewOption(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              addOption();
-            }
-          }}
-          className="form-input flex-1 text-sm"
-          placeholder={
-            property.options.length === 0
-              ? t('menuPropertyFirstOptionPlaceholder')
-              : t('menuPropertyNextOptionPlaceholder')
-          }
-        />
-        <button
-          type="button"
-          onClick={addOption}
-          disabled={!newOption.trim()}
-          className="flex items-center gap-1 px-3 py-2.5 rounded-xl bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold disabled:opacity-40 shrink-0"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          {t('menuPropertyVariantBtn')}
-        </button>
-      </div>
-
-      <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 select-none cursor-pointer">
-        <input
-          type="checkbox"
-          checked={property.required}
-          onChange={(e) => onChange({ required: e.target.checked })}
-          className="accent-orange-500"
-        />
-        {t('menuPropertyRequiredLabel')}
-      </label>
-
-      {property.options.length === 0 && (
-        <p className="text-[11px] text-slate-500 leading-snug">
-          {t('menuPropertyCheckboxHint')}
-        </p>
-      )}
     </div>
   );
 }
@@ -3515,147 +3165,226 @@ function ImageUploader({
   t: (k: TranslationKey) => string;
   compact?: boolean;
 }) {
+  const size = compact ? 'w-16 h-16' : 'w-24 h-24';
   return (
-    <div className={`flex items-center gap-3 ${compact ? 'text-xs' : ''}`}>
+    <div className="flex items-center gap-2">
       <div
-        className={`${
-          compact ? 'w-12 h-12' : 'w-20 h-20'
-        } rounded-xl overflow-hidden bg-white shrink-0 border border-slate-200 flex items-center justify-center`}
+        className={`${size} rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 flex items-center justify-center overflow-hidden relative`}
       >
         {imageUrl ? (
-          <img
-            src={imageUrl}
-            className="w-full h-full object-cover bg-white"
-          />
+          <img src={imageUrl} alt="" className="w-full h-full object-cover" />
         ) : (
-          <Upload
-            className={`${compact ? 'w-4 h-4' : 'w-6 h-6'} text-slate-400`}
-          />
+          <Upload className="w-5 h-5 text-slate-400" />
+        )}
+        {uploading && (
+          <div className="absolute inset-0 bg-white/70 flex items-center justify-center">
+            <div className="w-5 h-5 border-2 border-orange-500/30 border-t-orange-500 rounded-full animate-spin" />
+          </div>
         )}
       </div>
-      <div className="flex-1 flex flex-col gap-1.5">
-        <label className="cursor-pointer">
-          <span
-            className={`block ${
-              compact ? 'py-1.5 text-xs' : 'py-2 text-sm'
-            } px-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-center transition-colors`}
-          >
-            {uploading ? t('uploading') : t('uploadImage')}
-          </span>
-          <input
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onUpload(f);
-              e.target.value = '';
-            }}
-          />
-        </label>
-        {imageUrl && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold"
-          >
-            {t('removeCover')}
-          </button>
-        )}
-      </div>
+      <label className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 cursor-pointer text-xs font-bold">
+        {t('uploadImage')}
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onUpload(f);
+            e.target.value = '';
+          }}
+        />
+      </label>
+      {imageUrl && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-xs text-red-600 font-bold hover:underline"
+        >
+          {t('removeCover')}
+        </button>
+      )}
     </div>
   );
 }
 
-function ItemPickerModal({
-  items,
-  onPick,
-  onCancel,
+function StationPicker({
+  station,
+  setStation,
   t,
 }: {
-  items: MenuItem[];
-  onPick: (id: string) => void;
-  onCancel: () => void;
+  station: Station;
+  setStation: (s: Station) => void;
   t: (k: TranslationKey) => string;
 }) {
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={onCancel}
-    >
-      <div
-        className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-          <h3 className="text-lg font-black text-slate-900">{t('pickItem')}</h3>
-          <button
-            onClick={onCancel}
-            className="text-slate-400 hover:text-slate-900"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
-          {items.length === 0 && (
-            <p className="text-center text-sm text-slate-400 py-6">
-              {t('noItemsInCategory')}
-            </p>
-          )}
-          {items.map((it) => (
-            <button
-              key={it.id}
-              onClick={() => onPick(it.id)}
-              className="w-full flex items-center gap-3 p-3 rounded-xl border-2 border-slate-200 hover:border-orange-400 hover:bg-orange-50 transition-all text-left"
-            >
-              <div className="w-12 h-12 rounded-lg overflow-hidden bg-white shrink-0 border border-slate-200">
-                {it.image_url ? (
-                  <img
-                    src={it.image_url}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-full bg-slate-100" />
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold text-slate-900 truncate">
-                  {it.name}
-                </div>
-                <div className="text-xs text-slate-500">
-                  {t(`type_${it.type}` as TranslationKey)}
-                  {!it.free && ` · ${formatYen(it.price)}`}
-                </div>
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
+    <div className="grid grid-cols-2 gap-2">
+      <RadioCard
+        active={station === 'ready'}
+        onClick={() => setStation('ready')}
+        title={t('stationReady')}
+        hint=""
+      />
+      <RadioCard
+        active={station === 'kitchen'}
+        onClick={() => setStation('kitchen')}
+        title={t('stationKitchen')}
+        hint=""
+      />
     </div>
   );
 }
 
-function SaucePickerModal({
+function ColorPicker({
+  color,
+  setColor,
+}: {
+  color: string;
+  setColor: (c: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="color"
+        value={color}
+        onChange={(e) => setColor(e.target.value)}
+        className="w-14 h-10 rounded-lg border border-slate-300 cursor-pointer"
+      />
+      <span className="text-xs font-mono text-slate-500">{color}</span>
+    </div>
+  );
+}
+
+function PropertiesEditor({
+  properties,
+  history,
+  onChange,
+  onAdd,
+  onRemove,
+  t,
+}: {
+  properties: HydratedProperty[];
+  history: HydratedProperty[];
+  onChange: (idx: number, patch: Partial<HydratedProperty>) => void;
+  onAdd: () => void;
+  onRemove: (idx: number) => void;
+  t: (k: TranslationKey) => string;
+}) {
+  return (
+    <div className="space-y-2">
+      {properties.map((p, i) => (
+        <div
+          key={i}
+          className="border border-slate-200 rounded-2xl p-3 bg-slate-50/80 space-y-2"
+        >
+          <div className="flex items-center gap-2">
+            <input
+              value={p.name}
+              onChange={(e) => onChange(i, { name: e.target.value })}
+              className="form-input flex-1"
+              placeholder={t('propertyName')}
+              list={`prop-hist-${i}`}
+            />
+            <datalist id={`prop-hist-${i}`}>
+              {history.map((h) => (
+                <option key={h.name} value={h.name} />
+              ))}
+            </datalist>
+            <button
+              type="button"
+              onClick={() => onRemove(i)}
+              className="text-slate-400 hover:text-red-600 p-1"
+              title={t('remove')}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <input
+            value={(p.options ?? []).join(', ')}
+            onChange={(e) =>
+              onChange(i, {
+                options: e.target.value
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              })
+            }
+            className="form-input"
+            placeholder="вар1, вар2, вар3 (пусто = чекбокс)"
+          />
+          <label className="flex items-center gap-2 text-xs font-bold">
+            <input
+              type="checkbox"
+              checked={p.required}
+              onChange={(e) => onChange(i, { required: e.target.checked })}
+            />
+            {t('required')}
+          </label>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={onAdd}
+        className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
+      >
+        <Plus className="w-3.5 h-3.5" /> {t('addProperty')}
+      </button>
+    </div>
+  );
+}
+
+function RadioCard({
+  active,
+  onClick,
+  title,
+  hint,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  hint: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left p-3 rounded-xl border-2 transition-all ${
+        active
+          ? 'border-orange-500 bg-orange-50 shadow-sm'
+          : 'border-slate-200 bg-white hover:border-slate-300'
+      }`}
+    >
+      <div className="text-sm font-bold text-slate-900">{title}</div>
+      {hint && (
+        <div className="text-[0.6875rem] text-slate-500 mt-0.5 leading-snug">
+          {hint}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function SaucePicker({
   sauces,
-  selectedIds,
-  onSave,
+  initial,
   onCancel,
+  onSave,
   t,
 }: {
   sauces: MenuItem[];
-  selectedIds: string[];
-  onSave: (ids: string[]) => void;
+  initial: string[];
   onCancel: () => void;
+  onSave: (ids: string[]) => void;
   t: (k: TranslationKey) => string;
 }) {
-  const [sel, setSel] = useState<Set<string>>(new Set(selectedIds));
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(initial));
 
   const toggle = (id: string) => {
-    setSel((prev) => {
-      const n = new Set(prev);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
   };
 
@@ -3665,13 +3394,11 @@ function SaucePickerModal({
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
+        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-          <h3 className="text-lg font-black text-slate-900">
-            {t('pickSauces')}
-          </h3>
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+          <h3 className="text-lg font-black">{t('chooseSauceStep')}</h3>
           <button
             onClick={onCancel}
             className="text-slate-400 hover:text-slate-900"
@@ -3679,49 +3406,127 @@ function SaucePickerModal({
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
-          {sauces.length === 0 && (
-            <p className="text-center text-sm text-slate-400 py-6">
-              {t('noSauces')}
-            </p>
-          )}
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 grid grid-cols-2 gap-2">
           {sauces.map((s) => {
-            const on = sel.has(s.id);
+            const on = picked.has(s.id);
             return (
               <button
                 key={s.id}
+                type="button"
                 onClick={() => toggle(s.id)}
-                className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-all text-left ${
+                className={`p-3 rounded-xl border-2 text-left transition-all ${
                   on
-                    ? 'bg-orange-50 border-orange-500'
-                    : 'bg-white border-slate-200 hover:border-slate-300'
+                    ? 'border-orange-500 bg-orange-50'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                <div
-                  className="w-8 h-8 rounded-full border border-slate-200 shrink-0"
-                  style={{ backgroundColor: s.color ?? '#e5e7eb' }}
-                />
-                <span className="flex-1 text-sm font-bold text-slate-900">
-                  {s.name}
-                </span>
-                {on && <span className="text-orange-500 font-black">✓</span>}
+                <div className="flex items-center gap-2">
+                  {s.image_url ? (
+                    <img
+                      src={s.image_url}
+                      alt=""
+                      className="w-10 h-10 rounded object-cover shrink-0"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded bg-red-100 shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-bold truncate">{s.name}</div>
+                    <div className="text-xs text-slate-500">
+                      {s.free ? t('free') : formatYen(s.price)}
+                    </div>
+                  </div>
+                  {on && <span className="text-orange-500 font-black">✓</span>}
+                </div>
               </button>
             );
           })}
+          {sauces.length === 0 && (
+            <p className="col-span-2 text-sm text-slate-400 text-center py-6">
+              {t('noSauces')}
+            </p>
+          )}
         </div>
-        <div className="p-3 border-t border-slate-200 flex gap-2">
+        <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 flex gap-2 shrink-0">
           <button
+            type="button"
             onClick={onCancel}
-            className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold"
+            className="flex-1 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-sm font-bold"
           >
             {t('cancel')}
           </button>
           <button
-            onClick={() => onSave([...sel])}
-            className="flex-1 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold"
+            type="button"
+            onClick={() => onSave(Array.from(picked))}
+            className="flex-1 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-black"
           >
             {t('save')}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ItemPicker({
+  items,
+  onPick,
+  onCancel,
+  t,
+}: {
+  items: MenuItem[];
+  onPick: (item: MenuItem) => void;
+  onCancel: () => void;
+  t: (k: TranslationKey) => string;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+          <h3 className="text-lg font-black">{t('pickItem')}</h3>
+          <button
+            onClick={onCancel}
+            className="text-slate-400 hover:text-slate-900"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5">
+          {items.map((it) => (
+            <button
+              key={it.id}
+              type="button"
+              onClick={() => onPick(it)}
+              className="w-full text-left p-3 rounded-xl border border-slate-200 bg-white hover:border-orange-400 hover:bg-orange-50 transition-all flex items-center gap-2"
+            >
+              {it.image_url ? (
+                <img
+                  src={it.image_url}
+                  alt=""
+                  className="w-10 h-10 rounded object-cover shrink-0"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded bg-slate-100 shrink-0" />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold truncate">{it.name}</div>
+                <div className="text-xs text-slate-500">
+                  {formatYen(it.price)}
+                </div>
+              </div>
+            </button>
+          ))}
+          {items.length === 0 && (
+            <p className="text-sm text-slate-400 text-center py-6">
+              {t('noResults')}
+            </p>
+          )}
         </div>
       </div>
     </div>

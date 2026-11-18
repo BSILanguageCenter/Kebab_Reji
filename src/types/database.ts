@@ -1,7 +1,7 @@
 // ============================================================
 // ЗАКАЗЫ
 // ============================================================
-export type OrderType = 'INSIDE' | 'OUTSIDE';
+export type OrderType = 'INSIDE' | 'OUTSIDE' | 'ON_THE_WAY';
 export type OrderStatus =
   | 'NEW'
   | 'PREPARING'

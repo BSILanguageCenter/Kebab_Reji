@@ -48,7 +48,6 @@ import {
   Trash2,
   Send,
   ShoppingBag,
-  Store,
   RotateCcw,
   Undo2,
   FilePlus2,
@@ -116,6 +115,12 @@ function statusLabel(status: Order['status']): string {
   }
 }
 
+function typeEmoji(t: OrderType): string {
+  if (t === 'INSIDE') return '🍽️';
+  if (t === 'ON_THE_WAY') return '🚶';
+  return '🥡';
+}
+
 export default function CashierPage() {
   const { t, lang } = useI18n();
 
@@ -130,6 +135,9 @@ export default function CashierPage() {
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
 
+  // Модалка выбора способа получения (после "Отправить на кухню")
+  const [showTypePicker, setShowTypePicker] = useState(false);
+
   const [builder, setBuilder] = useState<{
     item: MenuItem;
     variantId?: string;
@@ -139,16 +147,53 @@ export default function CashierPage() {
   const cartIdCounter = useRef(0);
 
   const undoStack = useUndoStack('cashier');
-  const [layout, setLayout] = useLayoutSettings();
+  const [rawLayout, setLayout] = useLayoutSettings();
   const drinksWrapRef = useRef<HTMLDivElement>(null);
 
   // ---------- адаптивность ----------
-  const { width: vw, device } = useViewport();
+  const { width: vw, device, scale: ui } = useViewport();
   const isDesktop = device === 'desktop';
   const isPhone = device === 'phone';
+
+  // Все «пиксельные» настройки (ширины колонок, размеры карточек, шрифты)
+  // умножаем на масштаб экрана: на большом мониторе всё крупнее, на малом мельче.
+  const layout = useMemo(() => {
+    const s = (v: number) => Math.round(v * ui);
+    return {
+      ...rawLayout,
+      ordersWidth: s(rawLayout.ordersWidth),
+      menuRightWidth: s(rawLayout.menuRightWidth),
+      cartWidth: s(rawLayout.cartWidth),
+      dishCardSize: s(rawLayout.dishCardSize),
+      toppingCardSize: s(rawLayout.toppingCardSize),
+      drinkCardSize: s(rawLayout.drinkCardSize),
+      sauceCardSize: s(rawLayout.sauceCardSize),
+      cardRadius: s(rawLayout.cardRadius),
+      gridGap: s(rawLayout.gridGap),
+      ordersRowGap: s(rawLayout.ordersRowGap),
+      cartItemGap: s(rawLayout.cartItemGap),
+      itemTextSize: s(rawLayout.itemTextSize),
+      panelHeaderSize: s(rawLayout.panelHeaderSize),
+      orderNumberSize: s(rawLayout.orderNumberSize),
+      toppingsHeight: s(rawLayout.toppingsHeight),
+    };
+  }, [rawLayout, ui]);
   const [mobileTab, setMobileTab] = useState<MobileTab>('menu');
   const [menuCat, setMenuCat] = useState<CategorySpace>('dishset');
-  const [ordersOpen, setOrdersOpen] = useState(false); // выезжающая панель (планшет)
+  const [ordersOpen, setOrdersOpen] = useState(false);
+
+  // ---------- единые функции для типа заказа ----------
+  const typeLabelFor = (tp: OrderType): string => {
+    if (tp === 'INSIDE') return t('inside');
+    if (tp === 'ON_THE_WAY') return t('orderTypeOnTheWay');
+    return t('outside');
+  };
+
+  const typeBadgeCls = (tp: OrderType): string => {
+    if (tp === 'INSIDE') return 'bg-blue-100 text-blue-700';
+    if (tp === 'ON_THE_WAY') return 'bg-amber-100 text-amber-700';
+    return 'bg-purple-100 text-purple-700';
+  };
 
   useEffect(() => {
     const unsubInit = subscribeInit((snap) => {
@@ -268,8 +313,11 @@ export default function CashierPage() {
     [editingOrder]
   );
 
+  // ✅ ФИКС: карточка группы (dish-group / set с групповым main) ВСЕГДА
+  // открывает окно выбора, чтобы пользователь сначала выбрал вариант.
   const handleItemClick = useCallback(
     (item: MenuItem) => {
+      // Топпинги, напитки, соусы — всегда сразу в корзину
       if (
         item.type === 'topping' ||
         item.type === 'drink' ||
@@ -279,9 +327,26 @@ export default function CashierPage() {
         return;
       }
 
+      // Блюдо-группа или сет с групповым main — всегда через окно,
+      // чтобы пользователь сначала выбрал вариант, потом свойства/соусы.
+      const hasGroupVariants =
+        (item.type === 'dish' &&
+          item.dish_kind === 'group' &&
+          (item.variants?.length ?? 0) > 0) ||
+        (item.type === 'set' &&
+          item.set_main?.dish_kind === 'group' &&
+          (item.set_main.variants?.length ?? 0) > 0);
+
+      if (hasGroupVariants) {
+        setBuilder({ item });
+        return;
+      }
+
+      // Одиночное блюдо: если нечего выбирать — сразу в корзину
       const hasProps = (item.properties?.length ?? 0) > 0;
       const hasSauces =
         item.sauce_mode === 'with' && (item.allowed_sauces?.length ?? 0) > 0;
+
       if (
         item.type === 'dish' &&
         item.dish_kind === 'single' &&
@@ -297,11 +362,42 @@ export default function CashierPage() {
     [addToCart]
   );
 
-  const handleSetVariantClick = useCallback(
-    (setItem: MenuItem, variant: MenuItem) => {
-      setBuilder({ item: setItem, variantId: variant.id });
+  // ✅ ФИКС: единый обработчик клика по КОНКРЕТНОМУ варианту карточки
+  // (блюдо-группа ИЛИ сет). Открываем builder для РОДИТЕЛЯ с предвыбранным
+  // вариантом. Если у варианта нечего выбирать — сразу в корзину.
+  const handleVariantClick = useCallback(
+    (parent: MenuItem, variant: MenuItem) => {
+      const vHasProps = (variant.properties?.length ?? 0) > 0;
+      const vHasSauces =
+        variant.sauce_mode === 'with' &&
+        (variant.allowed_sauces?.length ?? 0) > 0;
+
+      const setHasExtras =
+        parent.type === 'set' &&
+        (parent.set_extra_groups?.some((g) => g.options.length > 0) ??
+          false);
+
+      if (!vHasProps && !vHasSauces && !setHasExtras) {
+        // Нечего выбирать — сразу в корзину с меткой варианта
+        addToCartFromBuilder(
+          parent,
+          variant.short_name || variant.name,
+          variant.price,
+          [
+            {
+              type: 'variant',
+              name: variant.name,
+              price: 0,
+              quantity: 1,
+            },
+          ]
+        );
+        return;
+      }
+
+      setBuilder({ item: parent, variantId: variant.id });
     },
-    []
+    [addToCartFromBuilder]
   );
 
   const incrementItem = (cartId: string) => {
@@ -356,13 +452,21 @@ export default function CashierPage() {
     });
   };
 
-  const handleSendToKitchen = async () => {
-    if (!hasActiveItems) return;
+  // Клик по "Отправить на кухню" — сначала выбор способа получения
+  const handleSendToKitchen = () => {
+    if (!hasActiveItems || sending) return;
+    setShowTypePicker(true);
+  };
+
+  // Собственно отправка заказа с выбранным типом
+  const performCreateOrder = async (type: OrderType) => {
+    setShowTypePicker(false);
+    if (!hasActiveItems || sending) return;
     setSending(true);
     setError(null);
     try {
       const created = await emitCreateOrder({
-        order_type: orderType,
+        order_type: type,
         total_amount: cartTotal,
         comment,
         order_items: cart
@@ -584,7 +688,7 @@ export default function CashierPage() {
   const startLayoutRef = useRef<typeof layout | null>(null);
 
   const beginResize = () => {
-    startLayoutRef.current = { ...layout };
+    startLayoutRef.current = { ...rawLayout };
   };
 
   const endResize = () => {
@@ -615,39 +719,39 @@ export default function CashierPage() {
   };
 
   const handleResizeOrders = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      ordersWidth: clampLayout('ordersWidth', base.ordersWidth + d),
+      ordersWidth: clampLayout('ordersWidth', base.ordersWidth + d / ui),
     }));
   };
 
   const handleResizeMenuRight = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      menuRightWidth: clampLayout('menuRightWidth', base.menuRightWidth - d),
+      menuRightWidth: clampLayout('menuRightWidth', base.menuRightWidth - d / ui),
     }));
   };
 
   const handleResizeCart = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      cartWidth: clampLayout('cartWidth', base.cartWidth - d),
+      cartWidth: clampLayout('cartWidth', base.cartWidth - d / ui),
     }));
   };
 
   const handleResizeToppings = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      toppingsHeight: clampLayout('toppingsHeight', base.toppingsHeight - d),
+      toppingsHeight: clampLayout('toppingsHeight', base.toppingsHeight - d / ui),
     }));
   };
 
   const handleResizeDrinks = (d: number) => {
-    const base = startLayoutRef.current ?? layout;
+    const base = startLayoutRef.current ?? rawLayout;
     const containerH = drinksWrapRef.current?.clientHeight ?? 400;
     const pctDelta = (d / containerH) * 100;
     setLayout((prev) => ({
@@ -667,7 +771,9 @@ export default function CashierPage() {
     const sorted = [...spaceItems].sort(
       (a, b) => a.sort_order - b.sort_order
     );
-    const cellH = compact ? size + 32 : size + 50;
+    const cellH = Math.round(
+      size + (compact ? 32 : 50) * (layout.itemTextSize / 12)
+    );
 
     return (
       <div
@@ -677,7 +783,7 @@ export default function CashierPage() {
             ? `repeat(${fluidCols}, minmax(0, 1fr))`
             : `repeat(auto-fill, ${size}px)`,
           gridAutoRows: fluid ? 'auto' : `${cellH}px`,
-          gap: fluid ? FLUID_GAP : layout.gridGap,
+          gap: fluid ? FLUID_GAP * ui : layout.gridGap,
         }}
       >
         {sorted.map((card) => {
@@ -712,17 +818,15 @@ export default function CashierPage() {
                 item={card}
                 variants={variants}
                 onClick={handleItemClick}
-                onVariantClick={(setItem, v) => {
-                  if (setItem.type === 'set') {
-                    handleSetVariantClick(setItem, v);
-                  } else {
-                    handleItemClick(v);
-                  }
-                }}
+                // ✅ ФИКС: единый обработчик для блюд-групп и сетов.
+                // Клик по конкретному варианту → окно builder'а родителя
+                // с предвыбранным вариантом (или сразу в корзину, если
+                // у варианта нет свойств/соусов и у сета нет групп).
+                onVariantClick={handleVariantClick}
                 size={size}
                 textSize={
                   fluid
-                    ? Math.max(12, layout.itemTextSize)
+                    ? layout.itemTextSize
                     : layout.itemTextSize
                 }
                 compact={fluid ? false : compact}
@@ -744,10 +848,10 @@ export default function CashierPage() {
   // ---------- адаптивные размеры ----------
   const hdrSize = isDesktop
     ? layout.panelHeaderSize
-    : Math.max(12, layout.panelHeaderSize);
+    : Math.max(layout.panelHeaderSize, Math.round(14 * ui));
   const numSize = isDesktop
     ? layout.orderNumberSize
-    : Math.max(18, layout.orderNumberSize);
+    : Math.max(layout.orderNumberSize, Math.round(24 * ui));
 
   const cartQty = cart
     .filter((i) => !i.is_removed)
@@ -756,17 +860,21 @@ export default function CashierPage() {
     (o) => o.status !== 'CANCELLED'
   ).length;
 
-  // Ширина корзины на планшете и ширина области меню (для расчёта колонок)
-  const tabletCartW = Math.round(Math.min(400, Math.max(300, vw * 0.38)));
-  const menuAvail = (isPhone ? vw - 24 : vw - tabletCartW - 25) - 8;
+  const tabletCartW = Math.round(
+    Math.min(400 * ui, Math.max(300 * ui, vw * 0.34))
+  );
+  const padX = 24 * ui;
+  const menuAvail =
+    (isPhone ? vw - padX : vw - tabletCartW - padX - 1) - 8 * ui;
   const fluidGrid = (space: CategorySpace) => {
+    const fg = FLUID_GAP * ui;
     const target =
-      space === 'dishset' ? (isPhone ? 104 : 120) : isPhone ? 88 : 96;
+      (space === 'dishset' ? (isPhone ? 118 : 135) : isPhone ? 100 : 108) * ui;
     const cols = Math.max(
       2,
-      Math.floor((menuAvail + FLUID_GAP) / (target + FLUID_GAP))
+      Math.floor((menuAvail + fg) / (target + fg))
     );
-    const size = Math.floor((menuAvail - FLUID_GAP * (cols - 1)) / cols);
+    const size = Math.floor((menuAvail - fg * (cols - 1)) / cols);
     return { cols, size };
   };
 
@@ -781,435 +889,397 @@ export default function CashierPage() {
   // ---------- общие куски интерфейса ----------
   const ordersInner = (
     <>
-          <div className="px-3 py-2 border-b border-slate-200 shrink-0 bg-slate-50">
-            <h2
-              className="font-black text-slate-700 tracking-wide border-l-4 border-slate-400 pl-2 leading-none"
-              style={{ fontSize: hdrSize }}
-            >
-              {t('activeOrders')}
-            </h2>
-            <span
-              className="font-black text-orange-600 leading-none mt-1.5 block pl-2 tabular-nums"
-              style={{ fontSize: numSize }}
-            >
-              {activeOrders.filter((o) => o.status !== 'CANCELLED').length}
-            </span>
-          </div>
+      <div className="px-3 py-2 border-b border-slate-200 shrink-0 bg-slate-50">
+        <h2
+          className="font-black text-slate-700 tracking-wide border-l-4 border-slate-400 pl-2 leading-none"
+          style={{ fontSize: hdrSize }}
+        >
+          {t('activeOrders')}
+        </h2>
+        <span
+          className="font-black text-orange-600 leading-none mt-1.5 block pl-2 tabular-nums"
+          style={{ fontSize: numSize }}
+        >
+          {activeOrders.filter((o) => o.status !== 'CANCELLED').length}
+        </span>
+      </div>
 
-          <div
-            className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col"
-            style={{ rowGap: layout.ordersRowGap }}
-          >
-            {activeOrders.length === 0 && (
-              <p className="text-slate-400 text-sm text-center mt-8">
-                {t('noActiveOrders')}
-              </p>
-            )}
-            {activeOrders.map((order) => {
-              const isCancelled = order.status === 'CANCELLED';
-              const isEditing = editingOrder?.id === order.id;
-              const cls = isCancelled
-                ? 'bg-red-50 border-l-red-400 opacity-60'
-                : isEditing
-                ? 'bg-orange-100 border-l-orange-500 ring-2 ring-orange-300 shadow-md'
-                : order.status === 'READY'
-                ? 'bg-green-50 border-l-green-500 shadow-sm'
-                : order.status === 'PREPARING'
-                ? 'bg-amber-50 border-l-amber-400 shadow-sm'
-                : 'bg-white border-l-slate-300 shadow-sm';
-              return (
-                <button
-                  key={order.id}
-                  onClick={() => handleEditOrder(order)}
-                  disabled={isCancelled}
-                  className={`w-full text-left p-3.5 rounded-xl border border-slate-200 border-l-[6px] transition-all ${cls} ${
-                    isCancelled
-                      ? 'cursor-not-allowed'
-                      : 'cursor-pointer hover:shadow-md active:scale-[0.97]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span
-                      className="font-black text-slate-900 tabular-nums"
-                      style={{ fontSize: numSize }}
-                    >
-                      #{order.order_number}
-                    </span>
-                    <span
-                      className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
-                        order.order_type === 'INSIDE'
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'bg-purple-100 text-purple-700'
-                      }`}
-                    >
-                      {order.order_type === 'INSIDE' ? 'IN' : 'OUT'}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[11px] font-bold text-slate-500">
-                    {statusLabel(order.status)}
-                  </div>
-                  <div className="flex items-center justify-between mt-1">
-                    <span className="text-[11px] text-slate-500">
-                      {formatTimeAgo(order.created_at, lang)}
-                    </span>
-                    <span className="text-sm font-black text-slate-700 tabular-nums">
-                      {formatYen(order.total_amount)}
-                    </span>
-                  </div>
-                  {isEditing && (
-                    <div className="mt-1.5 text-[11px] text-orange-700 font-bold flex items-center gap-1">
-                      <Pencil className="w-3 h-3" />
-                      {t('editingOrder')}
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="p-2 border-t border-slate-200 shrink-0">
+      <div
+        className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col"
+        style={{ rowGap: layout.ordersRowGap }}
+      >
+        {activeOrders.length === 0 && (
+          <p className="text-slate-400 text-sm text-center mt-8">
+            {t('noActiveOrders')}
+          </p>
+        )}
+        {activeOrders.map((order) => {
+          const isCancelled = order.status === 'CANCELLED';
+          const isEditing = editingOrder?.id === order.id;
+          const badgeCls = typeBadgeCls(order.order_type);
+          const badgeLabel = typeLabelFor(order.order_type);
+          const cls = isCancelled
+            ? 'bg-red-50 border-l-red-400 opacity-60'
+            : isEditing
+            ? 'bg-orange-100 border-l-orange-500 ring-2 ring-orange-300 shadow-md'
+            : order.status === 'READY'
+            ? 'bg-green-50 border-l-green-500 shadow-sm'
+            : order.status === 'PREPARING'
+            ? 'bg-amber-50 border-l-amber-400 shadow-sm'
+            : 'bg-white border-l-slate-300 shadow-sm';
+          return (
             <button
-              onClick={handleNewOrder}
-              className="w-full flex items-center justify-center gap-2 px-3 py-4 rounded-xl bg-orange-500 hover:bg-orange-600 active:scale-[0.97] text-white text-sm font-black shadow-lg shadow-orange-500/30 transition-all"
+              key={order.id}
+              onClick={() => handleEditOrder(order)}
+              disabled={isCancelled}
+              className={`w-full text-left p-3.5 rounded-xl border border-slate-200 border-l-[6px] transition-all ${cls} ${
+                isCancelled
+                  ? 'cursor-not-allowed'
+                  : 'cursor-pointer hover:shadow-md active:scale-[0.97]'
+              }`}
             >
-              <FilePlus2 className="w-5 h-5" />
-              {t('newOrder')}
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className="font-black text-slate-900 tabular-nums"
+                  style={{ fontSize: numSize }}
+                >
+                  #{order.order_number}
+                </span>
+                <span
+                  className={`text-[0.6875rem] px-2 py-0.5 rounded-full font-bold whitespace-nowrap ${badgeCls}`}
+                >
+                  {typeEmoji(order.order_type)} {badgeLabel}
+                </span>
+              </div>
+              <div className="mt-1 text-[0.6875rem] font-bold text-slate-500">
+                {statusLabel(order.status)}
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-[0.6875rem] text-slate-500">
+                  {formatTimeAgo(order.created_at, lang)}
+                </span>
+                <span className="text-sm font-black text-slate-700 tabular-nums">
+                  {formatYen(order.total_amount)}
+                </span>
+              </div>
+              {isEditing && (
+                <div className="mt-1.5 text-[0.6875rem] text-orange-700 font-bold flex items-center gap-1">
+                  <Pencil className="w-3 h-3" />
+                  {t('editingOrder')}
+                </div>
+              )}
             </button>
-          </div>
+          );
+        })}
+      </div>
+
+      <div className="p-2 border-t border-slate-200 shrink-0">
+        <button
+          onClick={handleNewOrder}
+          className="w-full flex items-center justify-center gap-2 px-3 py-4 rounded-xl bg-orange-500 hover:bg-orange-600 active:scale-[0.97] text-white text-sm font-black shadow-lg shadow-orange-500/30 transition-all"
+        >
+          <FilePlus2 className="w-5 h-5" />
+          {t('newOrder')}
+        </button>
+      </div>
     </>
   );
 
   const cartInner = (
     <>
-          <div
-            className={`px-4 py-3 border-b shrink-0 ${
-              editingOrder
-                ? 'bg-orange-50 border-orange-300'
-                : 'border-slate-200'
-            }`}
+      <div
+        className={`px-4 py-3 border-b shrink-0 ${
+          editingOrder
+            ? 'bg-orange-50 border-orange-300'
+            : 'border-slate-200'
+        }`}
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-black text-slate-900 truncate">
+            {editingOrder
+              ? `${t('editingOrder')} #${editingOrder.order_number}`
+              : t('currentOrder')}
+          </h2>
+          <span
+            className={`text-[0.6875rem] px-2.5 py-1 rounded-full font-bold shrink-0 ml-2 ${typeBadgeCls(
+              orderType
+            )}`}
           >
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-black text-slate-900 truncate">
-                {editingOrder
-                  ? `${t('editingOrder')} #${editingOrder.order_number}`
-                  : t('currentOrder')}
-              </h2>
-              <span
-                className={`text-[11px] px-2.5 py-1 rounded-full font-bold shrink-0 ml-2 ${
-                  orderType === 'INSIDE'
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'bg-purple-100 text-purple-700'
-                }`}
-              >
-                {orderType === 'INSIDE' ? t('inside') : t('outside')}
-              </span>
-            </div>
-            {editingOrder && (
-              <button
-                onClick={handleCancelEdit}
-                className="mt-2 flex items-center gap-1 text-xs text-orange-700 font-bold px-2 py-1 rounded-lg hover:bg-orange-100"
-              >
-                <RotateCcw className="w-3 h-3" />
-                {t('cancelEdit')}
-              </button>
-            )}
-            {!editingOrder && lastOrderNumber && (
-              <p className="text-[11px] text-green-600 mt-0.5 font-bold">
-                {t('lastOrder')}: #{lastOrderNumber}
-              </p>
-            )}
+            {typeEmoji(orderType)} {typeLabelFor(orderType)}
+          </span>
+        </div>
+        {editingOrder && (
+          <button
+            onClick={handleCancelEdit}
+            className="mt-2 flex items-center gap-1 text-xs text-orange-700 font-bold px-2 py-1 rounded-lg hover:bg-orange-100"
+          >
+            <RotateCcw className="w-3 h-3" />
+            {t('cancelEdit')}
+          </button>
+        )}
+        {!editingOrder && lastOrderNumber && (
+          <p className="text-[0.6875rem] text-green-600 mt-0.5 font-bold">
+            {t('lastOrder')}: #{lastOrderNumber}
+          </p>
+        )}
+      </div>
+
+      <div
+        className="flex-1 min-h-0 overflow-y-auto p-2 bg-slate-50 flex flex-col"
+        style={{ rowGap: layout.cartItemGap }}
+      >
+        {cart.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full text-slate-400">
+            <ShoppingBag className="w-14 h-14 mb-2 opacity-30" />
+            <p className="text-sm">{t('tapItemsToAdd')}</p>
           </div>
+        )}
+        {cart.map((item) => {
+          const removed = item.is_removed ?? false;
+          const isNew = item.is_added_later ?? false;
+          const qtyChanged =
+            editingOrder &&
+            item.db_id &&
+            item.original_quantity != null &&
+            item.quantity !== item.original_quantity &&
+            !removed;
 
-          <div
-            className="flex-1 min-h-0 overflow-y-auto p-2 bg-slate-50 flex flex-col"
-            style={{ rowGap: layout.cartItemGap }}
-          >
-            {cart.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                <ShoppingBag className="w-14 h-14 mb-2 opacity-30" />
-                <p className="text-sm">{t('tapItemsToAdd')}</p>
-              </div>
-            )}
-            {cart.map((item) => {
-              const removed = item.is_removed ?? false;
-              const isNew = item.is_added_later ?? false;
-              const qtyChanged =
-                editingOrder &&
-                item.db_id &&
-                item.original_quantity != null &&
-                item.quantity !== item.original_quantity &&
-                !removed;
+          const cardClass = removed
+            ? 'bg-red-50 border-red-300 opacity-70'
+            : isNew || qtyChanged
+            ? 'bg-orange-50 border-orange-400 ring-1 ring-orange-300'
+            : 'bg-white border-slate-200';
+          const lineTotal =
+            item.price * item.quantity +
+            item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
+              item.quantity;
 
-              const cardClass = removed
-                ? 'bg-red-50 border-red-300 opacity-70'
-                : isNew || qtyChanged
-                ? 'bg-orange-50 border-orange-400 ring-1 ring-orange-300'
-                : 'bg-white border-slate-200';
-              const lineTotal =
-                item.price * item.quantity +
-                item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
-                  item.quantity;
-
-              return (
+          return (
+            <div
+              key={item.id}
+              className={`rounded-2xl p-3 border-2 shadow-sm ${cardClass}`}
+            >
+              <div className="flex items-start justify-between gap-2 mb-2">
                 <div
-                  key={item.id}
-                  className={`rounded-2xl p-3 border-2 shadow-sm ${cardClass}`}
+                  className={`flex-1 min-w-0 ${
+                    removed ? 'line-through' : ''
+                  }`}
                 >
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <div
-                      className={`flex-1 min-w-0 ${
-                        removed ? 'line-through' : ''
-                      }`}
-                    >
-                      <div className="text-sm font-bold text-slate-900 truncate">
-                        {item.name}
-                        {item.variant && (
-                          <span className="ml-1 text-orange-600">
-                            {item.variant}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => removeItem(item.id)}
-                      className={`w-11 h-11 flex items-center justify-center rounded-xl transition-colors ${
-                        removed
-                          ? 'text-green-600 hover:bg-green-50'
-                          : 'text-slate-400 hover:text-red-600 hover:bg-red-50 active:scale-90'
-                      }`}
-                    >
-                      {removed ? (
-                        <RotateCcw className="w-5 h-5" />
-                      ) : (
-                        <Trash2 className="w-5 h-5" />
-                      )}
-                    </button>
-                  </div>
-
-                  {item.options.length > 0 && !removed && (
-                    <div className="mb-2 flex flex-wrap gap-1">
-                      {item.options.map((opt, i) => (
-                        <span
-                          key={i}
-                          className="px-2 py-1 rounded-md bg-orange-100 text-orange-800 text-[11px] font-bold"
-                        >
-                          + {opt.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => decrementItem(item.id)}
-                        disabled={removed}
-                        className="w-12 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 active:scale-90 flex items-center justify-center transition-all disabled:opacity-40"
-                      >
-                        <Minus className="w-5 h-5" />
-                      </button>
-                      <span className="text-xl font-black w-10 text-center tabular-nums">
-                        {removed ? 0 : item.quantity}
+                  <div className="text-sm font-bold text-slate-900 truncate">
+                    {item.name}
+                    {item.variant && (
+                      <span className="ml-1 text-orange-600">
+                        {item.variant}
                       </span>
-                      <button
-                        onClick={() => incrementItem(item.id)}
-                        disabled={removed}
-                        className="w-12 h-12 rounded-2xl bg-orange-100 hover:bg-orange-200 active:scale-90 flex items-center justify-center text-orange-700 transition-all disabled:opacity-40"
-                      >
-                        <Plus className="w-5 h-5" />
-                      </button>
-                    </div>
-                    <span
-                      className={`text-base font-black tabular-nums ${
-                        removed
-                          ? 'text-slate-400 line-through'
-                          : 'text-slate-900'
-                      }`}
-                    >
-                      {removed ? formatYen(0) : formatYen(lineTotal)}
-                    </span>
+                    )}
                   </div>
-
-                  {qtyChanged && (
-                    <div className="mt-2 text-[11px] text-orange-700 font-bold">
-                      {t('qtyChangedFromTo')
-                        .replace(
-                          '{from}',
-                          String(item.original_quantity ?? 0)
-                        )
-                        .replace('{to}', String(item.quantity))}
-                    </div>
-                  )}
                 </div>
-              );
-            })}
-          </div>
+                <button
+                  onClick={() => removeItem(item.id)}
+                  className={`w-11 h-11 flex items-center justify-center rounded-xl transition-colors ${
+                    removed
+                      ? 'text-green-600 hover:bg-green-50'
+                      : 'text-slate-400 hover:text-red-600 hover:bg-red-50 active:scale-90'
+                  }`}
+                >
+                  {removed ? (
+                    <RotateCcw className="w-5 h-5" />
+                  ) : (
+                    <Trash2 className="w-5 h-5" />
+                  )}
+                </button>
+              </div>
 
-          <div className="p-2 border-t border-slate-200 bg-white shrink-0">
-            <input
-              type="text"
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder={t('addComment')}
-              className="form-input text-sm !py-3"
-            />
-          </div>
+              {item.options.length > 0 && !removed && (
+                <div className="mb-2 flex flex-wrap gap-1">
+                  {item.options.map((opt, i) => (
+                    <span
+                      key={i}
+                      className="px-2 py-1 rounded-md bg-orange-100 text-orange-800 text-[0.6875rem] font-bold"
+                    >
+                      + {opt.name}
+                    </span>
+                  ))}
+                </div>
+              )}
 
-          <div className="p-3 border-t border-slate-200 space-y-3 bg-white shrink-0 shadow-[0_-8px_16px_-12px_rgba(0,0,0,0.2)]">
-            <div className="flex items-end justify-between">
-              <span className="text-sm font-bold text-slate-500">
-                {t('total')}
-              </span>
-              <span className="text-3xl font-black text-slate-900 tabular-nums leading-none">
-                {formatYen(cartTotal)}
-              </span>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => decrementItem(item.id)}
+                    disabled={removed}
+                    className="w-12 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 active:scale-90 flex items-center justify-center transition-all disabled:opacity-40"
+                  >
+                    <Minus className="w-5 h-5" />
+                  </button>
+                  <span className="text-xl font-black w-10 text-center tabular-nums">
+                    {removed ? 0 : item.quantity}
+                  </span>
+                  <button
+                    onClick={() => incrementItem(item.id)}
+                    disabled={removed}
+                    className="w-12 h-12 rounded-2xl bg-orange-100 hover:bg-orange-200 active:scale-90 flex items-center justify-center text-orange-700 transition-all disabled:opacity-40"
+                  >
+                    <Plus className="w-5 h-5" />
+                  </button>
+                </div>
+                <span
+                  className={`text-base font-black tabular-nums ${
+                    removed
+                      ? 'text-slate-400 line-through'
+                      : 'text-slate-900'
+                  }`}
+                >
+                  {removed ? formatYen(0) : formatYen(lineTotal)}
+                </span>
+              </div>
+
+              {qtyChanged && (
+                <div className="mt-2 text-[0.6875rem] text-orange-700 font-bold">
+                  {t('qtyChangedFromTo')
+                    .replace(
+                      '{from}',
+                      String(item.original_quantity ?? 0)
+                    )
+                    .replace('{to}', String(item.quantity))}
+                </div>
+              )}
             </div>
+          );
+        })}
+      </div>
 
-            {editingOrder ? (
-              <button
-                onClick={handleSaveChanges}
-                disabled={!hasActiveItems || sending}
-                className="w-full h-16 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 active:scale-[0.98] disabled:opacity-40 disabled:shadow-none transition-all"
-              >
-                {sending ? (
-                  <>
-                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    {t('sending')}
-                  </>
-                ) : (
-                  <>
-                    <Save className="w-5 h-5" />
-                    {t('saveChanges')}
-                  </>
-                )}
-              </button>
+      <div className="p-2 border-t border-slate-200 bg-white shrink-0">
+        <input
+          type="text"
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          placeholder={t('addComment')}
+          className="form-input text-sm !py-3"
+        />
+      </div>
+
+      <div className="p-3 border-t border-slate-200 space-y-3 bg-white shrink-0 shadow-[0_-8px_16px_-12px_rgba(0,0,0,0.2)]">
+        <div className="flex items-end justify-between">
+          <span className="text-sm font-bold text-slate-500">
+            {t('total')}
+          </span>
+          <span className="text-3xl font-black text-slate-900 tabular-nums leading-none">
+            {formatYen(cartTotal)}
+          </span>
+        </div>
+
+        {editingOrder ? (
+          <button
+            onClick={handleSaveChanges}
+            disabled={!hasActiveItems || sending}
+            className="w-full h-16 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 active:scale-[0.98] disabled:opacity-40 disabled:shadow-none transition-all"
+          >
+            {sending ? (
+              <>
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                {t('sending')}
+              </>
             ) : (
-              <button
-                onClick={handleSendToKitchen}
-                disabled={!hasActiveItems || sending}
-                className="w-full h-16 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 active:scale-[0.98] disabled:opacity-40 disabled:shadow-none transition-all"
-              >
-                {sending ? (
-                  <>
-                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    {t('sending')}
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-5 h-5" />
-                    {t('sendToKitchen')}
-                  </>
-                )}
-              </button>
+              <>
+                <Save className="w-5 h-5" />
+                {t('saveChanges')}
+              </>
             )}
+          </button>
+        ) : (
+          <button
+            onClick={handleSendToKitchen}
+            disabled={!hasActiveItems || sending}
+            className="w-full h-16 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 active:scale-[0.98] disabled:opacity-40 disabled:shadow-none transition-all"
+          >
+            {sending ? (
+              <>
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                {t('sending')}
+              </>
+            ) : (
+              <>
+                <Send className="w-5 h-5" />
+                {t('sendToKitchen')}
+              </>
+            )}
+          </button>
+        )}
 
-            {cart.length > 0 && !editingOrder && (
-              <button
-                onClick={() => setCart([])}
-                className="w-full py-2.5 text-xs text-slate-500 hover:text-red-600 font-bold"
-              >
-                {t('clearAll')}
-              </button>
-            )}
-          </div>
+        {cart.length > 0 && !editingOrder && (
+          <button
+            onClick={() => setCart([])}
+            className="w-full py-2.5 text-xs text-slate-500 hover:text-red-600 font-bold"
+          >
+            {t('clearAll')}
+          </button>
+        )}
+      </div>
     </>
-  );
-
-  const renderTypeBar = (leading?: ReactNode) => (
-          <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-200 shrink-0">
-            {leading}
-            <div className="flex p-1 rounded-2xl bg-slate-100 gap-1 w-full md:w-auto">
-              <button
-                onClick={() => setOrderType('OUTSIDE')}
-                className={`flex-1 justify-center md:flex-none flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold transition-all active:scale-95 ${
-                  orderType === 'OUTSIDE'
-                    ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
-                    : 'text-slate-500 hover:bg-white'
-                }`}
-              >
-                <ShoppingBag className="w-4 h-4" />
-                {t('orderTypeOutside')}
-              </button>
-              <button
-                onClick={() => setOrderType('INSIDE')}
-                className={`flex-1 justify-center md:flex-none flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold transition-all active:scale-95 ${
-                  orderType === 'INSIDE'
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'text-slate-500 hover:bg-white'
-                }`}
-              >
-                <Store className="w-4 h-4" />
-                {t('orderTypeInside')}
-              </button>
-            </div>
-          </div>
-
   );
 
   const errorBox = (
     <>
-          {error && (
-            <div className="mx-2 mt-2 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
-              {error}
-            </div>
-          )}
-
+      {error && (
+        <div className="mx-2 mt-2 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm">
+          {error}
+        </div>
+      )}
     </>
   );
 
   const dishBlock = (
     <>
-          {hasDishSet ? (
-            <div className="flex-1 min-h-0 overflow-y-auto p-3">
-              <div className="mb-3 px-3 py-2 rounded-lg bg-orange-100 border-l-4 border-orange-500">
-                <h3
-                  className="font-black text-orange-800 tracking-wide truncate leading-none"
-                  style={{ fontSize: hdrSize }}
-                >
-                  {t('bludiAndSet')}
-                </h3>
-              </div>
-              {renderGrid('dishset', layout.dishCardSize, false)}
-            </div>
-          ) : (
-            <div className="flex-1 min-h-0 flex items-center justify-center text-slate-400 text-sm">
-              {t('noMenuItems')}
-            </div>
-          )}
-
+      {hasDishSet ? (
+        <div className="flex-1 min-h-0 overflow-y-auto p-3">
+          <div className="mb-3 px-3 py-2 rounded-lg bg-orange-100 border-l-4 border-orange-500">
+            <h3
+              className="font-black text-orange-800 tracking-wide truncate leading-none"
+              style={{ fontSize: hdrSize }}
+            >
+              {t('bludiAndSet')}
+            </h3>
+          </div>
+          {renderGrid('dishset', layout.dishCardSize, false)}
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 flex items-center justify-center text-slate-400 text-sm">
+          {t('noMenuItems')}
+        </div>
+      )}
     </>
   );
 
   const toppingBlock = (
     <>
-          {hasTopping && (
-            <>
-              <Resizer
-                direction="horizontal"
-                onStart={beginResize}
-                onResize={handleResizeToppings}
-                onEnd={endResize}
-              />
-              <div
-                className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
-                style={{ height: layout.toppingsHeight }}
-              >
-                <h3
-                  className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
-                  style={{ fontSize: hdrSize }}
-                >
-                  {t('type_topping')}
-                </h3>
-                <div className="overflow-y-auto h-[calc(100%-16px)]">
-                  {renderGrid('topping', layout.toppingCardSize, true)}
-                </div>
-              </div>
-            </>
-          )}
+      {hasTopping && (
+        <>
+          <Resizer
+            direction="horizontal"
+            onStart={beginResize}
+            onResize={handleResizeToppings}
+            onEnd={endResize}
+          />
+          <div
+            className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
+            style={{ height: layout.toppingsHeight }}
+          >
+            <h3
+              className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
+              style={{ fontSize: hdrSize }}
+            >
+              {t('type_topping')}
+            </h3>
+            <div className="overflow-y-auto h-[calc(100%-16px)]">
+              {renderGrid('topping', layout.toppingCardSize, true)}
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 
-  // Меню для телефона и планшета: чипы категорий + одна сетка
   const fluidMenu = (
     <>
       <div className="flex gap-2 px-3 py-2 overflow-x-auto shrink-0 bg-white border-b border-slate-200 [scrollbar-width:none]">
@@ -1277,7 +1347,6 @@ export default function CashierPage() {
       <div className="flex-1 min-h-0 flex flex-col bg-slate-100 relative">
         {mobileTab === 'menu' && (
           <>
-            {renderTypeBar()}
             {errorBox}
             {fluidMenu}
             {hasActiveItems && (
@@ -1316,14 +1385,14 @@ export default function CashierPage() {
             <button
               key={tab.key}
               onClick={() => setMobileTab(tab.key)}
-              className={`relative flex flex-col items-center justify-center gap-0.5 py-2 min-h-[56px] text-[11px] font-black transition-colors ${
+              className={`relative flex flex-col items-center justify-center gap-0.5 py-2 min-h-[3.5rem] text-[0.6875rem] font-black transition-colors ${
                 active ? 'text-orange-600 bg-orange-50' : 'text-slate-500'
               }`}
             >
               {tab.icon}
               {tab.label}
               {tab.badge > 0 && (
-                <span className="absolute top-1 left-1/2 ml-2 min-w-[18px] px-1 h-[18px] rounded-full bg-orange-500 text-white text-[10px] font-black flex items-center justify-center tabular-nums">
+                <span className="absolute top-1 left-1/2 ml-2 min-w-[18px] px-1 h-[1.125rem] rounded-full bg-orange-500 text-white text-[0.625rem] font-black flex items-center justify-center tabular-nums">
                   {tab.badge}
                 </span>
               )}
@@ -1337,7 +1406,7 @@ export default function CashierPage() {
   const tabletLayout = (
     <div className="flex-1 min-h-0 flex overflow-hidden relative">
       <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
-        {renderTypeBar(
+        <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-200 shrink-0">
           <button
             onClick={() => setOrdersOpen(true)}
             className="shrink-0 flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-sm font-black text-slate-700 active:scale-95 transition-all"
@@ -1345,12 +1414,12 @@ export default function CashierPage() {
             <ClipboardList className="w-4 h-4" />
             {lang === 'ru' ? 'Заказы' : 'Orders'}
             {ordersCount > 0 && (
-              <span className="text-[11px] bg-orange-500 text-white px-2 py-0.5 rounded-full tabular-nums">
+              <span className="text-[0.6875rem] bg-orange-500 text-white px-2 py-0.5 rounded-full tabular-nums">
                 {ordersCount}
               </span>
             )}
           </button>
-        )}
+        </div>
         {errorBox}
         {fluidMenu}
       </div>
@@ -1364,7 +1433,7 @@ export default function CashierPage() {
 
       {ordersOpen && (
         <div className="absolute inset-0 z-40 flex">
-          <div className="w-[min(340px,85%)] bg-white shadow-2xl flex flex-col min-h-0 border-r border-slate-300">
+          <div className="w-[min(22rem,85%)] bg-white shadow-2xl flex flex-col min-h-0 border-r border-slate-300">
             <div className="flex justify-end p-1 border-b border-slate-200 shrink-0">
               <button
                 onClick={() => setOrdersOpen(false)}
@@ -1397,7 +1466,7 @@ export default function CashierPage() {
           <Undo2 className="w-4 h-4" />
           <span className="hidden sm:inline">{t('undoLast')}</span>
           {undoStack.length > 0 && (
-            <span className="text-[11px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-black">
+            <span className="text-[0.6875rem] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-black">
               {undoStack.length}
             </span>
           )}
@@ -1405,107 +1474,105 @@ export default function CashierPage() {
       </PageActions>
 
       {isDesktop ? (
-      <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* LEFT: ORDERS */}
-        <div
-          className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.ordersWidth }}
-        >
-          {ordersInner}
-        </div>
-
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeOrders}
-          onEnd={endResize}
-        />
-
-        {/* CENTER */}
-        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
-          {renderTypeBar()}
-          {errorBox}
-          {dishBlock}
-          {toppingBlock}
-        </div>
-
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeMenuRight}
-          onEnd={endResize}
-        />
-
-        {/* RIGHT */}
-        <div
-          ref={drinksWrapRef}
-          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.menuRightWidth }}
-        >
+        <div className="flex-1 min-h-0 flex overflow-hidden">
+          {/* LEFT: ORDERS */}
           <div
-            className="flex flex-col border-b-2 border-cyan-300"
-            style={{ height: `${layout.drinksShare}%` }}
+            className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
+            style={{ width: layout.ordersWidth }}
           >
-            <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
-              <h3
-                className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
-                style={{ fontSize: hdrSize }}
-              >
-                {t('type_drink')}
-              </h3>
-            </div>
-            {hasDrink ? (
-              <div className="flex-1 min-h-0 overflow-y-auto p-2">
-                {renderGrid('drink', layout.drinkCardSize, true)}
-              </div>
-            ) : (
-              <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
-                —
-              </div>
-            )}
+            {ordersInner}
           </div>
 
           <Resizer
-            direction="horizontal"
             onStart={beginResize}
-            onResize={handleResizeDrinks}
+            onResize={handleResizeOrders}
             onEnd={endResize}
           />
 
-          <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
-              <h3
-                className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
-                style={{ fontSize: hdrSize }}
-              >
-                {t('type_sauce')}
-              </h3>
+          {/* CENTER */}
+          <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
+            {errorBox}
+            {dishBlock}
+            {toppingBlock}
+          </div>
+
+          <Resizer
+            onStart={beginResize}
+            onResize={handleResizeMenuRight}
+            onEnd={endResize}
+          />
+
+          {/* RIGHT */}
+          <div
+            ref={drinksWrapRef}
+            className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
+            style={{ width: layout.menuRightWidth }}
+          >
+            <div
+              className="flex flex-col border-b-2 border-cyan-300"
+              style={{ height: `${layout.drinksShare}%` }}
+            >
+              <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
+                <h3
+                  className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
+                  style={{ fontSize: hdrSize }}
+                >
+                  {t('type_drink')}
+                </h3>
+              </div>
+              {hasDrink ? (
+                <div className="flex-1 min-h-0 overflow-y-auto p-2">
+                  {renderGrid('drink', layout.drinkCardSize, true)}
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
+                  —
+                </div>
+              )}
             </div>
-            {hasSauce ? (
-              <div className="flex-1 min-h-0 overflow-y-auto p-2">
-                {renderGrid('sauce', layout.sauceCardSize, true)}
+
+            <Resizer
+              direction="horizontal"
+              onStart={beginResize}
+              onResize={handleResizeDrinks}
+              onEnd={endResize}
+            />
+
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
+                <h3
+                  className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
+                  style={{ fontSize: hdrSize }}
+                >
+                  {t('type_sauce')}
+                </h3>
               </div>
-            ) : (
-              <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
-                —
-              </div>
-            )}
+              {hasSauce ? (
+                <div className="flex-1 min-h-0 overflow-y-auto p-2">
+                  {renderGrid('sauce', layout.sauceCardSize, true)}
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
+                  —
+                </div>
+              )}
+            </div>
+          </div>
+
+          <Resizer
+            onStart={beginResize}
+            onResize={handleResizeCart}
+            onEnd={endResize}
+          />
+
+          {/* CART */}
+          <div
+            className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
+            style={{ width: layout.cartWidth }}
+          >
+            {cartInner}
           </div>
         </div>
-
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeCart}
-          onEnd={endResize}
-        />
-
-        {/* CART */}
-        <div
-          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.cartWidth }}
-        >
-          {cartInner}
-        </div>
-      </div>
-
       ) : isPhone ? (
         phoneLayout
       ) : (
@@ -1523,6 +1590,80 @@ export default function CashierPage() {
         }}
         onCancel={() => setBuilder(null)}
       />
+
+      {/* ============================================ */}
+      {/* МОДАЛКА: выбор способа получения (3 квадрата) */}
+      {/* ============================================ */}
+      {showTypePicker && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setShowTypePicker(false)}
+        >
+          <div
+            className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-lg p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-xl font-black text-slate-900 text-center">
+              {t('chooseOrderTypeTitle')}
+            </h3>
+            <p className="text-sm text-slate-500 text-center mt-1 mb-4">
+              {t('chooseOrderTypeHint')}
+            </p>
+
+            <div className="grid grid-cols-3 gap-3">
+              {/* ЗДЕСЬ — синий */}
+              <button
+                onClick={() => performCreateOrder('INSIDE')}
+                disabled={sending}
+                className="aspect-square flex flex-col items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-400 hover:to-blue-600 active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-blue-600/40 p-3"
+              >
+                <span className="text-5xl sm:text-6xl leading-none drop-shadow-lg">
+                  🍽️
+                </span>
+                <span className="font-black text-sm sm:text-base text-white text-center leading-tight drop-shadow">
+                  {t('inside')}
+                </span>
+              </button>
+
+              {/* С СОБОЙ — фиолетовый */}
+              <button
+                onClick={() => performCreateOrder('OUTSIDE')}
+                disabled={sending}
+                className="aspect-square flex flex-col items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-purple-500 to-purple-700 hover:from-purple-400 hover:to-purple-600 active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-purple-600/40 p-3"
+              >
+                <span className="text-5xl sm:text-6xl leading-none drop-shadow-lg">
+                  🥡
+                </span>
+                <span className="font-black text-sm sm:text-base text-white text-center leading-tight drop-shadow">
+                  {t('outside')}
+                </span>
+              </button>
+
+              {/* ПО ДОРОГЕ — оранжевый */}
+              <button
+                onClick={() => performCreateOrder('ON_THE_WAY')}
+                disabled={sending}
+                className="aspect-square flex flex-col items-center justify-center gap-2 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-700 hover:from-amber-400 hover:to-orange-600 active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-orange-600/40 p-3"
+              >
+                <span className="text-5xl sm:text-6xl leading-none drop-shadow-lg">
+                  🚶
+                </span>
+                <span className="font-black text-sm sm:text-base text-white text-center leading-tight drop-shadow">
+                  {t('orderTypeOnTheWay')}
+                </span>
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowTypePicker(false)}
+              disabled={sending}
+              className="mt-3 w-full py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-bold transition-colors disabled:opacity-50"
+            >
+              {t('cancel')}
+            </button>
+          </div>
+        </div>
+      )}
 
       <ClearCartDialog
         open={pendingAction !== null}

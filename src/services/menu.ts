@@ -1,24 +1,32 @@
+// src/services/menu.ts
 import type {
   MenuItem,
   MenuItemType,
-  Station,
   DishKind,
+  Station,
   SauceMode,
   HydratedProperty,
   HydratedSauce,
+  HydratedSetExtraGroup,
   HydratedSetExtraOption,
 } from '@/types/database';
 import {
   getMenuItems,
   setMenuItems,
-  removeMenuItem,
   newId,
 } from '@/lib/localStore';
-import { canFitImage } from '@/lib/storageUsage';
+import { uploadImageToSupabase } from '@/services/supabaseStorage';
 
 // ============================================================
-// ПУБЛИЧНЫЕ ТИПЫ
+// ТИПЫ ПЕЙЛОАДОВ
 // ============================================================
+export interface PropertyDraftPayload {
+  name: string;
+  options: string[];
+  required: boolean;
+  sort_order?: number;
+}
+
 export interface VariantDraftPayload {
   id?: string;
   name: string;
@@ -26,27 +34,29 @@ export interface VariantDraftPayload {
   image_url: string | null;
   price: number;
   free: boolean;
-  station: Station | null;
+  station: Station;
   cook_time_min: number | null;
-  sauce_mode: SauceMode | null;
-  properties: PropertyDraftPayload[];
-  allowed_sauce_ids: string[];
+  sauce_mode: SauceMode;
+  allowed_sauce_ids?: string[];
+  properties?: PropertyDraftPayload[];
 }
 
-export interface PropertyDraftPayload {
-  name: string;
-  options?: string[];
-  required?: boolean;
+export interface SetExtraOptionPayload {
+  item_id: string;
+  price_override: number | null;
+  image_override: string | null;
 }
 
 export interface SetExtraGroupPayload {
   label: string;
   required: boolean;
-  options: {
-    item_id: string;
-    price_override: number | null;
-    image_override: string | null;
-  }[];
+  options: SetExtraOptionPayload[];
+}
+
+export interface SetMainOverridePayload {
+  variant_item_id: string;
+  price_override: number | null;
+  image_override: string | null;
 }
 
 export interface SaveItemPayload {
@@ -56,91 +66,327 @@ export interface SaveItemPayload {
   image_url: string | null;
   price: number;
   free: boolean;
+  active: boolean;
+  sort_order: number;
   station: Station | null;
   cook_time_min: number | null;
   color: string | null;
   dish_kind: DishKind | null;
   sauce_mode: SauceMode | null;
-  active: boolean;
-  sort_order: number;
-
-  properties?: PropertyDraftPayload[];
   allowed_sauce_ids?: string[];
-
+  properties?: PropertyDraftPayload[];
   variants?: VariantDraftPayload[];
-
   set_main_item_id?: string | null;
-  set_main_overrides?: {
-    variant_item_id: string;
-    price_override: number | null;
-    image_override: string | null;
-  }[];
+  set_main_overrides?: SetMainOverridePayload[];
   set_extra_groups?: SetExtraGroupPayload[];
 }
 
+export interface ReorderUpdate {
+  id: string;
+  sort_order: number;
+}
+
 // ============================================================
-// ЗАГРУЗКА
+// READ
 // ============================================================
 export async function fetchAllMenuItems(): Promise<MenuItem[]> {
-  return JSON.parse(JSON.stringify(getMenuItems())) as MenuItem[];
+  const items = getMenuItems();
+
+  // ✅ ФИКС: при каждой загрузке пересобираем set_main всех сетов
+  // из актуальных блюд (фото, имена, цены, свойства, варианты).
+  // Overrides (своя цена/фото варианта сета) сохраняются.
+  const resolved = resolveSetsFromDishes(items);
+  if (resolved !== items) {
+    setMenuItems(resolved);
+  }
+  return resolved;
 }
 
 // ============================================================
-// ХЕЛПЕРЫ
+// CREATE
 // ============================================================
-function buildPropertyHydrated(
+export async function createItem(
+  payload: SaveItemPayload
+): Promise<MenuItem> {
+  const now = new Date().toISOString();
+  const id = newId();
+  const currentMenu = getMenuItems();
+  const item = buildItem(id, payload, currentMenu, now, null);
+  setMenuItems([...currentMenu, item]);
+  return item;
+}
+
+// ============================================================
+// UPDATE
+//
+// 1) top-level item → buildItem
+// 2) variant блюда  → buildVariant + вставка в parent.variants
+//
+// Синхронизация сетов с блюдом теперь делается не здесь, а в
+// fetchAllMenuItems через resolveSetsFromDishes — чтобы сет
+// всегда видел свежие данные блюда, а не только при сохранении.
+// ============================================================
+export async function updateItem(
   itemId: string,
-  properties: PropertyDraftPayload[]
-): HydratedProperty[] {
-  return properties
-    .filter((p) => p.name.trim())
-    .map((p, i) => ({
-      id: newId(),
-      item_id: itemId,
-      name: p.name.trim(),
-      options: Array.isArray(p.options) ? [...p.options] : [],
-      required: Boolean(p.required),
-      sort_order: i,
-    }));
-}
-
-function buildSaucesFromIds(
-  ids: string[],
-  allItems: MenuItem[]
-): HydratedSauce[] {
-  return ids
-    .map((id) => allItems.find((i) => i.id === id))
-    .filter((x): x is MenuItem => Boolean(x))
-    .map((s) => ({
-      id: s.id,
-      name: s.name,
-      short_name: s.short_name,
-      image_url: s.image_url,
-      price: s.price,
-      free: s.free,
-      color: s.color,
-      active: s.active,
-    }));
-}
-
-function cloneItem(it: MenuItem): MenuItem {
-  return JSON.parse(JSON.stringify(it)) as MenuItem;
-}
-
-function buildMenuItem(
-  payload: SaveItemPayload,
-  id: string,
-  allItems: MenuItem[],
-  existing?: MenuItem
-): MenuItem {
+  payload: SaveItemPayload
+): Promise<MenuItem> {
+  const currentMenu = getMenuItems();
   const now = new Date().toISOString();
 
+  // ---------- 1) Верхнеуровневый item ----------
+  const topIdx = currentMenu.findIndex((i) => i.id === itemId);
+  if (topIdx !== -1) {
+    const prev = currentMenu[topIdx];
+    const updated = buildItem(itemId, payload, currentMenu, now, prev);
+
+    const next = [...currentMenu];
+    next[topIdx] = updated;
+    setMenuItems(next);
+    return updated;
+  }
+
+  // ---------- 2) Variant внутри top-level dish ----------
+  for (let i = 0; i < currentMenu.length; i++) {
+    const parent = currentMenu[i];
+    if (!parent.variants || parent.variants.length === 0) continue;
+
+    const vIdx = parent.variants.findIndex((v) => v.id === itemId);
+    if (vIdx === -1) continue;
+
+    const prevVariant = parent.variants[vIdx];
+
+    const draft: VariantDraftPayload = {
+      id: itemId,
+      name: payload.name,
+      short_name: payload.short_name,
+      image_url: payload.image_url,
+      price: payload.price,
+      free: payload.free,
+      station: (payload.station ?? prevVariant.station ?? 'kitchen') as Station,
+      cook_time_min: payload.cook_time_min,
+      sauce_mode:
+        (payload.sauce_mode ?? prevVariant.sauce_mode ?? 'none') as SauceMode,
+      allowed_sauce_ids: payload.allowed_sauce_ids,
+      properties: payload.properties,
+    };
+
+    const updatedVariant = buildVariant(
+      draft,
+      parent.id,
+      currentMenu,
+      now,
+      prevVariant
+    );
+
+    const nextParent: MenuItem = {
+      ...parent,
+      updated_at: now,
+      variants: parent.variants.map((v, j) =>
+        j === vIdx ? updatedVariant : v
+      ),
+    };
+
+    const next = [...currentMenu];
+    next[i] = nextParent;
+    setMenuItems(next);
+    return updatedVariant;
+  }
+
+  throw new Error(`Item not found: ${itemId}`);
+}
+
+// ============================================================
+// ✅ РЕЗОЛВ СЕТОВ ИЗ БЛЮД
+//
+// Для каждого сета:
+//   1. Берём актуальное блюдо из menu (по set_main.id).
+//   2. Клонируем его (варианты, свойства, изображения, цены).
+//   3. Применяем overrides — те поля, что в текущем set_main
+//      ОТЛИЧАЮТСЯ от блюда, считаем override (своя цена/фото).
+//
+// Результат записывается обратно в set_main. Имя сета,
+// его image_url и extra_groups не трогаются — они принадлежат
+// самому сету, а не блюду.
+// ============================================================
+function resolveSetsFromDishes(items: MenuItem[]): MenuItem[] {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const now = new Date().toISOString();
+  let anyChanged = false;
+
+  const next = items.map((item) => {
+    if (item.type !== 'set') return item;
+    const mainId = item.set_main?.id;
+    if (!mainId) return item;
+
+    const dish = byId.get(mainId);
+    if (!dish) return item;
+
+    const currentMain = item.set_main!;
+    const resolvedMain = deepCloneItem(dish, dish.id, now);
+
+    // Переносим overrides из текущего set_main.
+    if (resolvedMain.variants && currentMain.variants) {
+      const prevVariants = currentMain.variants;
+
+      resolvedMain.variants = resolvedMain.variants.map((v, i) => {
+        const prev = prevVariants[i];
+        if (!prev) return v;
+
+        const withOv = { ...v };
+
+        // price override
+        if (prev.price !== v.price) {
+          withOv.price = prev.price;
+          withOv.free = prev.price === 0;
+        }
+
+        // image override
+        if (prev.image_url && prev.image_url !== v.image_url) {
+          withOv.image_url = prev.image_url;
+        }
+
+        return withOv;
+      });
+    }
+
+    // Если ничего не поменялось — не трогаем объект (чтобы не было
+    // лишних перерисовок / realtime-эхо).
+    if (sameSetMain(currentMain, resolvedMain)) {
+      return item;
+    }
+
+    anyChanged = true;
+    return { ...item, set_main: resolvedMain };
+  });
+
+  return anyChanged ? next : items;
+}
+
+function sameSetMain(a: MenuItem, b: MenuItem): boolean {
+  // Сравниваем только те поля, что реально влияют на UI сета.
+  if (a.id !== b.id) return false;
+  if (a.name !== b.name) return false;
+  if (a.short_name !== b.short_name) return false;
+  if (a.image_url !== b.image_url) return false;
+  if (a.price !== b.price) return false;
+
+  const av = a.variants ?? [];
+  const bv = b.variants ?? [];
+  if (av.length !== bv.length) return false;
+
+  for (let i = 0; i < av.length; i++) {
+    const x = av[i];
+    const y = bv[i];
+    if (x.name !== y.name) return false;
+    if (x.short_name !== y.short_name) return false;
+    if (x.image_url !== y.image_url) return false;
+    if (x.price !== y.price) return false;
+    if (x.free !== y.free) return false;
+    if (x.station !== y.station) return false;
+    if (x.cook_time_min !== y.cook_time_min) return false;
+    if (x.sauce_mode !== y.sauce_mode) return false;
+    // properties — поверхностно
+    const ap = x.properties ?? [];
+    const bp = y.properties ?? [];
+    if (ap.length !== bp.length) return false;
+    for (let k = 0; k < ap.length; k++) {
+      if (ap[k].name !== bp[k].name) return false;
+      if (ap[k].required !== bp[k].required) return false;
+      if (ap[k].options.join('|') !== bp[k].options.join('|')) return false;
+    }
+  }
+
+  return true;
+}
+
+// ============================================================
+// DELETE
+// ============================================================
+export async function deleteItem(
+  itemId: string,
+  _type?: MenuItemType
+): Promise<void> {
+  const currentMenu = getMenuItems();
+
+  const topIdx = currentMenu.findIndex((i) => i.id === itemId);
+  if (topIdx !== -1) {
+    setMenuItems(currentMenu.filter((i) => i.id !== itemId));
+    return;
+  }
+
+  let changed = false;
+  const next = currentMenu.map((parent) => {
+    if (!parent.variants || parent.variants.length === 0) return parent;
+    const filtered = parent.variants.filter((v) => v.id !== itemId);
+    if (filtered.length === parent.variants.length) return parent;
+    changed = true;
+    return { ...parent, variants: filtered };
+  });
+
+  if (!changed) throw new Error(`Item not found: ${itemId}`);
+  setMenuItems(next);
+}
+
+// ============================================================
+// REORDER
+// ============================================================
+export async function reorderItems(
+  updates: ReorderUpdate[]
+): Promise<void> {
+  if (!updates.length) return;
+  const map = new Map(updates.map((u) => [u.id, u.sort_order]));
+  const next = getMenuItems().map((it) => {
+    const newOrder = map.get(it.id);
+    return newOrder !== undefined ? { ...it, sort_order: newOrder } : it;
+  });
+  setMenuItems(next);
+}
+
+// ============================================================
+// DUPLICATE
+// ============================================================
+export async function duplicateItem(itemId: string): Promise<MenuItem> {
+  const currentMenu = getMenuItems();
+  const original = currentMenu.find((i) => i.id === itemId);
+  if (!original) throw new Error(`Item not found: ${itemId}`);
+
+  const now = new Date().toISOString();
+  const newMainId = newId();
+  const clone = deepCloneItem(original, newMainId, now, {
+    nameSuffix: ' (copy)',
+    sortOrderOffset: 1,
+  });
+
+  setMenuItems([...currentMenu, clone]);
+  return clone;
+}
+
+// ============================================================
+// IMAGE UPLOAD
+// ============================================================
+export async function uploadItemImage(
+  file: File,
+  itemId?: string
+): Promise<string> {
+  return uploadImageToSupabase(file, itemId);
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+function buildItem(
+  id: string,
+  payload: SaveItemPayload,
+  currentMenu: MenuItem[],
+  now: string,
+  prev: MenuItem | null
+): MenuItem {
   const item: MenuItem = {
     id,
     type: payload.type,
-    name: payload.name,
-    short_name: payload.short_name,
-    image_url: payload.image_url,
+    name: payload.name.trim(),
+    short_name: payload.short_name.trim() || payload.name.trim(),
+    image_url: emptyToNull(payload.image_url),
     price: payload.price,
     free: payload.free,
     station: payload.station,
@@ -151,318 +397,270 @@ function buildMenuItem(
     parent_id: null,
     active: payload.active,
     sort_order: payload.sort_order,
-    created_at: existing?.created_at ?? now,
+    created_at: prev?.created_at ?? now,
     updated_at: now,
-    properties: [],
-    allowed_sauces: [],
   };
 
   if (
-    (payload.type === 'dish' && payload.dish_kind === 'single') ||
-    payload.type === 'topping'
+    payload.type === 'dish' &&
+    payload.dish_kind === 'group' &&
+    payload.variants
   ) {
-    item.properties = buildPropertyHydrated(id, payload.properties ?? []);
-    if (payload.sauce_mode === 'with' && payload.allowed_sauce_ids?.length) {
-      item.allowed_sauces = buildSaucesFromIds(
+    item.variants = payload.variants.map((v) => {
+      const existing = prev?.variants?.find((x) => v.id && x.id === v.id);
+      return buildVariant(v, id, currentMenu, now, existing);
+    });
+  }
+
+  if (payload.type === 'dish' && payload.dish_kind === 'single') {
+    if (payload.sauce_mode === 'with' && payload.allowed_sauce_ids) {
+      item.allowed_sauces = resolveSauces(
         payload.allowed_sauce_ids,
-        allItems
+        currentMenu
+      );
+    }
+    if (payload.properties) {
+      item.properties = buildProperties(payload.properties, id);
+    }
+  }
+
+  if (payload.type === 'set') {
+    if (payload.set_main_item_id) {
+      const mainDish = currentMenu.find(
+        (i) => i.id === payload.set_main_item_id
+      );
+      if (mainDish) {
+        const mainCopy = deepCloneItem(mainDish, mainDish.id, now);
+        applyMainOverrides(mainCopy, payload.set_main_overrides ?? []);
+        item.set_main = mainCopy;
+      }
+    }
+    if (payload.set_extra_groups) {
+      item.set_extra_groups = buildExtraGroups(
+        payload.set_extra_groups,
+        id,
+        currentMenu
       );
     }
   }
 
-  if (payload.type === 'dish' && payload.dish_kind === 'group') {
-    item.variants = (payload.variants ?? []).map((v, i) => {
-      const vid = v.id ?? newId();
-      const variant: MenuItem = {
-        id: vid,
-        type: 'dish',
-        name: v.name,
-        short_name: v.short_name,
-        image_url: v.image_url,
-        price: v.price,
-        free: v.free,
-        station: v.station,
-        cook_time_min: v.cook_time_min,
-        color: null,
-        dish_kind: 'single',
-        sauce_mode: v.sauce_mode,
-        parent_id: id,
-        active: true,
-        sort_order: i,
-        created_at: now,
-        updated_at: now,
-        properties: buildPropertyHydrated(vid, v.properties ?? []),
-        allowed_sauces:
-          v.sauce_mode === 'with'
-            ? buildSaucesFromIds(v.allowed_sauce_ids ?? [], allItems)
-            : [],
-      };
-      return variant;
+  return item;
+}
+
+function buildVariant(
+  v: VariantDraftPayload,
+  parentId: string,
+  currentMenu: MenuItem[],
+  now: string,
+  existing: MenuItem | undefined
+): MenuItem {
+  const variantId = v.id ?? newId();
+
+  const variant: MenuItem = {
+    id: variantId,
+    type: 'dish',
+    name: v.name.trim(),
+    short_name: v.short_name.trim() || v.name.trim(),
+    image_url: emptyToNull(v.image_url),
+    price: v.free ? 0 : v.price,
+    free: v.free,
+    station: v.station,
+    cook_time_min: v.station === 'kitchen' ? v.cook_time_min : null,
+    color: null,
+    dish_kind: 'single',
+    sauce_mode: v.sauce_mode,
+    parent_id: parentId,
+    active: true,
+    sort_order: existing?.sort_order ?? 0,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+
+  if (v.sauce_mode === 'with' && v.allowed_sauce_ids) {
+    variant.allowed_sauces = resolveSauces(v.allowed_sauce_ids, currentMenu);
+  }
+  if (v.properties) {
+    variant.properties = buildProperties(v.properties, variantId);
+  }
+  return variant;
+}
+
+function buildProperties(
+  drafts: PropertyDraftPayload[],
+  itemId: string
+): HydratedProperty[] {
+  return drafts
+    .filter((p) => p.name.trim())
+    .map((p, i) => ({
+      id: newId(),
+      item_id: itemId,
+      name: p.name.trim(),
+      options: Array.isArray(p.options) ? p.options : [],
+      required: Boolean(p.required),
+      sort_order: p.sort_order ?? i,
+    }));
+}
+
+function resolveSauces(
+  ids: string[],
+  currentMenu: MenuItem[]
+): HydratedSauce[] {
+  const out: HydratedSauce[] = [];
+  for (const id of ids) {
+    const sauce = currentMenu.find((i) => i.id === id && i.type === 'sauce');
+    if (!sauce || !sauce.active) continue;
+    out.push({
+      id: sauce.id,
+      name: sauce.name,
+      short_name: sauce.short_name,
+      image_url: sauce.image_url,
+      price: sauce.price,
+      free: sauce.free,
+      color: sauce.color,
+      active: sauce.active,
     });
   }
+  return out;
+}
 
-  if (payload.type === 'set' && payload.set_main_item_id) {
-    const main = allItems.find((i) => i.id === payload.set_main_item_id);
-    if (main) {
-      const mainCopy = cloneItem(main);
-      if (
-        main.dish_kind === 'group' &&
-        mainCopy.variants &&
-        payload.set_main_overrides
-      ) {
-        mainCopy.variants = mainCopy.variants.map((v) => {
-          const ov = payload.set_main_overrides?.find(
-            (o) => o.variant_item_id === v.id
-          );
-          if (!ov) return v;
-          const merged = { ...v };
-          if (ov.price_override != null) merged.price = ov.price_override;
-          if (ov.image_override) merged.image_url = ov.image_override;
-          return merged;
-        });
-      }
-      item.set_main = mainCopy;
+// ============================================================
+// ФИКС: применяем overrides ПО ИНДЕКСУ, а не по variant_item_id.
+// После deepCloneItem id вариантов новые, а порядок сохраняется.
+// ============================================================
+function applyMainOverrides(
+  mainCopy: MenuItem,
+  overrides: SetMainOverridePayload[]
+): void {
+  if (!mainCopy.variants || mainCopy.variants.length === 0) return;
+
+  mainCopy.variants = mainCopy.variants.map((v, i) => {
+    const ov = overrides[i];
+    if (!ov) return v;
+    const next = { ...v };
+    if (ov.price_override != null) {
+      next.price = ov.price_override;
+      next.free = ov.price_override === 0;
     }
-
-    item.set_extra_groups = (payload.set_extra_groups ?? []).map((g, gi) => ({
-      id: newId(),
-      set_item_id: id,
-      label: g.label,
-      required: g.required,
-      sort_order: gi,
-      options: g.options
-        .map((o): HydratedSetExtraOption | null => {
-          const optItem = allItems.find((x) => x.id === o.item_id);
-          if (!optItem) return null;
-          const copy = cloneItem(optItem);
-          if (o.price_override != null) copy.price = o.price_override;
-          if (o.image_override) copy.image_url = o.image_override;
-          return { option_id: newId(), item: copy };
-        })
-        .filter((x): x is HydratedSetExtraOption => Boolean(x)),
-    }));
-  }
-
-  return item;
-}
-
-// ============================================================
-// СОЗДАНИЕ
-// ============================================================
-export async function createItem(payload: SaveItemPayload): Promise<MenuItem> {
-  const allItems = getMenuItems();
-  const id = newId();
-  const item = buildMenuItem(payload, id, allItems);
-  setMenuItems([...allItems, item]);
-  return item;
-}
-
-// ============================================================
-// ОБНОВЛЕНИЕ
-// ============================================================
-export async function updateItem(
-  id: string,
-  payload: SaveItemPayload
-): Promise<MenuItem> {
-  const allItems = getMenuItems();
-  const existing = allItems.find((i) => i.id === id);
-  if (!existing) throw new Error('Продукт не найден');
-  const updated = buildMenuItem(payload, id, allItems, existing);
-  setMenuItems(allItems.map((i) => (i.id === id ? updated : i)));
-  return updated;
-}
-
-// ============================================================
-// УДАЛЕНИЕ
-// ============================================================
-export async function deleteItem(id: string): Promise<void> {
-  removeMenuItem(id);
-}
-
-// ============================================================
-// ПОРЯДОК
-// ============================================================
-export async function reorderItems(
-  updates: { id: string; sort_order: number }[]
-): Promise<void> {
-  if (updates.length === 0) return;
-  const map = new Map(updates.map((u) => [u.id, u.sort_order]));
-  const items = getMenuItems().map((i) =>
-    map.has(i.id) ? { ...i, sort_order: map.get(i.id)! } : i
-  );
-  setMenuItems(items);
-}
-
-// ============================================================
-// ИЗОБРАЖЕНИЯ → data URL с проверкой лимита
-// ============================================================
-const MAX_IMAGE_KB = 500;
-const COMPRESS_MAX_SIZE = 512;
-const COMPRESS_QUALITY = 0.75;
-
-/**
- * Пережимает фото в квадрат через canvas (JPEG), возвращает data URL.
- * ImageCropDialog уже отдаёт готовый File — здесь дополнительно
- * уменьшаем до 512px и quality 0.75, чтобы данные точно помещались
- * в localStorage (5 МБ на всё).
- */
-async function compressToDataUrl(
-  file: File,
-  maxSize: number,
-  quality: number
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const scale = Math.min(
-            1,
-            maxSize / Math.max(img.width, img.height)
-          );
-          const w = Math.max(1, Math.round(img.width * scale));
-          const h = Math.max(1, Math.round(img.height * scale));
-
-          const canvas = document.createElement('canvas');
-          canvas.width = w;
-          canvas.height = h;
-
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            reject(new Error('Canvas недоступен'));
-            return;
-          }
-
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, w, h);
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
-          ctx.drawImage(img, 0, 0, w, h);
-
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          resolve(dataUrl);
-        } catch (e) {
-          reject(e instanceof Error ? e : new Error('Ошибка сжатия'));
-        }
-      };
-      img.onerror = () => reject(new Error('Не удалось загрузить изображение'));
-      img.src = reader.result as string;
-    };
-    reader.onerror = () => reject(new Error('Ошибка чтения файла'));
-    reader.readAsDataURL(file);
+    if (ov.image_override != null) {
+      next.image_url = ov.image_override;
+    }
+    return next;
   });
 }
 
-export async function uploadItemImage(
-  file: File,
-  itemId: string
-): Promise<string | null> {
-  void itemId;
-
-  // 1) Сжимаем
-  const compressed = await compressToDataUrl(
-    file,
-    COMPRESS_MAX_SIZE,
-    COMPRESS_QUALITY
-  );
-
-  // 2) Проверяем размер одного фото
-  const sizeKb = Math.round(compressed.length / 1024);
-  if (sizeKb > MAX_IMAGE_KB) {
-    throw new Error(
-      `Фото слишком большое (${sizeKb} КБ, лимит ${MAX_IMAGE_KB} КБ). ` +
-        `Уменьшите масштаб в редакторе.`
-    );
-  }
-
-  // 3) Проверяем, влезет ли в localStorage
-  const check = canFitImage(compressed.length);
-  if (!check.ok) {
-    throw new Error(check.message ?? 'Недостаточно места для фото');
-  }
-
-  return compressed;
-}
-
-// ============================================================
-// ДУБЛИРОВАНИЕ
-// ============================================================
-function getItemWidthForDup(item: MenuItem): number {
-  if (item.type === 'dish' && item.dish_kind === 'group') {
-    return Math.max(1, item.variants?.length ?? 1);
-  }
-  if (item.type === 'set' && item.set_main?.dish_kind === 'group') {
-    return Math.max(1, item.set_main.variants?.length ?? 1);
-  }
-  return 1;
-}
-
-export async function duplicateItem(
-  sourceId: string
-): Promise<MenuItem | null> {
-  const allItems = getMenuItems();
-  const src = allItems.find((i) => i.id === sourceId);
-  if (!src) return null;
-
+function buildExtraGroups(
+  payloads: SetExtraGroupPayload[],
+  setId: string,
+  currentMenu: MenuItem[]
+): HydratedSetExtraGroup[] {
   const now = new Date().toISOString();
-  const newRootId = newId();
+  const groups: HydratedSetExtraGroup[] = [];
 
-  const clone: MenuItem = JSON.parse(JSON.stringify(src));
-  clone.id = newRootId;
-  clone.name = `${src.name} (копия)`;
-  clone.created_at = now;
-  clone.updated_at = now;
+  payloads.forEach((g, gi) => {
+    const options: HydratedSetExtraOption[] = [];
 
-  if (clone.properties) {
-    clone.properties = clone.properties.map((p) => ({
-      ...p,
+    for (const opt of g.options) {
+      const source = currentMenu.find((i) => i.id === opt.item_id);
+      if (!source) continue;
+
+      const copy = deepCloneItem(source, source.id, now);
+
+      if (opt.price_override != null) {
+        copy.price = opt.price_override;
+        copy.free = opt.price_override === 0;
+      }
+      if (opt.image_override != null) {
+        copy.image_url = opt.image_override;
+      }
+
+      options.push({ option_id: newId(), item: copy });
+    }
+
+    if (options.length === 0) return;
+
+    groups.push({
       id: newId(),
-      item_id: newRootId,
+      set_item_id: setId,
+      label: g.label.trim() || '',
+      required: Boolean(g.required),
+      sort_order: gi,
+      options,
+    });
+  });
+
+  return groups;
+}
+
+function deepCloneItem(
+  src: MenuItem,
+  newMainId: string,
+  now: string,
+  opts?: { nameSuffix?: string; sortOrderOffset?: number }
+): MenuItem {
+  const copy: MenuItem = {
+    ...src,
+    id: newMainId,
+    name: opts?.nameSuffix ? src.name + opts.nameSuffix : src.name,
+    short_name: opts?.nameSuffix
+      ? src.short_name + opts.nameSuffix
+      : src.short_name,
+    sort_order: src.sort_order + (opts?.sortOrderOffset ?? 0),
+    created_at: now,
+    updated_at: now,
+    parent_id: null,
+  };
+
+  if (src.variants) {
+    copy.variants = src.variants.map((v) => ({
+      ...v,
+      id: newId(),
+      parent_id: newMainId,
+      created_at: now,
+      updated_at: now,
+      properties: v.properties
+        ? cloneProperties(v.properties, newId())
+        : undefined,
+      allowed_sauces: v.allowed_sauces ? [...v.allowed_sauces] : undefined,
     }));
   }
 
-  if (clone.variants) {
-    clone.variants = clone.variants.map((v) => {
-      const newVid = newId();
-      return {
-        ...JSON.parse(JSON.stringify(v)),
-        id: newVid,
-        parent_id: newRootId,
-        created_at: now,
-        updated_at: now,
-        properties: (v.properties ?? []).map((p) => ({
-          ...p,
-          id: newId(),
-          item_id: newVid,
-        })),
-      };
-    });
+  if (src.properties) {
+    copy.properties = cloneProperties(src.properties, newMainId);
   }
-
-  if (clone.set_extra_groups) {
-    clone.set_extra_groups = clone.set_extra_groups.map((g) => ({
-      ...JSON.parse(JSON.stringify(g)),
+  if (src.allowed_sauces) {
+    copy.allowed_sauces = [...src.allowed_sauces];
+  }
+  if (src.set_main) {
+    copy.set_main = deepCloneItem(src.set_main, src.set_main.id, now);
+  }
+  if (src.set_extra_groups) {
+    copy.set_extra_groups = src.set_extra_groups.map((g) => ({
+      ...g,
       id: newId(),
-      set_item_id: newRootId,
+      set_item_id: newMainId,
       options: g.options.map((o) => ({
-        ...o,
         option_id: newId(),
+        item: deepCloneItem(o.item, o.item.id, now),
       })),
     }));
   }
 
-  const isDishSet = src.type === 'dish' || src.type === 'set';
-  const sameSpace = allItems.filter((i) => {
-    if (isDishSet) return i.type === 'dish' || i.type === 'set';
-    return i.type === src.type;
-  });
-  const maxEnd = sameSpace.reduce(
-    (m, i) => Math.max(m, i.sort_order + getItemWidthForDup(i)),
-    0
-  );
-  clone.sort_order = maxEnd;
+  return copy;
+}
 
-  setMenuItems([...allItems, clone]);
-  return clone;
+function cloneProperties(
+  props: HydratedProperty[],
+  itemId: string
+): HydratedProperty[] {
+  return props.map((p) => ({
+    ...p,
+    id: newId(),
+    item_id: itemId,
+  }));
+}
+
+function emptyToNull(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const trimmed = v.trim();
+  return trimmed ? trimmed : null;
 }

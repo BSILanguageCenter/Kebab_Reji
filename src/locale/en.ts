@@ -261,7 +261,7 @@ export const en: Record<TranslationKey, string> = {
   itemTextSize: 'Text size',
   toppingsHeight: 'Toppings height',
   drinksShare: 'Drinks / sauces',
-  
+
   // ---------- Layout v5 (расширенные) ----------
   cardRadius: 'Card corner radius',
   gridGap: 'Gap between cards',
@@ -440,4 +440,72 @@ export const en: Record<TranslationKey, string> = {
   cropDone: 'Done',
   cropProcessing: 'Processing...',
   cropCalculating: 'calculating…',
+    // ---------- Sync panel ----------
+  syncPanelTitle: 'Sync',
+  syncPanelLastSync: 'Last sync',
+  syncPanelLastError: 'Last error',
+  syncPanelConsecutiveFailures: 'Consecutive failures',
+  syncPanelQueue: 'Queue',
+  syncPanelSendNow: 'Send now',
+  syncPanelRetryAll: 'Retry all',
+  syncPanelFilterAll: 'All',
+  syncPanelEmpty: 'Queue is empty',
+  syncPanelColOperation: 'Operation',
+  syncPanelColOrder: 'Order',
+  syncPanelColVersion: 'Ver',
+  syncPanelColAttempts: 'Att',
+  syncPanelColActions: '',
+  syncPanelRetry: 'Retry',
+  syncPanelRemove: 'Remove',
+  syncPanelConfirmRemove: 'Remove this operation from the queue?',
+  syncPanelExport: 'Export queue',
+  syncStatusPending: 'Pending',
+  syncStatusSyncing: 'Syncing',
+  syncStatusSynced: 'Synced',
+  syncStatusFailed: 'Failed',
+  syncPanelStats: 'Statistics',
+
+  // ---------- Status short (cashier) ----------
+  statusCancelled: 'Cancelled',
+  statusReadyShort: '✓ Ready',
+
+  // ---------- Navigation ----------
+  menu: 'Menu',
+  cart: 'Cart',
+
+  // ---------- Kitchen extras ----------
+  ordersCount: 'Orders',
+  noOrdersTitle: 'No orders',
+  newOrderAlert: 'New order',
+  newOrderBadge: 'NEW ORDER',
+  urgentBanner: 'URGENT! {n} {word} waiting for more than {min} minutes',
+  urgencyFresh: 'FRESH',
+  urgencyInWork: 'IN PROGRESS',
+  urgencyDelay: 'DELAYED',
+  urgencyCritical: 'URGENT!',
+
+  // ---------- Manager: reset ----------
+  resetAllDataTitle: 'Delete all data (menu + orders + photo links)',
+  resetAllDataBtn: 'Reset All',
+  resetAllConfirmTitle: 'Delete all data?',
+  resetAllConfirmMessage: 'Menu, orders, and the sync queue will be deleted from localStorage and Supabase, and empty data will be sent to Google Sheets. This action cannot be undone.',
+  deleteAllBtn: 'Delete All',
+  menuEditorDesktopOnly: 'The menu editor is designed for wide screens (1024 px or larger). Open it on a computer or tablet in landscape orientation.',
+
+  // ---------- Queue extras ----------
+  kitchenLimitLabel: 'Kitchen: max {n}',
+
+  loginSubtitle: 'Sign in',
+  loginEmailLabel: 'Email',
+  loginEmailPlaceholder: 'admin@example.com',
+  loginPasswordLabel: 'Password',
+  loginPasswordPlaceholder: '••••••',
+  loginButton: 'Sign in',
+  loginBusy: 'Signing in...',
+  loginError: 'Login error',
+  loginHintAdmin: 'Email with "admin" — full access (including statistics).',
+  loginHintManager: 'Email with "manager" — cashier, kitchen, queue + menu without statistics.',
+  orderTypeOnTheWay: 'On the way',
+  chooseOrderTypeTitle: 'Order type?',
+  chooseOrderTypeHint: 'Choose how the order will be served',
 };

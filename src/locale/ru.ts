@@ -261,7 +261,7 @@ export const ru: Record<TranslationKey, string> = {
   itemTextSize: 'Размер текста',
   toppingsHeight: 'Высота топпингов',
   drinksShare: 'Напитки / соусы',
-  
+
   // ---------- Layout v5 (расширенные) ----------
   cardRadius: 'Скругление карточек',
   gridGap: 'Отступ между карточками',
@@ -442,4 +442,72 @@ export const ru: Record<TranslationKey, string> = {
   cropDone: 'Готово',
   cropProcessing: 'Обработка...',
   cropCalculating: 'считаю…',
+    // ---------- Sync panel ----------
+  syncPanelTitle: 'Синхронизация',
+  syncPanelLastSync: 'Последняя синхронизация',
+  syncPanelLastError: 'Последняя ошибка',
+  syncPanelConsecutiveFailures: 'Подряд ошибок',
+  syncPanelQueue: 'Очередь',
+  syncPanelSendNow: 'Отправить сейчас',
+  syncPanelRetryAll: 'Повторить все',
+  syncPanelFilterAll: 'Все',
+  syncPanelEmpty: 'Очередь пуста',
+  syncPanelColOperation: 'Операция',
+  syncPanelColOrder: 'Заказ',
+  syncPanelColVersion: 'Вер',
+  syncPanelColAttempts: 'Поп',
+  syncPanelColActions: '',
+  syncPanelRetry: 'Повторить',
+  syncPanelRemove: 'Удалить',
+  syncPanelConfirmRemove: 'Удалить эту операцию из очереди?',
+  syncPanelExport: 'Экспорт очереди',
+  syncStatusPending: 'В очереди',
+  syncStatusSyncing: 'Отправляется',
+  syncStatusSynced: 'Отправлено',
+  syncStatusFailed: 'Ошибка',
+  syncPanelStats: 'Статистика',
+
+    // ---------- Status short (cashier) ----------
+  statusCancelled: 'Отменён',
+  statusReadyShort: '✓ Готов',
+
+  // ---------- Navigation ----------
+  menu: 'Меню',
+  cart: 'Корзина',
+
+  // ---------- Kitchen extras ----------
+  ordersCount: 'Заказов',
+  noOrdersTitle: 'Нет заказов',
+  newOrderAlert: 'Новый заказ',
+  newOrderBadge: 'НОВЫЙ ЗАКАЗ',
+  urgentBanner: 'СРОЧНО! {n} {word} ждёт больше {min} минут',
+  urgencyFresh: 'СВЕЖИЙ',
+  urgencyInWork: 'В РАБОТЕ',
+  urgencyDelay: 'ЗАДЕРЖКА',
+  urgencyCritical: 'СРОЧНО!',
+
+  // ---------- Manager: reset ----------
+  resetAllDataTitle: 'Удалить все данные (меню + заказы + фото ссылки)',
+  resetAllDataBtn: 'Сброс всё',
+  resetAllConfirmTitle: 'Удалить все данные?',
+  resetAllConfirmMessage: 'Меню, заказы и очередь синхронизации будут удалены из localStorage, Supabase и отправлены пустыми в Google Sheets. Действие необратимо.',
+  deleteAllBtn: 'Удалить всё',
+  menuEditorDesktopOnly: 'Редактор меню рассчитан на широкий экран (от 1024 px). Откройте его на компьютере или планшете в альбомной ориентации.',
+
+  // ---------- Queue extras ----------
+  kitchenLimitLabel: 'Кухня: макс {n}',
+
+  loginSubtitle: 'Вход в систему',
+  loginEmailLabel: 'Email',
+  loginEmailPlaceholder: 'admin@example.com',
+  loginPasswordLabel: 'Пароль',
+  loginPasswordPlaceholder: '••••••',
+  loginButton: 'Войти',
+  loginBusy: 'Вход...',
+  loginError: 'Ошибка входа',
+  loginHintAdmin: 'Email с «admin» — полный доступ (включая статистику).',
+  loginHintManager: 'Email с «manager» — касса, кухня, очередь + меню без статистики.',
+  orderTypeOnTheWay: 'По дороге',
+  chooseOrderTypeTitle: 'Как будет заказ?',
+  chooseOrderTypeHint: 'Выберите способ получения',
 };

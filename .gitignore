@@ -23,24 +23,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-# ---------- Env ----------
-.env
-.env.local
-.env.*.local
-
-# ---------- Локальные данные POS-сервера ----------
-# SQLite (pos.db, pos.db-shm, pos.db-wal) + host.id
-# Всё лежит в server/data/ и пересоздаётся автоматически
-server/data/
-
-# ---------- На случай, если папку убрали или переехали ----------
-# (покрывает старые версии, где файлы были прямо в server/)
-pos.db
-pos.db-shm
-pos.db-wal
-host.id
-server/pos.db
-server/pos.db-shm
-server/pos.db-wal
-server/host.id
+allCode/src_files_export
+allCode/src_all_source_code.txt
+allCode/src_project_info.txt

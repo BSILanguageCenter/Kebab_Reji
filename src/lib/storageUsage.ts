@@ -136,3 +136,49 @@ export function canFitImage(imageBytes: number): {
 
   return { ok: true, freeBytes };
 }
+// ============================================================
+// SYNC QUEUE STORAGE
+// ============================================================
+export interface SyncStorageInfo {
+  queueBytes: number;
+  stateBytes: number;
+  opsCount: number;
+  deviceId: string | null;
+}
+
+/**
+ * Сколько занимает очередь синхронизации.
+ * Отдельно от основного хранилища — потому что очередь растёт
+ * и чистится независимо от kebab-pos-data-v1.
+ */
+export function getSyncStorageInfo(): SyncStorageInfo {
+  try {
+    const queueRaw = localStorage.getItem('pos_sync_queue');
+    const stateRaw = localStorage.getItem('pos_sync_state');
+    const deviceId = localStorage.getItem('pos_device_id');
+
+    let opsCount = 0;
+    if (queueRaw) {
+      try {
+        const arr = JSON.parse(queueRaw) as unknown;
+        if (Array.isArray(arr)) opsCount = arr.length;
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return {
+      queueBytes: queueRaw ? byteLength(queueRaw) : 0,
+      stateBytes: stateRaw ? byteLength(stateRaw) : 0,
+      opsCount,
+      deviceId,
+    };
+  } catch {
+    return {
+      queueBytes: 0,
+      stateBytes: 0,
+      opsCount: 0,
+      deviceId: null,
+    };
+  }
+}

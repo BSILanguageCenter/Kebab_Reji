@@ -129,10 +129,8 @@ export default function QueuePage() {
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-100">
       <PageActions forRole="queue">
-        <span className="hidden sm:inline text-[10px] text-gray-400 font-mono">
-          {lang === 'ru'
-            ? `Кухня: макс ${KITCHEN_LIMIT}`
-            : `Kitchen: max ${KITCHEN_LIMIT}`}
+        <span className="hidden sm:inline text-[0.625rem] text-gray-400 font-mono">
+          {t('kitchenLimitLabel').replace('{n}', String(KITCHEN_LIMIT))}
         </span>
         <button
           onClick={askUndo}
@@ -142,7 +140,7 @@ export default function QueuePage() {
           <Undo2 className="w-3.5 h-3.5" />
           <span className="hidden sm:inline">{t('undoLast')}</span>
           {undoStack.length > 0 && (
-            <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-black">
+            <span className="text-[0.625rem] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-black">
               {undoStack.length}
             </span>
           )}
@@ -161,7 +159,7 @@ export default function QueuePage() {
         </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden grid grid-cols-1 md:grid-cols-2 gap-3 p-3">
-          <div className="order-2 md:order-1 grid gap-3 md:grid-rows-3 md:min-h-0 [&>*]:min-h-[170px] md:[&>*]:min-h-0">
+          <div className="order-2 md:order-1 grid gap-3 md:grid-rows-3 md:min-h-0 [&>*]:min-h-[10.625rem] md:[&>*]:min-h-0">
             <CompactBlock
               variant="waiting"
               title={t('columnNew')}
@@ -218,7 +216,7 @@ export default function QueuePage() {
             </CompactBlock>
           </div>
 
-          <div className="order-1 md:order-2 min-h-[260px] md:min-h-0 flex">
+          <div className="order-1 md:order-2 min-h-[16.25rem] md:min-h-0 flex">
             <BigFocus order={focusOrder} lang={lang} t={t} />
           </div>
         </div>
@@ -387,7 +385,7 @@ function MiniCard({
 
   const numberClass =
     size === 'large' ? 'text-4xl lg:text-5xl' : 'text-xl lg:text-2xl';
-  const timeClass = size === 'large' ? 'text-xs' : 'text-[10px]';
+  const timeClass = size === 'large' ? 'text-xs' : 'text-[0.625rem]';
   const padding = size === 'large' ? 'px-3 py-2.5' : 'px-2 py-1.5';
   const radius = size === 'large' ? 'rounded-xl' : 'rounded-lg';
 
@@ -447,7 +445,7 @@ function BigFocus({
         <p className="text-sm uppercase tracking-[0.3em] text-gray-300 font-bold mb-4">
           {t('queue')}
         </p>
-        <p className="text-[length:clamp(88px,22vw,140px)] leading-none font-black text-gray-200 tabular-nums select-none">
+        <p className="text-[8.75rem] leading-none font-black text-gray-200 tabular-nums select-none">
           —
         </p>
       </div>
@@ -480,7 +478,7 @@ function BigFocus({
       </div>
 
       <div
-        className={`text-[length:clamp(88px,22vw,150px)] md:text-[length:clamp(96px,15vw,180px)] leading-none font-black tabular-nums select-none ${numberColor}`}
+        className={`text-[8.75rem] xl:text-[11.25rem] leading-none font-black tabular-nums select-none ${numberColor}`}
       >
         {order.order_number}
       </div>

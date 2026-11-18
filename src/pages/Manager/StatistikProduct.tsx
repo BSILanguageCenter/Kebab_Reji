@@ -174,7 +174,7 @@ export function StatistikProduct() {
                     }}
                     title={`${h.hour}: ${h.count} — ${formatYen(h.total)}`}
                   />
-                  <div className="text-[10px] text-gray-500 font-mono">
+                  <div className="text-[0.625rem] text-gray-500 font-mono">
                     {h.hour.slice(0, 2)}
                   </div>
                 </div>
