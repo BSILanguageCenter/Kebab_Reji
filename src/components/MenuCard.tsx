@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { memo, useRef } from 'react';
 import { MoreVertical, ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatYen } from '@/locale/format';
