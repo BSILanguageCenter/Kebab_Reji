@@ -1,3 +1,4 @@
+// src/pages/Manager/MenuProduct.tsx
 import {
   useState,
   useEffect,
@@ -18,23 +19,30 @@ import {
   type VariantDraftPayload,
   type SetExtraGroupPayload,
 } from '@/services/menu';
-import { formatYen } from '@/locale/format';
+import { saveStyle, type SavedStyle } from '@/services/layoutStyle';
+import { formatYen, formatTimeAgo } from '@/locale/format';
 import { useI18n, type TranslationKey } from '@/locale';
+import { subscribeOrders } from '@/lib/localStore';
 import { Resizer } from '@/components/Resizer';
 import { PanelSettings } from '@/components/PanelSettings';
+import { FloatingWindow } from '@/components/FloatingWindow';
+import { SaveStyleDialog } from '@/components/SaveStyleDialog';
+import { LoadStyleDialog } from '@/components/LoadStyleDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { ImageCropDialog } from '@/components/ImageCropDialog';
-import { MenuCard } from '@/components/MenuCard';
+import { MenuCard, groupCardHeight } from '@/components/MenuCard';
 import { useViewport } from '@/lib/useViewport';
 import {
   MenuCardMenu,
   type MenuCardMenuState,
 } from '@/components/MenuCardMenu';
 import { StorageBar } from '@/components/StorageBar';
+import { PageActions } from '@/components/PageActions';
 import {
   useLayoutSettings,
   clampLayout,
   snapValue,
+  DEFAULT_LAYOUT,
   type LayoutSettings,
 } from '@/lib/layoutSettings';
 import type {
@@ -44,6 +52,7 @@ import type {
   DishKind,
   SauceMode,
   HydratedProperty,
+  Order,
 } from '@/types/database';
 import {
   Plus,
@@ -55,13 +64,37 @@ import {
   CupSoda,
   Droplet,
   Sparkles,
-  LayoutGrid,
+  Save,
+  Download,
+  Cloud,
+  Check,
+  Settings,
+  ClipboardList,
 } from 'lucide-react';
 
 // ============================================================
 // ПРОСТРАНСТВО КАТЕГОРИЙ
 // ============================================================
 type CategorySpace = 'dishset' | 'drink' | 'sauce' | 'topping';
+
+const CAT_STYLE: Record<CategorySpace, { on: string; off: string }> = {
+  dishset: {
+    on: 'bg-orange-500 text-white border-orange-500',
+    off: 'bg-white text-orange-700 border-orange-200',
+  },
+  drink: {
+    on: 'bg-cyan-600 text-white border-cyan-600',
+    off: 'bg-white text-cyan-700 border-cyan-200',
+  },
+  sauce: {
+    on: 'bg-red-600 text-white border-red-600',
+    off: 'bg-white text-red-700 border-red-200',
+  },
+  topping: {
+    on: 'bg-purple-600 text-white border-purple-600',
+    off: 'bg-white text-purple-700 border-purple-200',
+  },
+};
 
 function getSpaceOfType(type: MenuItemType): CategorySpace {
   if (type === 'dish' || type === 'set') return 'dishset';
@@ -359,10 +392,26 @@ function GridSpace({
     [spaceItems, cols]
   );
 
-  const cellH = Math.round(
+  const gap = layout.gridGap;
+  let cellH = Math.round(
     size + (compact ? 32 : 50) * (layout.itemTextSize / 12)
   );
-  const gap = layout.gridGap;
+  // строка должна вмещать самую высокую группу — тогда зазоры равны
+  for (const it of spaceItems) {
+    const w = getItemWidth(it);
+    if (w > 1) {
+      cellH = Math.max(
+        cellH,
+        groupCardHeight(
+          Math.min(w, cols),
+          size,
+          gap,
+          layout.itemTextSize,
+          compact
+        )
+      );
+    }
+  }
 
   const highlightSlot =
     dragOverSlot?.space === space ? dragOverSlot.slot : null;
@@ -474,6 +523,7 @@ function GridSpace({
               size={size}
               textSize={textSize}
               compact={compact}
+              gap={gap}
               cardRadius={layout.cardRadius}
               isDragged={isDragged}
               onOpenMenu={
@@ -489,8 +539,94 @@ function GridSpace({
   );
 }
 
-export function MenuProduct() {
+// ============================================================
+// ОБРАЗЕЦ КОРЗИНЫ (правая колонка, как в кассе — только пример)
+// ============================================================
+const SAMPLE_CART: { id: string; name: string; qty: number; price: number }[] =
+  [
+    { id: 'c1', name: 'Шаурма классик', qty: 2, price: 350 },
+    { id: 'c2', name: 'Кола', qty: 1, price: 150 },
+  ];
+
+// Примеры заказов: показываются в левой колонке, когда реальных заказов нет
+const SAMPLE_ORDERS: {
+  id: string;
+  number: number;
+  status: string;
+  total: number;
+  time: string;
+  sample: boolean;
+}[] = [
+  { id: 's1', number: 14, status: 'NEW', total: 420, time: 'только что', sample: true },
+  { id: 's2', number: 13, status: 'READY', total: 1200, time: '1 мин', sample: true },
+  { id: 's3', number: 12, status: 'PREPARING', total: 850, time: '3 мин', sample: true },
+];
+
+function CartSample({
+  cartItemGap,
+  cardRadius,
+}: {
+  cartItemGap: number;
+  cardRadius: number;
+}) {
   const { t } = useI18n();
+  const total = SAMPLE_CART.reduce((s, c) => s + c.qty * c.price, 0);
+  return (
+    <>
+      <div className="px-4 py-3 border-b border-slate-200 shrink-0">
+        <h2 className="text-base font-black text-slate-900">
+          {t('currentOrder')}
+        </h2>
+      </div>
+      <div
+        className="flex-1 min-h-0 overflow-y-auto p-2 bg-slate-50 flex flex-col"
+        style={{ rowGap: cartItemGap }}
+      >
+        {SAMPLE_CART.map((c) => (
+          <div
+            key={c.id}
+            className="bg-white border-2 border-slate-200 p-3 shadow-sm"
+            style={{ borderRadius: cardRadius }}
+          >
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-sm font-bold text-slate-900 truncate">
+                {c.name}
+              </span>
+              <span className="text-sm font-black text-slate-700 tabular-nums">
+                {formatYen(c.price * c.qty)}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-700 font-black">
+                −
+              </div>
+              <span className="text-lg font-black w-8 text-center tabular-nums">
+                {c.qty}
+              </span>
+              <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center text-orange-700 font-black">
+                +
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="p-3 border-t border-slate-200 bg-white shrink-0">
+        <div className="flex items-end justify-between">
+          <span className="text-sm font-bold text-slate-500">{t('total')}</span>
+          <span className="text-2xl font-black text-slate-900 tabular-nums leading-none">
+            {formatYen(total)}
+          </span>
+        </div>
+        <div className="mt-3 w-full h-12 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black flex items-center justify-center text-sm shadow-lg shadow-orange-500/30">
+          {t('sendToKitchen')}
+        </div>
+      </div>
+    </>
+  );
+}
+
+export function MenuProduct() {
+  const { t, lang } = useI18n();
   const [items, setItems] = useState<MenuItem[]>([]);
   const itemsRef = useRef<MenuItem[]>([]);
   itemsRef.current = items;
@@ -502,10 +638,10 @@ export function MenuProduct() {
 
   const [query, setQuery] = useState('');
   const [kindFilter, setKindFilter] = useState<'all' | 'dish' | 'set'>('all');
+  const [productsOpen, setProductsOpen] = useState(false);
 
   const [pendingDelete, setPendingDelete] = useState<MenuItem | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
 
   const [cardMenu, setCardMenu] = useState<MenuCardMenuState | null>(null);
 
@@ -514,6 +650,18 @@ export function MenuProduct() {
     space: CategorySpace;
     slot: number;
   } | null>(null);
+
+  // ---------- Orders State (для левой колонки) ----------
+  const [activeOrders, setActiveOrders] = useState<Order[]>([]);
+
+  // ---------- Style sync (Supabase) ----------
+  const [styleSyncing, setStyleSyncing] = useState<'idle' | 'saving'>('idle');
+  const [styleError, setStyleError] = useState<string | null>(null);
+  const [styleNotice, setStyleNotice] = useState<string | null>(null);
+
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [loadDialogOpen, setLoadDialogOpen] = useState(false);
+  const [settingsWindowOpen, setSettingsWindowOpen] = useState(false);
 
   const pointerDragRef = useRef<{
     id: string | null;
@@ -527,7 +675,13 @@ export function MenuProduct() {
   } | null>(null);
 
   const [rawLayout, setLayout] = useLayoutSettings();
-  const { scale: ui } = useViewport();
+  const { scale: ui, device } = useViewport();
+  const isDesktop = device === 'desktop';
+
+  // Только для не-desktop режима (там остаются вкладки категорий)
+  const [activeCat, setActiveCat] = useState<CategorySpace>('dishset');
+
+  const drinksWrapRef = useRef<HTMLDivElement>(null);
 
   const layout = useMemo(() => {
     const s = (v: number) => Math.round(v * ui);
@@ -550,31 +704,42 @@ export function MenuProduct() {
       toppingsHeight: s(rawLayout.toppingsHeight),
     };
   }, [rawLayout, ui]);
-  const drinksWrapRef = useRef<HTMLDivElement>(null);
 
   const colsRef = useRef<Partial<Record<CategorySpace, number>>>({});
   const registerCols = useCallback((s: CategorySpace, c: number) => {
     colsRef.current[s] = c;
   }, []);
 
-  const loadData = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError(null);
-    try {
-      let list = await fetchAllMenuItems();
-      const tops = list.filter((i) => !i.parent_id);
-      if (hasSortConflicts(tops)) {
-        const updates = buildCategorizedOrder(tops);
-        await reorderItems(updates);
-        list = await fetchAllMenuItems();
+  useEffect(() => {
+    const unsubOrders = subscribeOrders((orders) => {
+      setActiveOrders(orders);
+    });
+    return () => {
+      unsubOrders();
+    };
+  }, []);
+
+  const loadData = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        let list = await fetchAllMenuItems();
+        const tops = list.filter((i) => !i.parent_id);
+        if (hasSortConflicts(tops)) {
+          const updates = buildCategorizedOrder(tops);
+          await reorderItems(updates);
+          list = await fetchAllMenuItems();
+        }
+        setItems(list);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : t('failedToLoadMenu'));
+      } finally {
+        setLoading(false);
       }
-      setItems(list);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t('failedToLoadMenu'));
-    } finally {
-      setLoading(false);
-    }
-  }, [t]);
+    },
+    [t]
+  );
 
   useEffect(() => {
     loadData();
@@ -1006,12 +1171,6 @@ export function MenuProduct() {
     [canMoveItem]
   );
 
-  const handleResetOrder = async () => {
-    const updates = buildCategorizedOrder(allTops, colsRef.current);
-    if (updates.length === 0) return;
-    await applyReorder(updates);
-  };
-
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setDeleting(true);
@@ -1042,6 +1201,47 @@ export function MenuProduct() {
     []
   );
 
+  // ---------- Style sync (Supabase) ----------
+  const openSaveDialog = useCallback(() => {
+    if (styleSyncing !== 'idle') return;
+    setStyleError(null);
+    setStyleNotice(null);
+    setSaveDialogOpen(true);
+  }, [styleSyncing]);
+
+  const confirmSaveStyle = useCallback(
+    async (name: string) => {
+      setStyleSyncing('saving');
+      setStyleError(null);
+      try {
+        await saveStyle(name, rawLayout);
+        setSaveDialogOpen(false);
+        setStyleNotice(`${t('styleSaved')}: ${name}`);
+      } catch (e) {
+        setStyleError(e instanceof Error ? e.message : 'Save failed');
+      } finally {
+        setStyleSyncing('idle');
+      }
+    },
+    [rawLayout, t]
+  );
+
+  const openLoadDialog = useCallback(() => {
+    if (styleSyncing !== 'idle') return;
+    setStyleError(null);
+    setStyleNotice(null);
+    setLoadDialogOpen(true);
+  }, [styleSyncing]);
+
+  const applyLoadedStyle = useCallback(
+    (style: SavedStyle) => {
+      setLayout({ ...DEFAULT_LAYOUT, ...style.layout });
+      setLoadDialogOpen(false);
+      setStyleNotice(`${t('styleLoaded')}: ${style.name}`);
+    },
+    [setLayout, t]
+  );
+
   const q = query.trim().toLowerCase();
   const leftList: { item: MenuItem; kind: 'dish' | 'set' }[] = [
     ...allTops
@@ -1060,6 +1260,7 @@ export function MenuProduct() {
         (item.short_name ?? '').toLowerCase().includes(q))
   );
 
+  // ---------- Resize (те же колонки, что и в кассе) ----------
   const startLayoutRef = useRef<typeof layout | null>(null);
 
   const beginResize = () => {
@@ -1105,7 +1306,10 @@ export function MenuProduct() {
     const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      menuRightWidth: clampLayout('menuRightWidth', base.menuRightWidth - d / ui),
+      menuRightWidth: clampLayout(
+        'menuRightWidth',
+        base.menuRightWidth - d / ui
+      ),
     }));
   };
 
@@ -1121,7 +1325,10 @@ export function MenuProduct() {
     const base = startLayoutRef.current ?? rawLayout;
     setLayout((prev) => ({
       ...prev,
-      toppingsHeight: clampLayout('toppingsHeight', base.toppingsHeight - d / ui),
+      toppingsHeight: clampLayout(
+        'toppingsHeight',
+        base.toppingsHeight - d / ui
+      ),
     }));
   };
 
@@ -1143,11 +1350,449 @@ export function MenuProduct() {
     );
   }
 
-  const hasTopping = getSpaceItems(allTops, 'topping').length > 0;
-  const hasAny = allTops.length > 0;
+  const catList = [
+    {
+      key: 'dishset' as const,
+      label: t('bludiAndSet'),
+      has: getSpaceItems(allTops, 'dishset').length > 0,
+    },
+    {
+      key: 'drink' as const,
+      label: t('type_drink'),
+      has: getSpaceItems(allTops, 'drink').length > 0,
+    },
+    {
+      key: 'sauce' as const,
+      label: t('type_sauce'),
+      has: getSpaceItems(allTops, 'sauce').length > 0,
+    },
+    {
+      key: 'topping' as const,
+      label: t('type_topping'),
+      has: getSpaceItems(allTops, 'topping').length > 0,
+    },
+  ].filter((c) => c.has);
+
+  const currentCat = catList.find((c) => c.key === activeCat) ?? catList[0];
+  const currentCatKey: CategorySpace = currentCat?.key ?? 'dishset';
+  const currentCatLabel = currentCat?.label ?? t('bludiAndSet');
+
+  const hdrSize = isDesktop
+    ? layout.panelHeaderSize
+    : Math.max(layout.panelHeaderSize, Math.round(14 * ui));
+  const numSize = isDesktop
+    ? layout.orderNumberSize
+    : Math.max(layout.orderNumberSize, Math.round(24 * ui));
+
+  const sizeOf = (sp: CategorySpace): number =>
+    sp === 'dishset'
+      ? layout.dishCardSize
+      : sp === 'drink'
+      ? layout.drinkCardSize
+      : sp === 'sauce'
+      ? layout.sauceCardSize
+      : layout.toppingCardSize;
+
+  // Общий рендер сетки редактирования для любой категории
+  const renderSpace = (sp: CategorySpace) => (
+    <GridSpace
+      space={sp}
+      size={sizeOf(sp)}
+      compact={sp !== 'dishset'}
+      allTops={allTops}
+      draggedId={draggedId}
+      dragOverSlot={dragOverSlot}
+      setDragOverSlot={setDragOverSlot}
+      handleSlotDrop={handleSlotDrop}
+      startEdit={startEdit}
+      startPointerDrag={startPointerDrag}
+      canMoveItem={canMoveItem}
+      moveItemByOne={moveItemByOne}
+      registerCols={registerCols}
+      textSize={layout.itemTextSize}
+      layout={layout}
+      onOpenCardMenu={openCardMenu}
+    />
+  );
+
+  // ---------- Левая колонка: активные заказы (как в кассе) ----------
+  const visibleOrders = activeOrders.filter((o) => o.status !== 'CANCELLED');
+  const showSamples = visibleOrders.length === 0;
+  const displayOrders = showSamples
+    ? SAMPLE_ORDERS
+    : visibleOrders.map((o) => ({
+        id: o.id,
+        number: o.order_number,
+        status: o.status as string,
+        total: o.total_amount,
+        time: formatTimeAgo(o.created_at, lang),
+        sample: false,
+      }));
+
+  const ordersInner = (
+    <>
+      <div className="px-3 py-2 border-b border-slate-200 shrink-0 bg-slate-50">
+        <h2
+          className="font-black text-slate-700 tracking-wide border-l-4 border-slate-400 pl-2 leading-none"
+          style={{ fontSize: hdrSize }}
+        >
+          {t('activeOrders')}
+        </h2>
+        <span
+          className="font-black text-orange-600 leading-none mt-1.5 block pl-2 tabular-nums"
+          style={{ fontSize: numSize }}
+        >
+          {displayOrders.length}
+        </span>
+        {showSamples && (
+          <span className="mt-1 ml-2 inline-block text-[0.625rem] font-black px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 uppercase tracking-wide">
+            Пример
+          </span>
+        )}
+      </div>
+
+      <div
+        className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col"
+        style={{ rowGap: layout.ordersRowGap }}
+      >
+        {displayOrders.map((order) => {
+          const cls =
+            order.status === 'READY'
+              ? 'bg-green-50 border-l-green-500'
+              : order.status === 'PREPARING'
+              ? 'bg-amber-50 border-l-amber-400'
+              : 'bg-white border-l-slate-300';
+          return (
+            <div
+              key={order.id}
+              className={`p-3.5 rounded-xl border border-slate-200 border-l-[6px] shadow-sm ${cls} ${
+                order.sample ? 'opacity-80' : ''
+              }`}
+              style={{ borderRadius: layout.cardRadius }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className="font-black text-slate-900 tabular-nums"
+                  style={{ fontSize: numSize }}
+                >
+                  #{order.number}
+                </span>
+              </div>
+              <div className="mt-1 text-[0.6875rem] font-bold text-slate-500">
+                {order.status === 'PREPARING'
+                  ? 'Готовится'
+                  : order.status === 'READY'
+                  ? '✓ Готов'
+                  : 'Новый'}
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-[0.6875rem] text-slate-500">
+                  {order.time}
+                </span>
+                <span className="text-sm font-black text-slate-700 tabular-nums">
+                  {formatYen(order.total)}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+
+  // ---------- Desktop: касса — orders | dish+toppings | drinks+sauces | cart ----------
+  const desktopLayout = (
+    <div className="flex-1 min-h-0 flex overflow-hidden">
+      {/* LEFT: ORDERS */}
+      <div
+        className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
+        style={{ width: layout.ordersWidth }}
+      >
+        {ordersInner}
+      </div>
+
+      <Resizer
+        onStart={beginResize}
+        onResize={handleResizeOrders}
+        onEnd={endResize}
+      />
+
+      {/* CENTER: блюда/сеты + топпинги снизу */}
+      <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
+        <div className="flex-1 min-h-0 overflow-y-auto p-3">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-orange-100 border-l-4 border-orange-500">
+              <h3
+                className="font-black text-orange-800 tracking-wide truncate leading-none"
+                style={{ fontSize: hdrSize }}
+              >
+                {t('bludiAndSet')} · {t('dragHintShort')}
+              </h3>
+            </div>
+          </div>
+          {renderSpace('dishset')}
+        </div>
+
+        <Resizer
+          direction="horizontal"
+          onStart={beginResize}
+          onResize={handleResizeToppings}
+          onEnd={endResize}
+        />
+        <div
+          className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
+          style={{ height: layout.toppingsHeight }}
+        >
+          <h3
+            className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
+            style={{ fontSize: hdrSize }}
+          >
+            {t('type_topping')}
+          </h3>
+          <div className="overflow-y-auto h-[calc(100%-16px)]">
+            {renderSpace('topping')}
+          </div>
+        </div>
+      </div>
+
+      <Resizer
+        onStart={beginResize}
+        onResize={handleResizeMenuRight}
+        onEnd={endResize}
+      />
+
+      {/* RIGHT: напитки сверху, соусы снизу */}
+      <div
+        ref={drinksWrapRef}
+        className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
+        style={{ width: layout.menuRightWidth }}
+      >
+        <div
+          className="flex flex-col border-b-2 border-cyan-300"
+          style={{ height: `${layout.drinksShare}%` }}
+        >
+          <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
+            <h3
+              className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
+              style={{ fontSize: hdrSize }}
+            >
+              {t('type_drink')}
+            </h3>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto p-2">
+            {renderSpace('drink')}
+          </div>
+        </div>
+
+        <Resizer
+          direction="horizontal"
+          onStart={beginResize}
+          onResize={handleResizeDrinks}
+          onEnd={endResize}
+        />
+
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
+            <h3
+              className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
+              style={{ fontSize: hdrSize }}
+            >
+              {t('type_sauce')}
+            </h3>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto p-2">
+            {renderSpace('sauce')}
+          </div>
+        </div>
+      </div>
+
+      <Resizer
+        onStart={beginResize}
+        onResize={handleResizeCart}
+        onEnd={endResize}
+      />
+
+      {/* CART (пример, чтобы видеть реальную ширину) */}
+      <div
+        className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
+        style={{ width: layout.cartWidth }}
+      >
+        <CartSample
+          cartItemGap={layout.cartItemGap}
+          cardRadius={layout.cardRadius}
+        />
+      </div>
+    </div>
+  );
+
+  // ---------- Не desktop: компактный режим с вкладками категорий ----------
+  const compactLayout = (
+    <div className="flex-1 min-h-0 flex overflow-hidden">
+      <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
+        <div className="flex gap-2 px-3 py-2 overflow-x-auto shrink-0 bg-white border-b border-slate-200 [scrollbar-width:none]">
+          {catList.map((c) => (
+            <button
+              key={c.key}
+              onClick={() => setActiveCat(c.key)}
+              className={`shrink-0 px-4 py-2.5 rounded-full border-2 text-sm font-black whitespace-nowrap active:scale-95 transition-all ${
+                currentCatKey === c.key
+                  ? CAT_STYLE[c.key].on
+                  : CAT_STYLE[c.key].off
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-orange-100 border-l-4 border-orange-500">
+              <h3
+                className="font-black text-orange-800 tracking-wide truncate leading-none"
+                style={{ fontSize: hdrSize }}
+              >
+                {currentCatLabel} · {t('dragHintShort')}
+              </h3>
+            </div>
+          </div>
+
+          {catList.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
+              {t('noMenuItems')}
+            </div>
+          ) : (
+            renderSpace(currentCatKey)
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-200/70">
+      {/* === ШАПКА (PageActions) === */}
+      <PageActions forRole="manager">
+        <div className="flex items-center gap-2">
+          {/* Dropdown: Products List */}
+          <div className="relative">
+            <button
+              onClick={() => setProductsOpen((v) => !v)}
+              className="flex items-center gap-2 px-3 py-2 sm:px-5 sm:py-3 rounded-xl text-sm font-bold border-2 border-blue-200 bg-white hover:border-blue-400 hover:bg-blue-50 text-blue-700 active:scale-95 transition-all"
+            >
+              <ClipboardList className="w-4 h-4" />
+              <span className="hidden sm:inline">{t('productsByCategory')}</span>
+            </button>
+
+            {/* Backdrop */}
+            {productsOpen && (
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setProductsOpen(false)}
+              />
+            )}
+
+            {/* Dropdown body */}
+            {productsOpen && (
+              <div className="absolute top-full left-0 mt-2 w-80 max-h-[80vh] bg-white rounded-2xl shadow-2xl border border-slate-200 z-50 flex flex-col overflow-hidden">
+                <div className="p-3 border-b border-slate-200 bg-slate-50 space-y-2 shrink-0">
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-sm text-slate-800">
+                      {t('productsByCategory')}
+                    </span>
+                    <button onClick={() => setProductsOpen(false)}>
+                      <X className="w-4 h-4 text-slate-400 hover:text-slate-700" />
+                    </button>
+                  </div>
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    className="form-input !py-1.5 text-xs"
+                    placeholder="Поиск…"
+                  />
+                  <div className="flex gap-1">
+                    {(
+                      [
+                        ['all', 'Все'],
+                        ['dish', 'Блюда'],
+                        ['set', 'Сеты'],
+                      ] as const
+                    ).map(([k, label]) => (
+                      <button
+                        key={k}
+                        onClick={() => setKindFilter(k)}
+                        className={`flex-1 py-1.5 rounded-lg text-[0.6875rem] font-bold ${
+                          kindFilter === k
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-2">
+                  {leftList.length === 0 && (
+                    <p className="text-xs text-slate-400 text-center mt-4">
+                      {t('noMenuItems')}
+                    </p>
+                  )}
+                  {leftList.map(({ item, kind }) => (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        startEdit(item);
+                        setProductsOpen(false);
+                      }}
+                      className={`w-full text-left p-2.5 rounded-xl border border-slate-200 bg-white shadow-sm hover:border-orange-400 hover:bg-orange-50 transition-all ${
+                        !item.active ? 'opacity-50' : ''
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-xs font-bold text-slate-900 truncate">
+                          {item.name}
+                        </span>
+                        <span
+                          className={`text-[0.5625rem] font-black px-1.5 py-0.5 rounded-full shrink-0 ${
+                            kind === 'set'
+                              ? 'bg-orange-100 text-orange-700'
+                              : 'bg-blue-100 text-blue-700'
+                          }`}
+                        >
+                          {kind === 'set' ? 'SET' : 'DSH'}
+                        </span>
+                      </div>
+                      <div className="text-[0.6875rem] text-slate-500 mt-0.5 tabular-nums">
+                        {item.free ? '' : formatYen(item.price)}
+                      </div>
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => {
+                      setPickingType(true);
+                      setProductsOpen(false);
+                    }}
+                    className="w-full py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-xs font-black mt-2 flex items-center justify-center gap-1"
+                  >
+                    <Plus className="w-4 h-4" /> {t('addProduct')}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Settings Button */}
+          <button
+            onClick={() => setSettingsWindowOpen(true)}
+            className="flex items-center gap-2 px-3 py-2 sm:px-5 sm:py-3 rounded-xl text-sm font-bold border-2 border-violet-200 bg-white hover:border-violet-400 hover:bg-violet-50 text-violet-700 active:scale-95 transition-all"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('styleSettingsBtn')}</span>
+          </button>
+        </div>
+      </PageActions>
+
       {error && (
         <div className="m-3 p-3 bg-red-50 border border-red-300 rounded-xl text-red-700 text-sm flex items-center justify-between">
           <span>{error}</span>
@@ -1157,288 +1802,7 @@ export function MenuProduct() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 flex overflow-hidden">
-        <div
-          className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.ordersWidth }}
-        >
-          <div className="px-3 py-2 border-b border-blue-200 shrink-0 bg-blue-50">
-            <h2
-              className="font-black text-blue-800 tracking-wide border-l-4 border-blue-500 pl-2 leading-none"
-              style={{ fontSize: layout.panelHeaderSize }}
-            >
-              {t('productsByCategory')}
-            </h2>
-          </div>
-
-          <div className="p-2 space-y-2 border-b border-slate-200 bg-white shrink-0">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="form-input !py-2 text-xs"
-              placeholder="Поиск…"
-            />
-            <div className="flex gap-1">
-              {(
-                [
-                  ['all', 'Все'],
-                  ['dish', 'Блюда'],
-                  ['set', 'Сеты'],
-                ] as const
-              ).map(([k, label]) => (
-                <button
-                  key={k}
-                  onClick={() => setKindFilter(k)}
-                  className={`flex-1 py-1.5 rounded-lg text-[0.6875rem] font-bold transition-colors ${
-                    kindFilter === k
-                      ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div
-            className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col"
-            style={{ rowGap: layout.ordersRowGap }}
-          >
-            {leftList.length === 0 && (
-              <p className="text-xs text-slate-400 text-center mt-4">
-                {t('noMenuItems')}
-              </p>
-            )}
-            {leftList.map(({ item, kind }) => (
-              <button
-                key={item.id}
-                onClick={() => startEdit(item)}
-                className={`w-full text-left p-2.5 rounded-xl border border-slate-200 bg-white shadow-sm hover:shadow-md hover:border-orange-400 hover:bg-orange-50 transition-all shrink-0 ${
-                  !item.active ? 'opacity-50' : ''
-                }`}
-              >
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-xs font-bold text-slate-900 truncate">
-                    {item.name}
-                  </span>
-                  <span
-                    className={`text-[0.5625rem] font-black px-1.5 py-0.5 rounded-full shrink-0 ${
-                      kind === 'set'
-                        ? 'bg-orange-100 text-orange-700'
-                        : 'bg-blue-100 text-blue-700'
-                    }`}
-                  >
-                    {kind === 'set' ? 'SET' : 'DSH'}
-                  </span>
-                </div>
-                <div className="text-[0.6875rem] text-slate-500 mt-0.5 tabular-nums">
-                  {item.free ? '' : formatYen(item.price)}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeOrders}
-          onEnd={endResize}
-        />
-
-        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
-          <div className="flex-1 min-h-0 overflow-y-auto p-3">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-orange-100 border-l-4 border-orange-500">
-                <h3
-                  className="font-black text-orange-800 tracking-wide truncate leading-none"
-                  style={{ fontSize: layout.panelHeaderSize }}
-                >
-                  {t('bludiAndSet')} · {t('dragHintShort')}
-                </h3>
-              </div>
-              <button
-                onClick={() => setResetConfirmOpen(true)}
-                disabled={!hasAny}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-bold active:scale-[0.97] transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
-                title={t('menuResetBtn')}
-              >
-                <LayoutGrid className="w-3.5 h-3.5" />
-                {t('menuResetBtn')}
-              </button>
-            </div>
-            <GridSpace
-              space="dishset"
-              size={layout.dishCardSize}
-              compact={false}
-              allTops={allTops}
-              draggedId={draggedId}
-              dragOverSlot={dragOverSlot}
-              setDragOverSlot={setDragOverSlot}
-              handleSlotDrop={handleSlotDrop}
-              startEdit={startEdit}
-              startPointerDrag={startPointerDrag}
-              canMoveItem={canMoveItem}
-              moveItemByOne={moveItemByOne}
-              registerCols={registerCols}
-              textSize={layout.itemTextSize}
-              layout={layout}
-              onOpenCardMenu={openCardMenu}
-            />
-          </div>
-
-          {hasTopping && (
-            <>
-              <Resizer
-                direction="horizontal"
-                onStart={beginResize}
-                onResize={handleResizeToppings}
-                onEnd={endResize}
-              />
-              <div
-                className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
-                style={{ height: layout.toppingsHeight }}
-              >
-                <h3
-                  className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
-                  style={{ fontSize: layout.panelHeaderSize }}
-                >
-                  {t('type_topping')}
-                </h3>
-                <div className="overflow-y-auto h-[calc(100%-16px)]">
-                  <GridSpace
-                    space="topping"
-                    size={layout.toppingCardSize}
-                    compact={true}
-                    allTops={allTops}
-                    draggedId={draggedId}
-                    dragOverSlot={dragOverSlot}
-                    setDragOverSlot={setDragOverSlot}
-                    handleSlotDrop={handleSlotDrop}
-                    startEdit={startEdit}
-                    startPointerDrag={startPointerDrag}
-                    canMoveItem={canMoveItem}
-                    moveItemByOne={moveItemByOne}
-                    registerCols={registerCols}
-                    textSize={layout.itemTextSize}
-                    layout={layout}
-                    onOpenCardMenu={openCardMenu}
-                  />
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeMenuRight}
-          onEnd={endResize}
-        />
-
-        <div
-          ref={drinksWrapRef}
-          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.menuRightWidth }}
-        >
-          <div
-            className="flex flex-col border-b-2 border-cyan-300"
-            style={{ height: `${layout.drinksShare}%` }}
-          >
-            <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
-              <h3
-                className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
-                style={{ fontSize: layout.panelHeaderSize }}
-              >
-                {t('type_drink')}
-              </h3>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              <GridSpace
-                space="drink"
-                size={layout.drinkCardSize}
-                compact={true}
-                allTops={allTops}
-                draggedId={draggedId}
-                dragOverSlot={dragOverSlot}
-                setDragOverSlot={setDragOverSlot}
-                handleSlotDrop={handleSlotDrop}
-                startEdit={startEdit}
-                startPointerDrag={startPointerDrag}
-                canMoveItem={canMoveItem}
-                moveItemByOne={moveItemByOne}
-                registerCols={registerCols}
-                textSize={layout.itemTextSize}
-                layout={layout}
-                onOpenCardMenu={openCardMenu}
-              />
-            </div>
-          </div>
-
-          <Resizer
-            direction="horizontal"
-            onStart={beginResize}
-            onResize={handleResizeDrinks}
-            onEnd={endResize}
-          />
-
-          <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
-              <h3
-                className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
-                style={{ fontSize: layout.panelHeaderSize }}
-              >
-                {t('type_sauce')}
-              </h3>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-2">
-              <GridSpace
-                space="sauce"
-                size={layout.sauceCardSize}
-                compact={true}
-                allTops={allTops}
-                draggedId={draggedId}
-                dragOverSlot={dragOverSlot}
-                setDragOverSlot={setDragOverSlot}
-                handleSlotDrop={handleSlotDrop}
-                startEdit={startEdit}
-                startPointerDrag={startPointerDrag}
-                canMoveItem={canMoveItem}
-                moveItemByOne={moveItemByOne}
-                registerCols={registerCols}
-                textSize={layout.itemTextSize}
-                layout={layout}
-                onOpenCardMenu={openCardMenu}
-              />
-            </div>
-          </div>
-        </div>
-
-        <Resizer
-          onStart={beginResize}
-          onResize={handleResizeCart}
-          onEnd={endResize}
-        />
-
-        <div
-          className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
-          style={{ width: layout.cartWidth }}
-        >
-          <div className="p-3 border-b border-slate-200 shrink-0 bg-slate-50 space-y-2">
-            <button
-              onClick={() => setPickingType(true)}
-              className="w-full flex items-center justify-center gap-2 px-3 py-3.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-black shadow-lg shadow-orange-500/30 active:scale-[0.97] transition-all"
-            >
-              <Plus className="w-4 h-4" />
-              {t('addProduct')}
-            </button>
-            <StorageBar onImportComplete={() => loadData(true)} />
-          </div>
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            <PanelSettings />
-          </div>
-        </div>
-      </div>
+      {isDesktop ? desktopLayout : compactLayout}
 
       {pickingType && (
         <TypePicker
@@ -1510,24 +1874,91 @@ export function MenuProduct() {
         }}
       />
 
-      <ConfirmDialog
-        open={resetConfirmOpen}
-        title={t('confirmTitle')}
-        message={t('menuResetConfirm')}
-        confirmLabel={t('yes')}
-        cancelLabel={t('cancel')}
-        variant="yellow"
-        disabledSeconds={4}
-        onConfirm={async () => {
-          setResetConfirmOpen(false);
-          await handleResetOrder();
+      {/* === Style dialogs + floating settings === */}
+      <SaveStyleDialog
+        open={saveDialogOpen}
+        saving={styleSyncing === 'saving'}
+        error={styleError}
+        onCancel={() => {
+          if (styleSyncing === 'saving') return;
+          setSaveDialogOpen(false);
+          setStyleError(null);
         }}
-        onCancel={() => setResetConfirmOpen(false)}
+        onConfirm={confirmSaveStyle}
       />
+
+      <LoadStyleDialog
+        open={loadDialogOpen}
+        onCancel={() => setLoadDialogOpen(false)}
+        onPick={applyLoadedStyle}
+      />
+
+      {settingsWindowOpen && (
+        <FloatingWindow
+          title={t('styleSettingsWindowTitle')}
+          storageKey="kebab-panel-settings-window"
+          initialPos={{ x: 60, y: 100 }}
+          width={420}
+          onClose={() => setSettingsWindowOpen(false)}
+        >
+          <div className="p-4 flex flex-col gap-4">
+            <StorageBar onImportComplete={() => loadData(true)} />
+
+            <div className="h-px bg-slate-200" />
+
+            <div>
+              <div className="flex items-center gap-1.5 mb-2">
+                <Cloud className="w-4 h-4 text-violet-600" />
+                <span className="text-[0.6875rem] font-black text-violet-800 uppercase tracking-wide">
+                  {t('styleSyncTitle')}
+                </span>
+              </div>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={openSaveDialog}
+                  disabled={styleSyncing !== 'idle'}
+                  className="flex-1 flex items-center justify-center gap-1 px-2 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-[0.6875rem] font-bold disabled:opacity-50"
+                >
+                  {styleSyncing === 'saving' ? (
+                    <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5" />
+                  )}
+                  {t('styleSaveBtn')}
+                </button>
+                <button
+                  onClick={openLoadDialog}
+                  disabled={styleSyncing !== 'idle'}
+                  className="flex-1 flex items-center justify-center gap-1 px-2 py-2 rounded-lg bg-white border-2 border-violet-300 text-violet-700 text-[0.6875rem] font-bold disabled:opacity-50"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {t('styleLoadBtn')}
+                </button>
+              </div>
+              {styleNotice && (
+                <div className="mt-1.5 text-[0.625rem] font-bold text-green-700 leading-tight">
+                  ✓ {styleNotice}
+                </div>
+              )}
+              {styleError && (
+                <div className="mt-1.5 text-[0.625rem] font-bold text-red-600 leading-tight break-words">
+                  ⚠ {styleError}
+                </div>
+              )}
+            </div>
+
+            <div className="h-px bg-slate-200" />
+            <PanelSettings />
+          </div>
+        </FloatingWindow>
+      )}
     </div>
   );
 }
 
+// ============================================================
+// TYPE PICKER
+// ============================================================
 function TypePicker({
   onPick,
   onCancel,
@@ -1606,6 +2037,9 @@ function TypePicker({
   );
 }
 
+// ============================================================
+// ITEM FORM MODAL
+// ============================================================
 type MenuVariantForm = {
   id?: string;
   name: string;
@@ -1630,12 +2064,6 @@ type ExtraGroupForm = {
   }[];
 };
 
-// ============================================================
-// ⚠️ ФИКС: mainOverrides ключуется id ОРИГИНАЛЬНЫХ вариантов
-// главного блюда (из allItems), а НЕ клонов из item.set_main.
-// Раньше при handleSave mainOverrides[v.id] (v — оригинал) не
-// находился → в базу уходили null.
-// ============================================================
 function initMainOverrides(
   item: MenuItem | null,
   allItems: MenuItem[]
@@ -1660,9 +2088,11 @@ function initMainOverrides(
     const cl = clonedVariants[i];
     if (!orig) continue;
 
-    // «своё» фото сета = image_url клона, если он не совпадает с фото базового блюда
+    // фото, совпадающее с фото самого сета, — не override
     const customImage =
-      cl.image_url && cl.image_url !== orig.image_url
+      cl.image_url &&
+      cl.image_url !== orig.image_url &&
+      cl.image_url !== item?.image_url
         ? cl.image_url
         : null;
 
@@ -1692,7 +2122,7 @@ function ItemFormModal({
   onSaved: () => void;
   onDelete?: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
 
   const [name, setName] = useState(item?.name ?? '');
   const [shortName, setShortName] = useState(item?.short_name ?? '');
@@ -1710,9 +2140,6 @@ function ItemFormModal({
 
   const [dishKind, setDishKind] = useState<DishKind>(
     item?.dish_kind ?? 'single'
-  );
-  const [sauceMode, setSauceMode] = useState<SauceMode>(
-    item?.sauce_mode ?? 'none'
   );
   const [allowedSauceIds, setAllowedSauceIds] = useState<string[]>(
     item?.allowed_sauces?.map((s) => s.id) ?? []
@@ -1761,11 +2188,7 @@ function ItemFormModal({
   const [pickingOption, setPickingOption] = useState<{
     groupIndex: number;
   } | null>(null);
-  const [pickingSaucesFor, setPickingSaucesFor] = useState<
-    | { kind: 'main' }
-    | { kind: 'variant'; index: number }
-    | null
-  >(null);
+  const [groupPresetOpen, setGroupPresetOpen] = useState(false);
 
   const [cropState, setCropState] = useState<{
     file: File;
@@ -1836,7 +2259,12 @@ function ItemFormModal({
     }
   };
 
-  const allSauces = allItems.filter((i) => i.type === 'sauce' && i.active);
+  const allSauces = allItems.filter(
+    (i) => i.type === 'sauce' && i.active && !i.parent_id
+  );
+  const allDrinks = allItems.filter(
+    (i) => i.type === 'drink' && i.active && !i.parent_id
+  );
   const allDishes = allItems.filter(
     (i) => i.type === 'dish' && !i.parent_id && i.active
   );
@@ -1951,6 +2379,27 @@ function ItemFormModal({
   const addExtraGroup = () => {
     setExtraGroups((g) => [...g, { label: '', required: true, options: [] }]);
   };
+  /** Новая группа: пустая, со всеми соусами или со всеми напитками. */
+  const addExtraGroupPreset = (kind: 'empty' | 'sauce' | 'drink') => {
+    setGroupPresetOpen(false);
+    if (kind === 'empty') {
+      addExtraGroup();
+      return;
+    }
+    const source = kind === 'sauce' ? allSauces : allDrinks;
+    setExtraGroups((g) => [
+      ...g,
+      {
+        label: t(kind === 'sauce' ? 'type_sauce' : 'type_drink'),
+        required: true,
+        options: source.map((i) => ({
+          item_id: i.id,
+          price_override: null,
+          image_override: null,
+        })),
+      },
+    ]);
+  };
   const updateExtraGroup = (idx: number, patch: Partial<ExtraGroupForm>) => {
     setExtraGroups((g) =>
       g.map((x, i) => (i === idx ? { ...x, ...patch } : x))
@@ -2012,7 +2461,6 @@ function ItemFormModal({
         type,
         name,
         short_name: shortName,
-        // ⚠️ ФИКС: больше не затираем image_url сета в null
         image_url: imageUrl || null,
         price: type === 'set' ? 0 : free ? 0 : price,
         free: type === 'set' ? false : free,
@@ -2038,9 +2486,8 @@ function ItemFormModal({
         base.dish_kind = dishKind;
 
         if (dishKind === 'single') {
-          base.sauce_mode = sauceMode;
-          base.allowed_sauce_ids =
-            sauceMode === 'with' ? allowedSauceIds : [];
+          base.sauce_mode = allowedSauceIds.length > 0 ? 'with' : 'none';
+          base.allowed_sauce_ids = allowedSauceIds;
           base.properties = properties
             .filter((p) => p.name.trim())
             .map((p) => ({
@@ -2058,7 +2505,7 @@ function ItemFormModal({
             free: v.free,
             station: v.station,
             cook_time_min: v.station === 'kitchen' ? v.cook_time_min : null,
-            sauce_mode: v.sauce_mode,
+            sauce_mode: v.allowed_sauce_ids.length > 0 ? 'with' : 'none',
             properties: v.properties
               .filter((p) => p.name.trim())
               .map((p) => ({
@@ -2066,8 +2513,7 @@ function ItemFormModal({
                 options: p.options ?? [],
                 required: p.required ?? false,
               })),
-            allowed_sauce_ids:
-              v.sauce_mode === 'with' ? v.allowed_sauce_ids : [],
+            allowed_sauce_ids: v.allowed_sauce_ids,
           }));
         }
       }
@@ -2077,9 +2523,6 @@ function ItemFormModal({
 
         const main = allItems.find((i) => i.id === setMainId);
         if (main && main.dish_kind === 'group' && main.variants) {
-          // ⚠️ v.id здесь — ОРИГИНАЛЬНЫЙ id варианта главного блюда
-          // (не клон). mainOverrides после фикса инициализируется
-          // именно по этим id — совпадает.
           base.set_main_overrides = main.variants.map((v) => {
             const ov = mainOverrides[v.id];
             return {
@@ -2365,46 +2808,13 @@ function ItemFormModal({
                         t={t}
                       />
                     </Field>
-                    <Field label={t('sauceMode')}>
-                      <div className="grid grid-cols-2 gap-2">
-                        <RadioCard
-                          active={sauceMode === 'none'}
-                          onClick={() => setSauceMode('none')}
-                          title={t('sauceNone')}
-                          hint=""
-                        />
-                        <RadioCard
-                          active={sauceMode === 'with'}
-                          onClick={() => setSauceMode('with')}
-                          title={t('sauceWith')}
-                          hint=""
-                        />
-                      </div>
+                    <Field label={t('allowedSauces')}>
+                      <ItemTilePicker
+                        items={allSauces}
+                        selectedIds={allowedSauceIds}
+                        onChange={setAllowedSauceIds}
+                      />
                     </Field>
-                    {sauceMode === 'with' && (
-                      <Field label={t('allowedSauces')}>
-                        <button
-                          type="button"
-                          onClick={() => setPickingSaucesFor({ kind: 'main' })}
-                          className="w-full text-left form-input flex items-center justify-between"
-                        >
-                          <span className="text-sm text-slate-700">
-                            {allowedSauceIds.length > 0
-                              ? allowedSauceIds
-                                  .map(
-                                    (id) =>
-                                      allSauces.find((s) => s.id === id)
-                                        ?.name ?? '?'
-                                  )
-                                  .join(', ')
-                              : t('pickSauces')}
-                          </span>
-                          <span className="text-xs text-orange-600 font-bold shrink-0 ml-2">
-                            {t('edit')}
-                          </span>
-                        </button>
-                      </Field>
-                    )}
                   </>
                 )}
 
@@ -2540,51 +2950,15 @@ function ItemFormModal({
                             />
                           </Field>
 
-                          <Field label={t('sauceMode')}>
-                            <div className="grid grid-cols-2 gap-2">
-                              <RadioCard
-                                active={v.sauce_mode === 'none'}
-                                onClick={() =>
-                                  updateVariant(i, 'sauce_mode', 'none')
-                                }
-                                title={t('sauceNone')}
-                                hint=""
-                              />
-                              <RadioCard
-                                active={v.sauce_mode === 'with'}
-                                onClick={() =>
-                                  updateVariant(i, 'sauce_mode', 'with')
-                                }
-                                title={t('sauceWith')}
-                                hint=""
-                              />
-                            </div>
+                          <Field label={t('allowedSauces')}>
+                            <ItemTilePicker
+                              items={allSauces}
+                              selectedIds={v.allowed_sauce_ids}
+                              onChange={(ids) =>
+                                updateVariant(i, 'allowed_sauce_ids', ids)
+                              }
+                            />
                           </Field>
-                          {v.sauce_mode === 'with' && (
-                            <Field label={t('allowedSauces')}>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setPickingSaucesFor({
-                                    kind: 'variant',
-                                    index: i,
-                                  })
-                                }
-                                className="w-full text-left form-input flex items-center justify-between"
-                              >
-                                <span className="text-sm text-slate-700">
-                                  {v.allowed_sauce_ids.length > 0
-                                    ? `${v.allowed_sauce_ids.length} ${t(
-                                        'saucesShort'
-                                      )}`
-                                    : t('pickSauces')}
-                                </span>
-                                <span className="text-xs text-orange-600 font-bold shrink-0 ml-2">
-                                  {t('edit')}
-                                </span>
-                              </button>
-                            </Field>
-                          )}
                         </div>
                       ))}
                       <button
@@ -2610,8 +2984,6 @@ function ItemFormModal({
                   t={t}
                 />
 
-                {/* ⚠️ ФИКС: даём загрузить обложку сета — раньше сохранение
-                    всегда писало image_url = null */}
                 <Field label={t('image')}>
                   <ImageUploader
                     imageUrl={imageUrl}
@@ -2620,6 +2992,11 @@ function ItemFormModal({
                     onClear={() => setImageUrl('')}
                     t={t}
                   />
+                  <p className="mt-1.5 text-[0.6875rem] text-slate-500 leading-snug">
+                    {lang === 'ru'
+                      ? 'Фото самого сета: показывается у всех вариантов, у которых ниже не загружено своё фото.'
+                      : 'Photo of the set itself: used for every variant that has no own photo below.'}
+                  </p>
                 </Field>
 
                 <div className="mb-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[0.6875rem] text-blue-800 font-medium leading-snug">
@@ -2634,7 +3011,6 @@ function ItemFormModal({
                       setSetMainId(newMainId);
                       const newMain = allItems.find((i) => i.id === newMainId);
                       if (newMain?.dish_kind === 'group' && newMain.variants) {
-                        // Инициализируем оверрайды по id ОРИГИНАЛЬНЫХ вариантов
                         const auto: Record<
                           string,
                           {
@@ -2693,8 +3069,6 @@ function ItemFormModal({
                             price_override: null,
                             image_override: null,
                           };
-                          const effectiveImage =
-                            ov.image_override || v.image_url || null;
                           const usingOverride = Boolean(ov.image_override);
 
                           return (
@@ -2744,46 +3118,13 @@ function ItemFormModal({
                                     }))
                                   }
                                   className="form-input col-span-5 text-xs"
-                                  placeholder={`Цена: ${formatYen(v.price)}`}
+                                  placeholder={t('menuSetPricePlaceholder')}
                                 />
-
-                                <label className="col-span-7 cursor-pointer flex items-center gap-2 p-1.5 rounded-xl border-2 border-dashed border-orange-300 hover:border-orange-500 hover:bg-orange-50 bg-white transition-colors">
-                                  {effectiveImage ? (
-                                    <img
-                                      src={effectiveImage}
-                                      alt=""
-                                      className={`w-10 h-10 rounded object-cover border shrink-0 ${
-                                        usingOverride
-                                          ? 'border-orange-500 ring-2 ring-orange-200'
-                                          : 'border-slate-200 opacity-60'
-                                      }`}
-                                    />
-                                  ) : (
-                                    <div className="w-10 h-10 rounded bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
-                                      <Upload className="w-4 h-4 text-slate-400" />
-                                    </div>
-                                  )}
-                                  <div className="flex-1 min-w-0">
-                                    <div className="text-[0.6875rem] font-bold text-slate-800 truncate">
-                                      {usingOverride
-                                        ? t('menuSetOwnPhoto')
-                                        : effectiveImage
-                                        ? t('menuSetCurrentDishPhoto')
-                                        : t('menuSetUploadPhoto')}
-                                    </div>
-                                    <div className="text-[0.625rem] text-slate-500 truncate">
-                                      {usingOverride
-                                        ? t('menuSetClickToReplace')
-                                        : t('menuSetClickToSet')}
-                                    </div>
-                                  </div>
-                                  <input
-                                    type="file"
-                                    accept="image/*"
-                                    className="hidden"
-                                    onChange={(e) => {
-                                      const f = e.target.files?.[0];
-                                      if (!f) return;
+                                <div className="col-span-7">
+                                  <ImageUploader
+                                    imageUrl={ov.image_override ?? ''}
+                                    uploading={false}
+                                    onUpload={(f) =>
                                       requestCrop(f, (url) =>
                                         setMainOverrides((m) => ({
                                           ...m,
@@ -2792,11 +3133,21 @@ function ItemFormModal({
                                             image_override: url,
                                           },
                                         }))
-                                      );
-                                      e.target.value = '';
-                                    }}
+                                      )
+                                    }
+                                    onClear={() =>
+                                      setMainOverrides((m) => ({
+                                        ...m,
+                                        [v.id]: {
+                                          ...ov,
+                                          image_override: null,
+                                        },
+                                      }))
+                                    }
+                                    t={t}
+                                    compact
                                   />
-                                </label>
+                                </div>
                               </div>
                             </div>
                           );
@@ -2813,128 +3164,76 @@ function ItemFormModal({
                         key={gi}
                         className="border border-slate-200 rounded-2xl p-4 bg-slate-50/80 space-y-2"
                       >
-                        <div className="flex items-center gap-2">
-                          <input
-                            value={g.label}
-                            onChange={(e) =>
-                              updateExtraGroup(gi, { label: e.target.value })
-                            }
-                            className="form-input flex-1"
-                            placeholder={t('groupLabel')}
-                          />
-                          <label className="flex items-center gap-1 text-xs font-bold whitespace-nowrap">
-                            <input
-                              type="checkbox"
-                              checked={g.required}
-                              onChange={(e) =>
-                                updateExtraGroup(gi, {
-                                  required: e.target.checked,
-                                })
-                              }
-                            />
-                            {t('required')}
-                          </label>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-slate-500 tracking-wide">
+                            {t('extraGroup')} #{gi + 1}
+                          </span>
                           <button
                             type="button"
                             onClick={() => removeExtraGroup(gi)}
-                            className="p-1.5 text-slate-400 hover:text-red-600"
+                            className="text-slate-400 hover:text-red-600"
                           >
                             <X className="w-4 h-4" />
                           </button>
                         </div>
-
-                        <div className="space-y-1.5">
-                          {g.options.map((o, oi) => {
-                            const it = allItems.find((x) => x.id === o.item_id);
-                            if (!it) return null;
+                        <input
+                          value={g.label}
+                          onChange={(e) =>
+                            updateExtraGroup(gi, { label: e.target.value })
+                          }
+                          className="form-input"
+                          placeholder={t('extraGroupLabel')}
+                        />
+                        <label className="flex items-center gap-1.5 text-xs font-bold">
+                          <input
+                            type="checkbox"
+                            checked={g.required}
+                            onChange={(e) =>
+                              updateExtraGroup(gi, {
+                                required: e.target.checked,
+                              })
+                            }
+                          />
+                          {t('required')}
+                        </label>
+                        <div className="space-y-2">
+                          {g.options.map((opt, oi) => {
+                            const optItem = allItems.find(
+                              (i) => i.id === opt.item_id
+                            );
                             return (
                               <div
                                 key={oi}
-                                className="grid grid-cols-12 gap-2 items-center border border-slate-200 rounded-xl p-2 bg-white"
+                                className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg p-2"
                               >
-                                <div className="col-span-5 flex items-center gap-2 min-w-0">
-                                  {it.image_url ? (
-                                    <img
-                                      src={it.image_url}
-                                      alt=""
-                                      className="w-8 h-8 rounded object-cover shrink-0 bg-white"
-                                    />
-                                  ) : (
-                                    <div className="w-8 h-8 rounded bg-slate-100 shrink-0" />
-                                  )}
-                                  <span className="text-xs font-bold truncate">
-                                    {it.name}
-                                  </span>
-                                </div>
-                                <input
-                                  type="number"
-                                  value={o.price_override ?? ''}
-                                  onChange={(e) =>
-                                    updateExtraGroup(gi, {
-                                      options: g.options.map((x, j) =>
-                                        j === oi
-                                          ? {
-                                              ...x,
-                                              price_override: e.target.value
-                                                ? Number(e.target.value)
-                                                : null,
-                                            }
-                                          : x
-                                      ),
-                                    })
-                                  }
-                                  className="form-input col-span-3 text-xs"
-                                  placeholder="0"
-                                />
-                                <label className="col-span-3 cursor-pointer flex items-center gap-1.5">
-                                  {o.image_override ? (
-                                    <img
-                                      src={o.image_override}
-                                      className="w-8 h-8 rounded object-cover border border-slate-200 bg-white"
-                                    />
-                                  ) : (
-                                    <div className="w-8 h-8 rounded bg-slate-100 border border-slate-200 flex items-center justify-center">
-                                      <Upload className="w-3 h-3 text-slate-400" />
-                                    </div>
-                                  )}
-                                  <input
-                                    type="file"
-                                    accept="image/*"
-                                    className="hidden"
-                                    onChange={(e) => {
-                                      const f = e.target.files?.[0];
-                                      if (!f) return;
-                                      requestCrop(f, (url) =>
-                                        updateExtraGroup(gi, {
-                                          options: g.options.map((x, j) =>
-                                            j === oi
-                                              ? {
-                                                  ...x,
-                                                  image_override: url,
-                                                }
-                                              : x
-                                          ),
-                                        })
-                                      );
-                                      e.target.value = '';
-                                    }}
+                                {optItem?.image_url ? (
+                                  <img
+                                    src={optItem.image_url}
+                                    alt=""
+                                    className="w-9 h-9 rounded-lg object-cover shrink-0"
                                   />
-                                </label>
+                                ) : (
+                                  <div className="w-9 h-9 rounded-lg bg-slate-100 shrink-0" />
+                                )}
+                                <span className="text-xs font-bold text-slate-800 flex-1 truncate">
+                                  {optItem?.name ?? '?'}
+                                </span>
                                 <button
                                   type="button"
-                                  onClick={() => removeOptionFromGroup(gi, oi)}
-                                  className="col-span-1 p-1 text-slate-400 hover:text-red-600 justify-self-end"
+                                  onClick={() =>
+                                    removeOptionFromGroup(gi, oi)
+                                  }
+                                  className="text-slate-400 hover:text-red-600"
                                 >
                                   <X className="w-3.5 h-3.5" />
                                 </button>
                               </div>
                             );
                           })}
-
                           <button
                             type="button"
                             onClick={() => setPickingOption({ groupIndex: gi })}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-100 hover:bg-purple-200 text-purple-800 text-xs font-bold"
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold w-full justify-center"
                           >
                             <Plus className="w-3.5 h-3.5" /> {t('addOption')}
                           </button>
@@ -2943,7 +3242,7 @@ function ItemFormModal({
                     ))}
                     <button
                       type="button"
-                      onClick={addExtraGroup}
+                      onClick={() => setGroupPresetOpen(true)}
                       className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold w-full justify-center"
                     >
                       <Plus className="w-3.5 h-3.5" /> {t('addExtraGroup')}
@@ -2954,103 +3253,81 @@ function ItemFormModal({
             )}
 
             <Field label={t('active')}>
-              <button
-                type="button"
-                onClick={() => setActive(!active)}
-                className={`relative w-14 h-7 rounded-full transition-colors ${
-                  active ? 'bg-orange-500' : 'bg-slate-300'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white transition-transform shadow ${
-                    active ? 'translate-x-7' : ''
-                  }`}
+              <label className="flex items-center gap-2 text-sm font-bold">
+                <input
+                  type="checkbox"
+                  checked={active}
+                  onChange={(e) => setActive(e.target.checked)}
                 />
-              </button>
+                {active ? t('active') : t('inactive')}
+              </label>
             </Field>
           </div>
 
-          <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 shrink-0">
-            <div className="flex gap-2">
+          <div className="px-6 py-3 border-t border-slate-200 flex items-center justify-between gap-2 shrink-0 bg-slate-50">
+            <div>
               {onDelete && (
                 <button
                   onClick={onDelete}
                   disabled={isBusy}
-                  className="px-4 py-3 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 text-sm font-semibold flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-bold hover:bg-red-100 disabled:opacity-40"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="w-3.5 h-3.5" />
                   {t('delete')}
                 </button>
               )}
+            </div>
+            <div className="flex items-center gap-2">
               <button
                 onClick={handleClose}
                 disabled={isBusy}
-                className="flex-1 py-3 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                className="px-4 py-2 rounded-xl bg-white border border-slate-300 text-slate-700 text-sm font-bold hover:bg-slate-50 disabled:opacity-40"
               >
                 {t('cancel')}
               </button>
               <button
                 onClick={handleSave}
-                title="Ctrl + Enter"
-                disabled={saving || !name || pendingOpsCount > 0}
-                className="flex-1 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 active:scale-[0.98] text-white text-sm font-black shadow-lg shadow-orange-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
+                disabled={isBusy || !name}
+                className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-black flex items-center gap-1.5 disabled:opacity-40"
               >
                 {saving ? (
-                  <>
-                    <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    {t('saving')}
-                  </>
-                ) : pendingOpsCount > 0 ? (
-                  <>
-                    <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    {t('menuWaitingPhoto')}
-                  </>
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 ) : (
-                  t('save')
+                  <Check className="w-4 h-4" />
                 )}
+                {t('save')}
               </button>
             </div>
           </div>
         </div>
       </div>
 
-      <ImageCropDialog
-        open={cropState !== null}
-        file={cropState?.file ?? null}
-        onCancel={cancelCrop}
-        onConfirm={handleCropConfirm}
-      />
-
-      {pickingSaucesFor && (
-        <SaucePicker
-          sauces={allSauces}
-          initial={
-            pickingSaucesFor.kind === 'main'
-              ? allowedSauceIds
-              : variants[pickingSaucesFor.index]?.allowed_sauce_ids ?? []
-          }
-          onCancel={() => setPickingSaucesFor(null)}
-          onSave={(ids) => {
-            if (pickingSaucesFor.kind === 'main') {
-              setAllowedSauceIds(ids);
-            } else {
-              updateVariant(pickingSaucesFor.index, 'allowed_sauce_ids', ids);
-            }
-            setPickingSaucesFor(null);
-          }}
-          t={t}
+      {groupPresetOpen && (
+        <GroupPresetPicker
+          sauceCount={allSauces.length}
+          drinkCount={allDrinks.length}
+          onPick={addExtraGroupPreset}
+          onCancel={() => setGroupPresetOpen(false)}
         />
       )}
 
       {pickingOption && (
-        <ItemPicker
+        <OptionPicker
           items={extraCandidates}
           onCancel={() => setPickingOption(null)}
-          onPick={(item) => {
-            addOptionToGroup(pickingOption.groupIndex, item.id);
+          onPick={(itemId) => {
+            addOptionToGroup(pickingOption.groupIndex, itemId);
             setPickingOption(null);
           }}
-          t={t}
+        />
+      )}
+
+      {cropState && (
+        <ImageCropDialog
+          open={true}
+          file={cropState.file}
+          onCancel={cancelCrop}
+          onConfirm={(f) => void handleCropConfirm(f)}
         />
       )}
     </>
@@ -3058,8 +3335,25 @@ function ItemFormModal({
 }
 
 // ============================================================
-// ХЕЛПЕР-КОМПОНЕНТЫ
+// ВСПОМОГАТЕЛЬНЫЕ КОМПОНЕНТЫ ФОРМЫ
 // ============================================================
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mb-3">
+      <label className="block text-xs font-black text-slate-600 uppercase tracking-wide mb-1.5">
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
 
 function NameAndShort({
   name,
@@ -3075,13 +3369,13 @@ function NameAndShort({
   t: (k: TranslationKey) => string;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <>
       <Field label={t('name')}>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           className="form-input"
-          placeholder={t('fullName')}
+          placeholder={t('name')}
         />
       </Field>
       <Field label={t('shortName')}>
@@ -3089,9 +3383,10 @@ function NameAndShort({
           value={shortName}
           onChange={(e) => setShortName(e.target.value)}
           className="form-input"
+          placeholder={t('shortName')}
         />
       </Field>
-    </div>
+    </>
   );
 }
 
@@ -3104,107 +3399,30 @@ function PriceAndFree({
 }: {
   price: number;
   free: boolean;
-  setPrice: (n: number) => void;
-  setFree: (b: boolean) => void;
+  setPrice: (v: number) => void;
+  setFree: (v: boolean) => void;
   t: (k: TranslationKey) => string;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2 items-end">
-      <Field label={t('price')}>
+    <Field label={t('price')}>
+      <div className="flex items-center gap-2">
         <input
           type="number"
           value={price}
           onChange={(e) => setPrice(Number(e.target.value))}
-          className="form-input"
+          className="form-input flex-1"
           disabled={free}
         />
-      </Field>
-      <Field label={t('free')}>
-        <label className="flex items-center gap-2 h-[42px]">
+        <label className="flex items-center gap-1.5 text-xs font-bold whitespace-nowrap">
           <input
             type="checkbox"
             checked={free}
             onChange={(e) => setFree(e.target.checked)}
           />
-          <span className="text-sm font-bold">{t('free')}</span>
+          {t('free')}
         </label>
-      </Field>
-    </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">
-        {label}
-      </label>
-      {children}
-    </div>
-  );
-}
-
-function ImageUploader({
-  imageUrl,
-  uploading,
-  onUpload,
-  onClear,
-  t,
-  compact,
-}: {
-  imageUrl: string;
-  uploading: boolean;
-  onUpload: (f: File) => void;
-  onClear: () => void;
-  t: (k: TranslationKey) => string;
-  compact?: boolean;
-}) {
-  const size = compact ? 'w-16 h-16' : 'w-24 h-24';
-  return (
-    <div className="flex items-center gap-2">
-      <div
-        className={`${size} rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 flex items-center justify-center overflow-hidden relative`}
-      >
-        {imageUrl ? (
-          <img src={imageUrl} alt="" className="w-full h-full object-cover" />
-        ) : (
-          <Upload className="w-5 h-5 text-slate-400" />
-        )}
-        {uploading && (
-          <div className="absolute inset-0 bg-white/70 flex items-center justify-center">
-            <div className="w-5 h-5 border-2 border-orange-500/30 border-t-orange-500 rounded-full animate-spin" />
-          </div>
-        )}
       </div>
-      <label className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 cursor-pointer text-xs font-bold">
-        {t('uploadImage')}
-        <input
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onUpload(f);
-            e.target.value = '';
-          }}
-        />
-      </label>
-      {imageUrl && (
-        <button
-          type="button"
-          onClick={onClear}
-          className="text-xs text-red-600 font-bold hover:underline"
-        >
-          {t('removeCover')}
-        </button>
-      )}
-    </div>
+    </Field>
   );
 }
 
@@ -3242,15 +3460,119 @@ function ColorPicker({
   color: string;
   setColor: (c: string) => void;
 }) {
+  const colors = [
+    '#ef4444',
+    '#f97316',
+    '#eab308',
+    '#22c55e',
+    '#06b6d4',
+    '#3b82f6',
+    '#8b5cf6',
+    '#ec4899',
+    '#64748b',
+    '#0f172a',
+  ];
   return (
-    <div className="flex items-center gap-2">
-      <input
-        type="color"
-        value={color}
-        onChange={(e) => setColor(e.target.value)}
-        className="w-14 h-10 rounded-lg border border-slate-300 cursor-pointer"
-      />
-      <span className="text-xs font-mono text-slate-500">{color}</span>
+    <div className="flex flex-wrap gap-2">
+      {colors.map((c) => (
+        <button
+          key={c}
+          type="button"
+          onClick={() => setColor(c)}
+          className={`w-9 h-9 rounded-full border-4 transition-all ${
+            color === c ? 'border-slate-900 scale-110' : 'border-white'
+          }`}
+          style={{ backgroundColor: c }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function RadioCard({
+  active,
+  onClick,
+  title,
+  hint,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  hint: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`p-3 rounded-xl border-2 text-left transition-all ${
+        active
+          ? 'border-orange-500 bg-orange-50'
+          : 'border-slate-200 bg-white hover:border-slate-300'
+      }`}
+    >
+      <div className="text-sm font-bold text-slate-900">{title}</div>
+      {hint && (
+        <div className="text-[0.6875rem] text-slate-500 mt-0.5">{hint}</div>
+      )}
+    </button>
+  );
+}
+
+function ImageUploader({
+  imageUrl,
+  uploading,
+  onUpload,
+  onClear,
+  t,
+  compact,
+}: {
+  imageUrl: string;
+  uploading: boolean;
+  onUpload: (f: File) => void;
+  onClear: () => void;
+  t: (k: TranslationKey) => string;
+  compact?: boolean;
+}) {
+  const size = compact ? 'w-20 h-20' : 'w-28 h-28';
+  return (
+    <div className="flex items-center gap-3">
+      <div
+        className={`${size} rounded-xl overflow-hidden bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center shrink-0`}
+      >
+        {imageUrl ? (
+          <img
+            src={imageUrl}
+            alt=""
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <Upload className="w-6 h-6 text-slate-400" />
+        )}
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label className="cursor-pointer px-3 py-1.5 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 text-xs font-bold text-center">
+          {uploading ? t('uploading') : t('upload')}
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onUpload(f);
+              e.target.value = '';
+            }}
+          />
+        </label>
+        {imageUrl && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="px-3 py-1 rounded-lg text-red-600 text-xs font-bold hover:bg-red-50"
+          >
+            {t('delete')}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -3274,18 +3596,18 @@ function PropertiesEditor({
     <div className="space-y-2">
       {properties.map((p, i) => (
         <div
-          key={i}
-          className="border border-slate-200 rounded-2xl p-3 bg-slate-50/80 space-y-2"
+          key={p.id || i}
+          className="border border-slate-200 rounded-xl p-3 bg-white space-y-2"
         >
           <div className="flex items-center gap-2">
             <input
+              list={`props-history-${i}`}
               value={p.name}
               onChange={(e) => onChange(i, { name: e.target.value })}
               className="form-input flex-1"
               placeholder={t('propertyName')}
-              list={`prop-hist-${i}`}
             />
-            <datalist id={`prop-hist-${i}`}>
+            <datalist id={`props-history-${i}`}>
               {history.map((h) => (
                 <option key={h.name} value={h.name} />
               ))}
@@ -3293,14 +3615,13 @@ function PropertiesEditor({
             <button
               type="button"
               onClick={() => onRemove(i)}
-              className="text-slate-400 hover:text-red-600 p-1"
-              title={t('remove')}
+              className="text-slate-400 hover:text-red-600"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
           <input
-            value={(p.options ?? []).join(', ')}
+            value={p.options.join(', ')}
             onChange={(e) =>
               onChange(i, {
                 options: e.target.value
@@ -3309,10 +3630,10 @@ function PropertiesEditor({
                   .filter(Boolean),
               })
             }
-            className="form-input"
-            placeholder="вар1, вар2, вар3 (пусто = чекбокс)"
+            className="form-input text-xs"
+            placeholder={t('propertyOptions')}
           />
-          <label className="flex items-center gap-2 text-xs font-bold">
+          <label className="flex items-center gap-1.5 text-xs font-bold">
             <input
               type="checkbox"
               checked={p.required}
@@ -3325,7 +3646,7 @@ function PropertiesEditor({
       <button
         type="button"
         onClick={onAdd}
-        className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
+        className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold w-full justify-center"
       >
         <Plus className="w-3.5 h-3.5" /> {t('addProperty')}
       </button>
@@ -3333,60 +3654,53 @@ function PropertiesEditor({
   );
 }
 
-function RadioCard({
-  active,
-  onClick,
-  title,
-  hint,
-}: {
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  hint: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`text-left p-3 rounded-xl border-2 transition-all ${
-        active
-          ? 'border-orange-500 bg-orange-50 shadow-sm'
-          : 'border-slate-200 bg-white hover:border-slate-300'
-      }`}
-    >
-      <div className="text-sm font-bold text-slate-900">{title}</div>
-      {hint && (
-        <div className="text-[0.6875rem] text-slate-500 mt-0.5 leading-snug">
-          {hint}
-        </div>
-      )}
-    </button>
-  );
-}
-
-function SaucePicker({
-  sauces,
-  initial,
+function GroupPresetPicker({
+  sauceCount,
+  drinkCount,
+  onPick,
   onCancel,
-  onSave,
-  t,
 }: {
-  sauces: MenuItem[];
-  initial: string[];
+  sauceCount: number;
+  drinkCount: number;
+  onPick: (kind: 'empty' | 'sauce' | 'drink') => void;
   onCancel: () => void;
-  onSave: (ids: string[]) => void;
-  t: (k: TranslationKey) => string;
 }) {
-  const [picked, setPicked] = useState<Set<string>>(() => new Set(initial));
+  const { t, lang } = useI18n();
+  const ru = lang === 'ru';
 
-  const toggle = (id: string) => {
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const cards: {
+    kind: 'empty' | 'sauce' | 'drink';
+    title: string;
+    hint: string;
+    icon: React.ReactNode;
+    disabled: boolean;
+    cls: string;
+  }[] = [
+    {
+      kind: 'sauce',
+      title: ru ? 'Все соусы' : 'All sauces',
+      hint: `${sauceCount} ${ru ? 'шт.' : 'pcs'}`,
+      icon: <Droplet className="w-7 h-7" />,
+      disabled: sauceCount === 0,
+      cls: 'from-red-500 to-rose-600',
+    },
+    {
+      kind: 'drink',
+      title: ru ? 'Все напитки' : 'All drinks',
+      hint: `${drinkCount} ${ru ? 'шт.' : 'pcs'}`,
+      icon: <CupSoda className="w-7 h-7" />,
+      disabled: drinkCount === 0,
+      cls: 'from-cyan-500 to-blue-600',
+    },
+    {
+      kind: 'empty',
+      title: ru ? 'Пустая группа' : 'Empty group',
+      hint: ru ? 'выбрать вручную' : 'pick manually',
+      icon: <Plus className="w-7 h-7" />,
+      disabled: false,
+      cls: 'from-slate-500 to-slate-700',
+    },
+  ];
 
   return (
     <div
@@ -3394,141 +3708,169 @@ function SaucePicker({
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden"
+        className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
-          <h3 className="text-lg font-black">{t('chooseSauceStep')}</h3>
-          <button
-            onClick={onCancel}
-            className="text-slate-400 hover:text-slate-900"
-          >
-            <X className="w-5 h-5" />
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <h4 className="font-black text-slate-900">{t('addExtraGroup')}</h4>
+          <button onClick={onCancel}>
+            <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 grid grid-cols-2 gap-2">
-          {sauces.map((s) => {
-            const on = picked.has(s.id);
-            return (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => toggle(s.id)}
-                className={`p-3 rounded-xl border-2 text-left transition-all ${
-                  on
-                    ? 'border-orange-500 bg-orange-50'
-                    : 'border-slate-200 bg-white hover:border-slate-300'
-                }`}
+        <div className="p-3 grid grid-cols-3 gap-2">
+          {cards.map((c) => (
+            <button
+              key={c.kind}
+              type="button"
+              disabled={c.disabled}
+              onClick={() => onPick(c.kind)}
+              className="flex flex-col items-center gap-2 p-3 rounded-2xl border-2 border-slate-200 hover:border-orange-400 hover:bg-orange-50 active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <div
+                className={`w-12 h-12 rounded-xl bg-gradient-to-br ${c.cls} text-white flex items-center justify-center shadow-md`}
               >
-                <div className="flex items-center gap-2">
-                  {s.image_url ? (
-                    <img
-                      src={s.image_url}
-                      alt=""
-                      className="w-10 h-10 rounded object-cover shrink-0"
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded bg-red-100 shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-bold truncate">{s.name}</div>
-                    <div className="text-xs text-slate-500">
-                      {s.free ? t('free') : formatYen(s.price)}
-                    </div>
-                  </div>
-                  {on && <span className="text-orange-500 font-black">✓</span>}
-                </div>
-              </button>
-            );
-          })}
-          {sauces.length === 0 && (
-            <p className="col-span-2 text-sm text-slate-400 text-center py-6">
-              {t('noSauces')}
-            </p>
-          )}
-        </div>
-        <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 flex gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="flex-1 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-sm font-bold"
-          >
-            {t('cancel')}
-          </button>
-          <button
-            type="button"
-            onClick={() => onSave(Array.from(picked))}
-            className="flex-1 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-sm font-black"
-          >
-            {t('save')}
-          </button>
+                {c.icon}
+              </div>
+              <span className="text-xs font-black text-slate-900 text-center leading-tight">
+                {c.title}
+              </span>
+              <span className="text-[0.6875rem] font-bold text-slate-500">
+                {c.hint}
+              </span>
+            </button>
+          ))}
         </div>
       </div>
     </div>
   );
 }
 
-function ItemPicker({
+function OptionPicker({
   items,
-  onPick,
   onCancel,
-  t,
+  onPick,
 }: {
   items: MenuItem[];
-  onPick: (item: MenuItem) => void;
   onCancel: () => void;
-  t: (k: TranslationKey) => string;
+  onPick: (id: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden"
+        className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
-          <h3 className="text-lg font-black">{t('pickItem')}</h3>
-          <button
-            onClick={onCancel}
-            className="text-slate-400 hover:text-slate-900"
-          >
-            <X className="w-5 h-5" />
+        <div className="px-4 py-3 border-b flex items-center justify-between shrink-0">
+          <h4 className="font-black text-slate-900">{t('pickOption')}</h4>
+          <button onClick={onCancel}>
+            <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5">
-          {items.map((it) => (
-            <button
-              key={it.id}
-              type="button"
-              onClick={() => onPick(it)}
-              className="w-full text-left p-3 rounded-xl border border-slate-200 bg-white hover:border-orange-400 hover:bg-orange-50 transition-all flex items-center gap-2"
-            >
-              {it.image_url ? (
-                <img
-                  src={it.image_url}
-                  alt=""
-                  className="w-10 h-10 rounded object-cover shrink-0"
-                />
-              ) : (
-                <div className="w-10 h-10 rounded bg-slate-100 shrink-0" />
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold truncate">{it.name}</div>
-                <div className="text-xs text-slate-500">
-                  {formatYen(it.price)}
-                </div>
-              </div>
-            </button>
-          ))}
+        <div className="flex-1 overflow-y-auto p-3 grid grid-cols-3 gap-2 content-start">
           {items.length === 0 && (
-            <p className="text-sm text-slate-400 text-center py-6">
-              {t('noResults')}
+            <p className="col-span-3 text-xs text-slate-400 text-center mt-4">
+              {t('noMenuItems')}
             </p>
           )}
+          {items.map((i) => (
+            <button
+              key={i.id}
+              onClick={() => onPick(i.id)}
+              className="flex flex-col items-center gap-1 p-1.5 rounded-xl bg-white ring-1 ring-slate-200 hover:ring-orange-400 active:scale-95 transition-all"
+            >
+              <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-slate-100">
+                {i.image_url && (
+                  <img
+                    src={i.image_url}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                )}
+              </div>
+              <span className="text-[0.6875rem] font-black text-slate-800 truncate w-full text-center">
+                {i.name}
+              </span>
+            </button>
+          ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ВЫБОР ИЗ СУЩЕСТВУЮЩИХ ПОЗИЦИЙ (соусы) — плитки с картинками.
+// Ничего не выбрано = блюдо без соуса.
+// ============================================================
+function ItemTilePicker({
+  items,
+  selectedIds,
+  onChange,
+}: {
+  items: MenuItem[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const { t } = useI18n();
+
+  if (items.length === 0) {
+    return <p className="text-xs text-slate-400">{t('noMenuItems')}</p>;
+  }
+
+  const toggle = (id: string) =>
+    onChange(
+      selectedIds.includes(id)
+        ? selectedIds.filter((x) => x !== id)
+        : [...selectedIds, id]
+    );
+
+  return (
+    <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
+      {items.map((s) => {
+        const on = selectedIds.includes(s.id);
+        return (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => toggle(s.id)}
+            className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-95 ${
+              on
+                ? 'bg-orange-50 ring-4 ring-orange-300'
+                : 'bg-white ring-1 ring-slate-200 hover:ring-orange-300'
+            }`}
+          >
+            <div
+              className="relative w-full aspect-square rounded-lg overflow-hidden"
+              style={{ border: `3px solid ${s.color ?? '#e5e7eb'}` }}
+            >
+              {s.image_url ? (
+                <img
+                  src={s.image_url}
+                  alt={s.name}
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              ) : (
+                <div
+                  className="absolute inset-0"
+                  style={{ backgroundColor: s.color ?? '#e5e7eb', opacity: 0.25 }}
+                />
+              )}
+              {on && (
+                <div className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-orange-500 text-white flex items-center justify-center shadow">
+                  <Check className="w-2.5 h-2.5" />
+                </div>
+              )}
+            </div>
+            <span className="text-[0.6875rem] font-black text-slate-800 truncate w-full text-center">
+              {s.name}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

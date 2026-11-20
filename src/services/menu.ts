@@ -431,7 +431,11 @@ function buildItem(
       );
       if (mainDish) {
         const mainCopy = deepCloneItem(mainDish, mainDish.id, now);
-        applyMainOverrides(mainCopy, payload.set_main_overrides ?? []);
+        applyMainOverrides(
+          mainCopy,
+          payload.set_main_overrides ?? [],
+          item.image_url
+        );
         item.set_main = mainCopy;
       }
     }
@@ -527,15 +531,19 @@ function resolveSauces(
 // ФИКС: применяем overrides ПО ИНДЕКСУ, а не по variant_item_id.
 // После deepCloneItem id вариантов новые, а порядок сохраняется.
 // ============================================================
+//
+// Собственное фото сета (setImage) — картинка по умолчанию для всех
+// вариантов, у которых нет своего фото-override.
 function applyMainOverrides(
   mainCopy: MenuItem,
-  overrides: SetMainOverridePayload[]
+  overrides: SetMainOverridePayload[],
+  setImage: string | null = null
 ): void {
   if (!mainCopy.variants || mainCopy.variants.length === 0) return;
 
   mainCopy.variants = mainCopy.variants.map((v, i) => {
     const ov = overrides[i];
-    if (!ov) return v;
+    if (!ov) return setImage ? { ...v, image_url: setImage } : v;
     const next = { ...v };
     if (ov.price_override != null) {
       next.price = ov.price_override;
@@ -543,6 +551,8 @@ function applyMainOverrides(
     }
     if (ov.image_override != null) {
       next.image_url = ov.image_override;
+    } else if (setImage) {
+      next.image_url = setImage;
     }
     return next;
   });

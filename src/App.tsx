@@ -12,7 +12,8 @@ import {
   type PageRole,
 } from '@/components/PageActions';
 import { SyncIndicator } from '@/components/SyncIndicator';
-import { KitchenAlerts } from '@/components/KitchenAlerts'; // ← NEW
+import { ThemeToggle } from '@/components/ThemeToggle';
+import { KitchenAlerts } from '@/components/KitchenAlerts';
 import { getSocket } from '@/lib/localStore';
 import {
   startGoogleSheetsSync,
@@ -111,12 +112,10 @@ export default function App() {
     setVisited(new Set());
   };
 
-  // ---------- 1. Нет пользователя → логин ----------
   if (!user) {
     return <LoginPage onLoggedIn={setUser} />;
   }
 
-  // ---------- 2. Роль не выбрана → выбор роли с фильтром ----------
   if (!role) {
     return (
       <RoleSelectionScreen
@@ -129,7 +128,6 @@ export default function App() {
     );
   }
 
-  // ---------- 3. Роль выбрана → сам экран ----------
   const roleLabel =
     user.role === 'admin' ? 'ADMIN' : user.role === 'manager' ? 'MANAGER' : 'CASHIER';
 
@@ -152,16 +150,15 @@ export default function App() {
             </h1>
           </div>
 
+          {/* Слот для кнопок типа "Undo" или "Настройки" */}
           <div
             ref={setSlot}
             className="flex items-center gap-2 flex-1 min-w-0"
           />
 
-          {/* ← NEW: мигающие счётчики для кухни */}
           {role === 'kitchen' && <KitchenAlerts />}
 
           <div className="flex items-center gap-3 shrink-0">
-            {/* Бейдж пользователя */}
             <span className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-[11px] font-bold text-slate-600">
               <UserCircle2 className="w-3.5 h-3.5" />
               {user.login}
@@ -170,6 +167,7 @@ export default function App() {
               </span>
             </span>
             <SyncIndicator />
+            <ThemeToggle />
             <DateLabel lang={lang} />
             {languages.length > 1 && (
               <LanguageSwitcher lang={lang} setLang={setLang} />
@@ -213,9 +211,6 @@ export default function App() {
   );
 }
 
-// ============================================================
-// ROLE SELECTION SCREEN
-// ============================================================
 function RoleSelectionScreen({
   user,
   lang,
@@ -294,6 +289,7 @@ function RoleSelectionScreen({
       <footer className="flex items-center justify-between gap-3 px-4 py-2.5 bg-white border-t border-gray-200 shrink-0 shadow-sm">
         <div className="flex items-center gap-3">
           <SyncIndicator />
+          <ThemeToggle />
           <DateLabel lang={lang} />
         </div>
         <div className="flex items-center gap-2">

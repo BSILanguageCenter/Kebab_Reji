@@ -15,6 +15,8 @@ interface MenuCardProps {
   mode?: Mode;
   /** Варианты группы переносятся на новую строку (узкие экраны) */
   wrapVariants?: boolean;
+  /** Отступ сетки (px): карточка группы заполняет ячейку и держит тот же зазор */
+  gap?: number;
 
   onClick: (item: MenuItem) => void;
   onVariantClick?: (parent: MenuItem, variant: MenuItem) => void;
@@ -35,6 +37,32 @@ function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+/** Внутренний отступ карточки группы (между вариантами и по краям). */
+export function groupInnerPad(gap: number): number {
+  return Math.max(4, Math.round(gap / 2));
+}
+
+/**
+ * Высота карточки группы из n вариантов в ячейке шириной n колонок.
+ * Нужна сеткам, чтобы высота строки равнялась высоте группы —
+ * тогда вертикальный зазор между карточками равен горизонтальному.
+ */
+export function groupCardHeight(
+  n: number,
+  size: number,
+  gap: number,
+  textSize: number,
+  compact = false
+): number {
+  const nameSize = compact ? textSize * 0.85 : textSize;
+  const pad = groupInnerPad(gap);
+  const cellW = n * size + (n - 1) * gap;
+  const variantSize = (cellW - 2 * pad - (n - 1) * pad) / n;
+  const header = nameSize + 13;
+  const label = 4 + nameSize * 1.05 + 2 + nameSize;
+  return Math.ceil(header + pad + variantSize + label + pad + 2);
 }
 
 function ImagePlaceholder({
@@ -85,6 +113,7 @@ function ImageSquare({
   size,
   radius,
   fontSize,
+  fluid,
 }: {
   src: string | null;
   name: string;
@@ -93,14 +122,17 @@ function ImageSquare({
   size: number;
   radius: number;
   fontSize: number;
+  /** true — квадрат занимает всю ширину родителя (size игнорируется) */
+  fluid?: boolean;
 }) {
   const isSauce = type === 'sauce';
   return (
     <div
       className="relative overflow-hidden border-2 shadow-md transition-all group-hover:shadow-xl group-hover:-translate-y-0.5 group-active:shadow-sm"
       style={{
-        width: size,
-        height: size,
+        width: fluid ? '100%' : size,
+        height: fluid ? undefined : size,
+        aspectRatio: fluid ? '1 / 1' : undefined,
         borderRadius: radius,
         borderColor: isSauce ? color ?? '#e5e7eb' : '#ffffff',
         borderWidth: isSauce ? 4 : 2,
@@ -223,6 +255,7 @@ export const MenuCard = memo(function MenuCard({
   cardRadius,
   mode = 'view',
   wrapVariants,
+  gap = 12,
   onClick,
   onVariantClick,
   onMoveLeft,
@@ -394,6 +427,8 @@ export const MenuCard = memo(function MenuCard({
 
   // ---------- Группа ----------
   const headerH = nameSize * 2;
+  const innerPad = groupInnerPad(gap);
+  const fluidVariants = !wrapVariants;
 
   return (
     <div
@@ -428,12 +463,14 @@ export const MenuCard = memo(function MenuCard({
         onClick={() => {
           if (mode === 'view') onClick(item);
         }}
-        className={`bg-white shadow-md ring-1 ring-slate-300 hover:ring-orange-400 flex flex-col overflow-hidden transition-all ${
+        className={`bg-slate-200 shadow-md ring-1 ring-slate-400/70 hover:ring-orange-400 flex flex-col overflow-hidden transition-all ${
           isInactive ? 'opacity-70' : ''
         }`}
         style={{
           width: '100%',
-          minHeight: headerH + size + nameSize * 2 + 8,
+          minHeight: wrapVariants
+            ? headerH + size + nameSize * 2 + 8
+            : undefined,
           borderRadius: cardRadius,
           touchAction: mode === 'edit' ? 'manipulation' : undefined,
         }}
@@ -444,7 +481,7 @@ export const MenuCard = memo(function MenuCard({
             // detail === 0 — активация с клавиатуры
             if (mode === 'view' || e.detail === 0) onClick(item);
           }}
-          className="flex items-center justify-between w-full px-2 py-1.5 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-slate-100 hover:from-orange-50 hover:to-orange-50 transition-colors shrink-0 leading-none"
+          className="flex items-center justify-between w-full px-2 py-1.5 border-b border-slate-300 bg-gradient-to-r from-slate-300/80 to-slate-300 hover:from-orange-100 hover:to-orange-100 transition-colors shrink-0 leading-none"
           style={{
             borderTopLeftRadius: cardRadius,
             borderTopRightRadius: cardRadius,
@@ -484,10 +521,14 @@ export const MenuCard = memo(function MenuCard({
         </button>
 
         <div
-          className={`flex items-stretch p-1 ${
-            wrapVariants ? 'flex-wrap justify-center' : ''
+          className={`flex items-stretch ${
+            wrapVariants ? 'flex-wrap justify-center p-1' : ''
           }`}
-          style={{ gap: '0.375rem' }}
+          style={
+            wrapVariants
+              ? { gap: '0.375rem' }
+              : { gap: innerPad, padding: innerPad }
+          }
         >
           {variants!.map((v) => (
             <button
@@ -502,7 +543,11 @@ export const MenuCard = memo(function MenuCard({
                 if (onVariantClick) onVariantClick(item, v);
                 else onClick(v);
               }}
-              style={{ width: size, flex: '0 0 auto' }}
+              style={
+                fluidVariants
+                  ? { flex: '1 1 0', minWidth: 0 }
+                  : { width: size, flex: '0 0 auto' }
+              }
               className="group/v flex flex-col items-center active:scale-95 transition-transform"
             >
               <ImageSquare
@@ -511,6 +556,7 @@ export const MenuCard = memo(function MenuCard({
                 type="dish"
                 color={null}
                 size={size}
+                fluid={fluidVariants}
                 radius={cardRadius}
                 fontSize={nameSize}
               />

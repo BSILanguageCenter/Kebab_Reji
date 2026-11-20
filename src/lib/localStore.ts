@@ -12,7 +12,11 @@ import {
   enqueueForSync,
   enqueueMenuForSync,
 } from '@/services/googleSheetsSync';
-import { saveOrder, updateOrderStatus } from '@/services/firebaseSync';
+import {
+  saveOrder,
+  updateOrderStatus,
+  nextSharedOrderNumber,
+} from '@/services/firebaseSync';
 import { upsertProductsToDb } from '@/services/supabaseDb';
 
 // ============================================================
@@ -37,8 +41,7 @@ export interface LocalData {
 }
 
 /** Локальная дата в формате YYYY-MM-DD (часовой пояс браузера). */
-function todayStr(): string {
-  const d = new Date();
+export function todayStr(d: Date = new Date()): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -79,6 +82,11 @@ function loadData(): LocalData {
   } catch {
     return defaultData();
   }
+}
+
+/** День (YYYY-MM-DD) для ISO-времени заказа. */
+function dayOf(iso: string): string {
+  return todayStr(new Date(iso));
 }
 
 let data: LocalData = loadData();
@@ -334,12 +342,16 @@ export function subscribeClientsCount(listener: ClientsListener): () => void {
 // READS
 // ============================================================
 export function getActiveOrders(): Order[] {
+  // Только заказы СЕГОДНЯШНЕГО дня: на следующий день касса, кухня и зал
+  // ожидания начинаются с чистого листа. Статистика читает getAllOrders().
+  const today = todayStr();
   return data.orders
     .filter(
       (o) =>
-        o.status === 'NEW' ||
-        o.status === 'PREPARING' ||
-        o.status === 'READY'
+        (o.status === 'NEW' ||
+          o.status === 'PREPARING' ||
+          o.status === 'READY') &&
+        dayOf(o.created_at) === today
     )
     .sort(
       (a, b) =>
@@ -437,10 +449,24 @@ export async function emitCreateOrder(payload: {
     schedulePersist();
   }
 
-  const id = newId();
-  const orderNumber = data.nextOrderNumber;
-  data.nextOrderNumber += 1;
+  // Номер берём из ОБЩЕГО счётчика (Firebase), чтобы у всех устройств он
+  // был единым и продолжал текущий. floor — максимальный номер за сегодня,
+  // уже известный этому устройству (включая заказы с других устройств).
+  const today = todayStr();
+  const floor = data.orders
+    .filter((o) => dayOf(o.created_at) === today)
+    .reduce((m, o) => Math.max(m, o.order_number), 0);
 
+  let orderNumber: number;
+  try {
+    orderNumber = await nextSharedOrderNumber(today, floor);
+  } catch (e: unknown) {
+    console.warn('[localStore] shared counter unavailable, local fallback:', e);
+    orderNumber = Math.max(floor, data.nextOrderNumber - 1) + 1;
+  }
+  data.nextOrderNumber = orderNumber + 1;
+
+  const id = newId();
   const now = new Date().toISOString();
 
   const order: Order = {

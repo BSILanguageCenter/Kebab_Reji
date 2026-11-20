@@ -13,6 +13,7 @@ import {
   set,
   update,
   remove,
+  runTransaction,
   Unsubscribe,
 } from 'firebase/database';
 import { db } from '@/lib/firebase';
@@ -83,6 +84,36 @@ export async function deleteOrder(orderId: string): Promise<void> {
     console.error('[firebaseSync] deleteOrder failed:', e);
     throw e;
   }
+}
+
+// ============================================================
+// ОБЩИЙ НОМЕР ЗАКАЗА (один счётчик на все устройства, каждый день с 1)
+// ============================================================
+/**
+ * Атомарно выдаёт следующий номер заказа на указанную дату.
+ *
+ * @param day   дата 'YYYY-MM-DD' — для каждого дня свой счётчик,
+ *              поэтому на следующий день нумерация начинается с 1.
+ * @param floor максимальный номер, который уже есть на этом устройстве
+ *              за сегодня. Счётчик никогда не выдаст число <= floor,
+ *              поэтому нумерация ПРОДОЛЖАЕТ текущий номер.
+ *
+ * Бросает ошибку, если нет сети (таймаут 2.5 с) — вызывающий код берёт
+ * запасной локальный номер.
+ */
+export async function nextSharedOrderNumber(
+  day: string,
+  floor: number
+): Promise<number> {
+  const counterRef = ref(db, `counters/orderNumber/${day}`);
+  const res = await Promise.race([
+    runTransaction(counterRef, (cur: unknown) =>
+      Math.max(typeof cur === 'number' ? cur : 0, floor) + 1
+    ),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+  ]);
+  if (!res || !res.committed) throw new Error('counter unavailable');
+  return res.snapshot.val() as number;
 }
 
 // ============================================================

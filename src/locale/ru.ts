@@ -510,4 +510,33 @@ export const ru: Record<TranslationKey, string> = {
   orderTypeOnTheWay: 'По дороге',
   chooseOrderTypeTitle: 'Как будет заказ?',
   chooseOrderTypeHint: 'Выберите способ получения',
+
+  // Стиль / Supabase (Manager → Меню)
+  styleSyncTitle: 'Стиль / Supabase',
+  styleSaveBtn: 'Сохранить',
+  styleLoadBtn: 'Загрузить',
+  styleSaved: 'Стиль сохранён в Supabase',
+  styleLoaded: 'Стиль загружен из Supabase',
+  styleNoSaved: 'Стиль ещё не сохранён',
+
+    // ---------- Style Sync (v2) ----------
+  stylePreviewTitle: 'Предпросмотр',
+  styleSettingsBtn: 'Настройки',
+  styleSettingsWindowTitle: 'Настройки вида',
+  styleSaveDialogTitle: 'Сохранить стиль',
+  styleNameLabel: 'Название стиля',
+  styleNamePlaceholder: 'Например: Утренний компакт',
+  styleListTitle: 'Загрузить стиль',
+  styleListEmpty: 'Стили пока не сохранены',
+  styleDeleteConfirm: 'Удалить',
+  styleDeleteLabel: 'Удалить стиль',
+  styleRefresh: 'Обновить',
+  styleOpenList: 'Открыть список',
+  extraGroup: 'Дополнительная группа',
+  extraGroupLabel: 'Название дополнительной группы',
+  pickOption: 'Выберите вариант',
+  propertyOptions: 'Варианты свойства',
+  menuSetPricePlaceholder: 'Введите цену набора',
+  upload: 'Загрузить',
+
 };

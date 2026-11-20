@@ -16,13 +16,14 @@ import {
   emitCreateOrder,
   emitUpdateOrder,
   emitUpdateStatus,
+  todayStr,
 } from '@/lib/localStore';
 import { ClearCartDialog } from '@/components/ClearCartDialog';
 import { ProductBuilderDialog } from '@/components/ProductBuilderDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageActions';
 import { Resizer } from '@/components/Resizer';
-import { MenuCard } from '@/components/MenuCard';
+import { MenuCard, groupCardHeight } from '@/components/MenuCard';
 import { useViewport } from '@/lib/useViewport';
 import {
   pushUndo,
@@ -212,6 +213,31 @@ export default function CashierPage() {
       unsubMenu();
     };
   }, [sending]);
+
+  // Смена дня: очищаем корзину и всё, что связано с текущим заказом
+  useEffect(() => {
+    let day = todayStr();
+    const check = () => {
+      const d = todayStr();
+      if (d === day) return;
+      day = d;
+      setCart([]);
+      setComment('');
+      setEditingOrder(null);
+      setOrderType('OUTSIDE');
+      setLastOrderNumber(null);
+      setPendingAction(null);
+      setBuilder(null);
+      setShowTypePicker(false);
+      setMobileTab('menu');
+    };
+    const id = window.setInterval(check, 30_000);
+    document.addEventListener('visibilitychange', check);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', check);
+    };
+  }, []);
 
   const tops = useMemo(
     () =>
@@ -771,9 +797,21 @@ export default function CashierPage() {
     const sorted = [...spaceItems].sort(
       (a, b) => a.sort_order - b.sort_order
     );
-    const cellH = Math.round(
+    let cellH = Math.round(
       size + (compact ? 32 : 50) * (layout.itemTextSize / 12)
     );
+    if (!fluid) {
+      // строка должна вмещать самую высокую группу — тогда зазоры равны
+      for (const it of sorted) {
+        const w = getItemWidth(it);
+        if (w > 1) {
+          cellH = Math.max(
+            cellH,
+            groupCardHeight(w, size, layout.gridGap, layout.itemTextSize, compact)
+          );
+        }
+      }
+    }
 
     return (
       <div
@@ -831,6 +869,7 @@ export default function CashierPage() {
                 }
                 compact={fluid ? false : compact}
                 wrapVariants={fluid}
+                gap={layout.gridGap}
                 cardRadius={layout.cardRadius}
               />
             </div>

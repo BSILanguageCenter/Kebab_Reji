@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { X, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useI18n, type TranslationKey } from '@/locale';
 import { formatYen } from '@/locale/format';
+import { subscribeMenu } from '@/lib/localStore';
 import type {
   MenuItem,
   HydratedSauce,
@@ -421,6 +422,24 @@ export function ProductBuilderDialog({
 
   const item = useMemo(() => normalizeMenuItem(rawItem), [rawItem]);
 
+  // Актуальное меню: копии соусов/напитков внутри блюда снимаются при
+  // сохранении и могут быть без фото — картинку берём из живого меню по id.
+  const [liveMenu, setLiveMenu] = useState<MenuItem[]>([]);
+  useEffect(() => subscribeMenu((m) => setLiveMenu(m.items)), []);
+  const liveById = useMemo(() => {
+    const map = new Map<string, MenuItem>();
+    const walk = (it: MenuItem) => {
+      map.set(it.id, it);
+      it.variants?.forEach(walk);
+    };
+    liveMenu.forEach(walk);
+    return map;
+  }, [liveMenu]);
+  const imageOf = (id: string, own: string | null | undefined): string | null =>
+    liveById.get(id)?.image_url || own || null;
+  const colorOf = (id: string, own: string | null | undefined): string | null =>
+    liveById.get(id)?.color ?? own ?? null;
+
   const [stepIndex, setStepIndex] = useState(0);
   const [selections, setSelections] = useState<Selections>({
     variantId: null,
@@ -674,17 +693,19 @@ export function ProductBuilderDialog({
             <div className="grid grid-cols-3 gap-3">
               {currentStep.sauces.map((s) => {
                 const selected = currentStep.ctx === 'main' ? selections.mainSauceId === s.id : selections.extras[currentStep.ctx.extra]?.sauceId === s.id;
+                const sImg = imageOf(s.id, s.image_url);
+                const sColor = colorOf(s.id, s.color);
                 return (
                   <button
                     key={s.id}
                     onClick={() => currentStep.ctx === 'main' ? selectMainSauce(s.id) : selectExtraSauce(currentStep.ctx.extra, s.id)}
                     className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-[0.97] ${selected ? 'bg-orange-50 ring-4 ring-orange-300' : 'bg-white hover:bg-gray-50'}`}
                   >
-                    <div className="relative rounded-lg overflow-hidden w-full max-w-[5.5rem] aspect-square" style={{ borderWidth: 3, borderStyle: 'solid', borderColor: s.color ?? '#e5e7eb', background: '#ffffff' }}>
-                      {s.image_url ? <img src={s.image_url} alt={s.name} className="absolute inset-0 w-full h-full object-cover" loading="lazy" /> : <div className="absolute inset-0" style={{ backgroundColor: s.color ?? '#e5e7eb', opacity: 0.25 }} />}
-                      {selected && <div className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-orange-500 text-white flex items-center justify-center shadow-md"><Check className="w-2.5 h-2.5" /></div>}
+                    <div className="relative rounded-lg overflow-hidden w-full aspect-square" style={{ borderWidth: 3, borderStyle: 'solid', borderColor: sColor ?? '#e5e7eb', background: '#ffffff' }}>
+                      {sImg ? <img src={sImg} alt={s.name} className="absolute inset-0 w-full h-full object-cover" /> : <div className="absolute inset-0" style={{ backgroundColor: sColor ?? '#e5e7eb', opacity: 0.25 }} />}
+                      {selected && <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-orange-500 text-white flex items-center justify-center shadow-md"><Check className="w-3 h-3" /></div>}
                     </div>
-                    <span className="text-[0.6875rem] font-black text-gray-900 truncate w-full text-center leading-tight">{s.name}</span>
+                    <span className="text-xs font-black text-gray-900 truncate w-full text-center leading-tight">{s.name}</span>
                   </button>
                 );
               })}
@@ -736,22 +757,41 @@ export function ProductBuilderDialog({
                 {currentStep.group.label || t('chooseExtra')}
                 {currentStep.group.required && <span className="text-red-500 ml-1">*</span>}
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-3">
                 {currentStep.group.options.map((o) => {
                   const selected = selections.extras[currentStep.group.id]?.optionId === o.item.id;
+                  const it = o.item;
+                  const itImg = imageOf(it.id, it.image_url);
+                  const itColor = colorOf(it.id, it.color);
+                  const itPrice = liveById.get(it.id)?.price ?? it.price;
+                  const itFree = liveById.get(it.id)?.free ?? it.free;
                   return (
                     <button
                       key={o.option_id}
-                      onClick={() => selectExtraOption(currentStep.group.id, o.item.id)}
-                      className={`p-3 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${selected ? 'bg-purple-500 border-purple-500 text-white shadow-md' : 'bg-white border-gray-200 hover:border-purple-300'}`}
+                      onClick={() => selectExtraOption(currentStep.group.id, it.id)}
+                      className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-[0.97] ${selected ? 'bg-purple-50 ring-4 ring-purple-300' : 'bg-white hover:bg-gray-50'}`}
                     >
-                      <div className="flex items-center gap-2">
-                        {o.item.image_url && <img src={o.item.image_url} alt="" className="w-8 h-8 rounded object-cover shrink-0" />}
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-bold truncate">{o.item.name}</div>
-                          {!o.item.free && <div className={`text-[0.6875rem] font-bold ${selected ? 'text-white/80' : 'text-orange-600'}`}>{formatYen(o.item.price)}</div>}
-                        </div>
+                      <div
+                        className="relative rounded-lg overflow-hidden w-full aspect-square"
+                        style={{ borderWidth: 3, borderStyle: 'solid', borderColor: itColor ?? '#e5e7eb', background: '#ffffff' }}
+                      >
+                        {itImg ? (
+                          <img src={itImg} alt={it.name} className="absolute inset-0 w-full h-full object-cover" />
+                        ) : (
+                          <div className="absolute inset-0 bg-gradient-to-br from-orange-400 via-orange-500 to-red-600 flex items-center justify-center">
+                            <span className="font-black text-white/90 text-xl drop-shadow">{it.name.slice(0, 2).toUpperCase()}</span>
+                          </div>
+                        )}
+                        {selected && (
+                          <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-md">
+                            <Check className="w-3 h-3" />
+                          </div>
+                        )}
                       </div>
+                      <span className="text-xs font-black text-gray-900 truncate w-full text-center leading-tight">{it.name}</span>
+                      {!itFree && itPrice > 0 && (
+                        <span className="text-[0.6875rem] font-bold text-orange-600 leading-none">{formatYen(itPrice)}</span>
+                      )}
                     </button>
                   );
                 })}
