@@ -1,25 +1,22 @@
 
 import os
 import shutil
+import zipfile
 
 # ==========================================
 # PROJECT PATHS
 # ==========================================
 
-# Корень проекта
 PROJECT_PATH = os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
 )
 
-# Исходная папка
 SRC_PATH = os.path.join(PROJECT_PATH, "src")
 
-# Папка результатов
 OUTPUT_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
 
-# Итоговые файлы
 OUTPUT_FILE = os.path.join(
     OUTPUT_DIR,
     "src_all_source_code.txt"
@@ -30,10 +27,9 @@ INFO_FILE = os.path.join(
     "src_project_info.txt"
 )
 
-# Папка со всеми файлами src
-FILES_EXPORT_DIR = os.path.join(
+ZIP_FILE = os.path.join(
     OUTPUT_DIR,
-    "src_files_export"
+    "src_export.zip"
 )
 
 
@@ -41,14 +37,12 @@ FILES_EXPORT_DIR = os.path.join(
 # SETTINGS
 # ==========================================
 
-# Расширения файлов для TXT
 EXTENSIONS = (
     ".tsx",
     ".ts",
     ".css"
 )
 
-# Папки, которые нужно пропустить
 IGNORE_DIRS = {
     "node_modules",
     "__pycache__",
@@ -117,7 +111,6 @@ def collect_source_code(all_files):
 
                 content = source.read()
 
-            # Удаляем полностью пустые строки
             lines = [
                 line
                 for line in content.splitlines()
@@ -137,21 +130,17 @@ def collect_source_code(all_files):
 
         except UnicodeDecodeError:
 
-            print(
-                f"[SKIP] Encoding error: {filename}"
-            )
+            print(f"[SKIP] Encoding error: {filename}")
 
         except Exception as error:
 
-            print(
-                f"[ERROR] {filename}: {error}"
-            )
+            print(f"[ERROR] {filename}: {error}")
 
     return collected
 
 
 # ==========================================
-# CREATE ONE SOURCE CODE TXT
+# CREATE SOURCE CODE TXT
 # ==========================================
 
 def create_source_file(files):
@@ -162,15 +151,11 @@ def create_source_file(files):
         encoding="utf-8"
     ) as output:
 
-        # Заголовок
         output.write("=" * 100 + "\n")
         output.write("SRC PROJECT - ALL SOURCE CODE\n")
-        output.write(
-            f"TOTAL FILES: {len(files)}\n"
-        )
+        output.write(f"TOTAL FILES: {len(files)}\n")
         output.write("=" * 100 + "\n\n")
 
-        # Список файлов
         output.write("FILES INCLUDED:\n\n")
 
         for index, item in enumerate(files, 1):
@@ -179,107 +164,77 @@ def create_source_file(files):
                 f"{index:03d}. {item['name']}\n"
             )
 
-        # Начало исходного кода
         output.write("\n" + "=" * 100 + "\n")
         output.write("SOURCE CODE\n")
         output.write("=" * 100 + "\n\n")
 
-        # Записываем каждый файл
         for item in files:
 
             output.write("=" * 100 + "\n")
-
-            output.write(
-                f"FILE: {item['name']}\n"
-            )
-
+            output.write(f"FILE: {item['name']}\n")
             output.write("=" * 100 + "\n\n")
 
             output.write(item["content"])
-
             output.write("\n\n\n")
 
-    print(
-        f"\n[SAVED] {OUTPUT_FILE}"
-    )
+    print(f"\n[SAVED] {OUTPUT_FILE}")
 
 
 # ==========================================
-# EXPORT ALL SRC FILES WITH NUMBERS
+# CREATE ZIP WITH SRC FOLDER
 # ==========================================
 
-def export_all_src_files(all_files):
+def create_src_zip():
 
-    # Удаляем старую папку
-    if os.path.exists(FILES_EXPORT_DIR):
+    if os.path.exists(ZIP_FILE):
+        os.remove(ZIP_FILE)
 
-        shutil.rmtree(
-            FILES_EXPORT_DIR
-        )
+    total = 0
 
-    os.makedirs(
-        FILES_EXPORT_DIR,
-        exist_ok=True
-    )
+    with zipfile.ZipFile(
+        ZIP_FILE,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=9
+    ) as archive:
 
-    total = len(all_files)
+        for root, dirs, files in os.walk(SRC_PATH):
 
-    for index, item in enumerate(
-        all_files,
-        1
-    ):
-
-        original_path = item["path"]
-
-        relative_path = item["name"]
-
-        # Путь превращаем в часть имени
-        safe_path = relative_path.replace(
-            os.sep,
-            "__"
-        )
-
-        # Новое имя файла
-        new_filename = (
-            f"{index:03d}_{safe_path}"
-        )
-
-        destination = os.path.join(
-            FILES_EXPORT_DIR,
-            new_filename
-        )
-
-        try:
-
-            shutil.copy2(
-                original_path,
-                destination
+            dirs[:] = sorted(
+                d for d in dirs
+                if d not in IGNORE_DIRS
             )
 
-            print(
-                f"[COPY {index}/{total}] "
-                f"{new_filename}"
-            )
+            for filename in sorted(files):
 
-        except Exception as error:
+                file_path = os.path.join(
+                    root,
+                    filename
+                )
 
-            print(
-                f"[ERROR] {relative_path}: {error}"
-            )
+                arcname = os.path.relpath(
+                    file_path,
+                    PROJECT_PATH
+                )
 
-    print(
-        f"\nAll SRC files exported: {total}"
-    )
+                archive.write(
+                    file_path,
+                    arcname
+                )
+
+                total += 1
+
+                print(f"[ZIP] {arcname}")
+
+    print(f"\n[SAVED] {ZIP_FILE}")
+    print(f"ZIP FILES: {total}")
 
 
 # ==========================================
 # CREATE PROJECT STATISTICS
 # ==========================================
 
-def create_statistics(
-    code_files,
-    all_files
-):
+def create_statistics(code_files, all_files):
 
     total_files = len(all_files)
 
@@ -301,75 +256,34 @@ def create_statistics(
         encoding="utf-8"
     ) as info:
 
-        # Общая статистика
-        info.write(
-            "SRC PROJECT STATISTICS\n"
-        )
+        info.write("SRC PROJECT STATISTICS\n")
+        info.write("=" * 60 + "\n\n")
 
-        info.write(
-            "=" * 60 + "\n\n"
-        )
+        info.write(f"Total SRC files: {total_files}\n")
+        info.write(f"Source code files: {code_files_count}\n")
+        info.write(f"Total lines: {total_lines}\n")
+        info.write(f"Total characters: {total_chars}\n")
 
-        info.write(
-            f"Total SRC files: {total_files}\n"
-        )
-
-        info.write(
-            f"Source code files: {code_files_count}\n"
-        )
-
-        info.write(
-            f"Total lines: {total_lines}\n"
-        )
-
-        info.write(
-            f"Total characters: {total_chars}\n"
-        )
-
-        # Статистика каждого файла
-        info.write(
-            "\n\nSOURCE CODE FILE DETAILS\n"
-        )
-
-        info.write(
-            "=" * 60 + "\n\n"
-        )
+        info.write("\n\nSOURCE CODE FILE DETAILS\n")
+        info.write("=" * 60 + "\n\n")
 
         for item in code_files:
 
-            info.write(
-                f"File: {item['name']}\n"
-            )
+            info.write(f"File: {item['name']}\n")
+            info.write(f"Lines: {item['lines']}\n")
+            info.write(f"Characters: {item['chars']}\n")
+            info.write("-" * 40 + "\n")
 
-            info.write(
-                f"Lines: {item['lines']}\n"
-            )
+        info.write("\n\nALL SRC FILES\n")
+        info.write("=" * 60 + "\n\n")
 
-            info.write(
-                f"Characters: {item['chars']}\n"
-            )
-
-            info.write(
-                "-" * 40 + "\n"
-            )
-
-        # Список всех файлов
-        info.write(
-            "\n\nALL SRC FILES\n"
-        )
-
-        info.write(
-            "=" * 60 + "\n\n"
-        )
-
-        for index, item in enumerate(
-            all_files,
-            1
-        ):
+        for index, item in enumerate(all_files, 1):
 
             info.write(
                 f"{index:03d}. {item['name']}\n"
             )
+
+    print(f"\n[SAVED] {INFO_FILE}")
 
 
 # ==========================================
@@ -379,65 +293,44 @@ def create_statistics(
 def main():
 
     print("\n" + "=" * 60)
+    print("SRC PROJECT EXPORTER")
+    print("=" * 60)
 
-    print(
-        "SRC PROJECT EXPORTER"
-    )
-
-    print(
-        "=" * 60
-    )
-
-    # Проверяем src
     if not os.path.isdir(SRC_PATH):
 
-        print(
-            f"\nERROR: src folder not found: {SRC_PATH}"
-        )
-
+        print(f"\nERROR: src folder not found: {SRC_PATH}")
         return
 
-    # Собираем все файлы
-    print(
-        "\nScanning SRC folder...\n"
+    os.makedirs(
+        OUTPUT_DIR,
+        exist_ok=True
     )
+
+    print("\nScanning SRC folder...\n")
 
     all_files = collect_all_files()
 
-    # Собираем код для TXT
-    print(
-        "\nCollecting source code...\n"
-    )
+    print(f"Found files: {len(all_files)}")
 
-    code_files = collect_source_code(
-        all_files
-    )
+    print("\nCollecting source code...\n")
 
-    # Создаём один TXT
-    print(
-        "\nCreating source code TXT...\n"
-    )
+    code_files = collect_source_code(all_files)
 
-    create_source_file(
-        code_files
-    )
+    print("\nCreating source code TXT...\n")
 
-    # Копируем все файлы
-    print(
-        "\nExporting all SRC files...\n"
-    )
+    create_source_file(code_files)
 
-    export_all_src_files(
-        all_files
-    )
+    print("\nCreating SRC ZIP archive...\n")
 
-    # Создаём статистику
+    create_src_zip()
+
+    print("\nCreating project statistics...\n")
+
     create_statistics(
         code_files,
         all_files
     )
 
-    # Итоговые показатели
     total_lines = sum(
         item["lines"]
         for item in code_files
@@ -449,58 +342,23 @@ def main():
     )
 
     print("\n" + "=" * 60)
+    print("EXPORT COMPLETED")
+    print("=" * 60)
 
-    print(
-        "EXPORT COMPLETED"
-    )
+    print(f"Total SRC files: {len(all_files)}")
+    print(f"Source code files: {len(code_files)}")
+    print(f"Total lines: {total_lines}")
+    print(f"Total characters: {total_chars}")
 
-    print(
-        "=" * 60
-    )
+    print("\nGenerated files:")
+    print("- src_all_source_code.txt")
+    print("- src_project_info.txt")
+    print("- src_export.zip")
 
-    print(
-        f"Total SRC files: {len(all_files)}"
-    )
+    print("\nOutput folder:")
+    print(OUTPUT_DIR)
 
-    print(
-        f"Source code files: {len(code_files)}"
-    )
-
-    print(
-        f"Total lines: {total_lines}"
-    )
-
-    print(
-        f"Total characters: {total_chars}"
-    )
-
-    print(
-        "\nGenerated files:"
-    )
-
-    print(
-        "- src_all_source_code.txt"
-    )
-
-    print(
-        "- src_project_info.txt"
-    )
-
-    print(
-        "- src_files_export/"
-    )
-
-    print(
-        "\nOutput folder:"
-    )
-
-    print(
-        OUTPUT_DIR
-    )
-
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
 
 if __name__ == "__main__":

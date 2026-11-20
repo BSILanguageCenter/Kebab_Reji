@@ -127,6 +127,7 @@ export interface HydratedProperty {
   options: string[];
   required: boolean;
   sort_order: number;
+  price?: number;
 }
 
 export interface HydratedSetExtraOption {

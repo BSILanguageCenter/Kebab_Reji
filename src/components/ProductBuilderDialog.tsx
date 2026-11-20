@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+// src/components/ProductBuilderDialog.tsx
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+  useRef,
+  useLayoutEffect,
+} from 'react';
+import type { ReactNode } from 'react';
 import { X, Check, ChevronLeft, ChevronRight } from 'lucide-react';
-import { useI18n, type TranslationKey } from '@/locale';
+import { useI18n } from '@/locale';
 import { formatYen } from '@/locale/format';
 import { subscribeMenu } from '@/lib/localStore';
 import type {
@@ -16,19 +25,18 @@ type Ctx = 'main' | { extra: string };
 type Step =
   | { kind: 'variant'; variants: MenuItem[] }
   | { kind: 'sauce'; ctx: Ctx; sauces: HydratedSauce[] }
-  | { kind: 'properties'; ctx: Ctx; props: HydratedProperty[] }
   | { kind: 'extra-option'; group: HydratedSetExtraGroup };
 
 interface ExtraSel {
   optionId: string | null;
-  sauceId: string | null;
-  props: Record<string, string>;
+  sauceIds: string[];
+  props: Record<string, string[]>;
 }
 
 interface Selections {
   variantId: string | null;
-  mainSauceId: string | null;
-  mainProps: Record<string, string>;
+  mainSauceIds: string[];
+  mainProps: Record<string, string[]>;
   extras: Record<string, ExtraSel>;
 }
 
@@ -36,6 +44,73 @@ export interface BuilderResult {
   variant: string;
   price: number;
   options: CartItemOption[];
+}
+
+// ============================================================
+// СЕТКА, КОТОРАЯ САМА ПОДБИРАЕТ РАЗМЕР ПЛИТОК ПОД КОНТЕЙНЕР
+// ============================================================
+function FitGrid({
+  count,
+  labelH,
+  gap = 12,
+  maxSize = 160,
+  render,
+}: {
+  count: number;
+  labelH: number; // высота подписи под иконкой (px)
+  gap?: number;
+  maxSize?: number;
+  render: (index: number, size: number) => ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => {
+      setBox({ w: e.contentRect.width, h: e.contentRect.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const { cols, size } = useMemo(() => {
+    const { w, h } = box;
+    if (w <= 0 || h <= 0 || count === 0) return { cols: 1, size: 0 };
+
+    let best = { cols: count, size: 0 };
+    let bestFit = { cols: 1, size: 0 }; // запасной вариант, если не влезает по высоте
+
+    for (let c = 1; c <= count; c++) {
+      const rows = Math.ceil(count / c);
+      const cellW = Math.min(maxSize, Math.floor((w - gap * (c - 1)) / c));
+      if (cellW <= 0) continue;
+      const totalH = rows * (cellW + labelH) + gap * (rows - 1);
+
+      if (cellW > bestFit.size) bestFit = { cols: c, size: cellW };
+      if (totalH <= h && cellW > best.size) best = { cols: c, size: cellW };
+    }
+    // если ничего не влезло по высоте, берём самый крупный вариант (будет скролл)
+    return best.size > 0 ? best : bestFit;
+  }, [box, count, labelH, gap, maxSize]);
+
+  return (
+    <div ref={ref} className="flex-1 min-h-0 overflow-y-auto p-1">
+      {size > 0 && (
+        <div
+          className="grid content-start"
+          style={{
+            gridTemplateColumns: `repeat(${cols}, ${size}px)`,
+            gap,
+            justifyContent: 'space-between', // равномерно по ширине; 'start' = прижать влево
+          }}
+        >
+          {Array.from({ length: count }, (_, i) => render(i, size))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ============================================================
@@ -54,6 +129,7 @@ function normalizeProperty(
       typeof p?.sort_order === 'number' && Number.isFinite(p.sort_order)
         ? p.sort_order
         : 0,
+    price: typeof p?.price === 'number' ? p.price : 0,
   };
 }
 
@@ -110,87 +186,7 @@ function validProps(list: HydratedProperty[] | undefined): HydratedProperty[] {
 }
 
 // ============================================================
-// Раскладка вариантов свойства (с оранжевым бордером)
-// ============================================================
-function PropertyOptionsLayout({
-  options,
-  selectedValue,
-  onPick,
-  size = 'large',
-}: {
-  options: string[];
-  selectedValue: string | undefined;
-  onPick: (opt: string) => void;
-  size?: 'large' | 'small';
-}) {
-  const count = options.length;
-
-  const baseBtn =
-    size === 'large'
-      ? 'py-5 px-3 rounded-xl text-base font-black'
-      : 'py-3 px-2 rounded-lg text-xs font-bold';
-
-  const btnClass = (selected: boolean) =>
-    `${baseBtn} transition-all active:scale-[0.98] truncate ${
-      selected
-        ? 'bg-orange-500 text-white border-2 border-orange-500 shadow-md'
-        : 'bg-white border-2 border-orange-400 text-gray-800 hover:bg-orange-50'
-    }`;
-
-  if (count === 1) {
-    const opt = options[0];
-    const selected = selectedValue === opt;
-    return (
-      <div className="flex justify-center">
-        <button
-          onClick={() => onPick(opt)}
-          className={`${btnClass(selected)} min-w-[55%] max-w-[15rem]`}
-        >
-          {opt}
-        </button>
-      </div>
-    );
-  }
-
-  if (count === 2) {
-    return (
-      <div className="flex justify-between gap-2">
-        {options.map((opt) => {
-          const selected = selectedValue === opt;
-          return (
-            <button
-              key={opt}
-              onClick={() => onPick(opt)}
-              className={`${btnClass(selected)} flex-1`}
-            >
-              {opt}
-            </button>
-          );
-        })}
-      </div>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-3 gap-2">
-      {options.map((opt) => {
-        const selected = selectedValue === opt;
-        return (
-          <button
-            key={opt}
-            onClick={() => onPick(opt)}
-            className={btnClass(selected)}
-          >
-            {opt}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// ============================================================
-// ПОРЯДОК ШАГОВ
+// ПОРЯДОК ШАГОВ (без свойств, они справа)
 // ============================================================
 function computeSteps(
   item: MenuItem,
@@ -204,7 +200,7 @@ function computeSteps(
 
   let resolvedMain: MenuItem = mainItem;
 
-  // 1. Variant главного (ДОБАВЛЯЕМ, ТОЛЬКО ЕСЛИ НЕ ПЕРЕДАН initialVariantId)
+  // 1. Variant главного
   if (
     mainItem.dish_kind === 'group' &&
     mainItem.variants &&
@@ -217,18 +213,11 @@ function computeSteps(
     const vId = selections.variantId || initialVariantId;
     const v = vId ? mainItem.variants.find((x) => x.id === vId) : null;
 
-    // Если варианта нет (и не был передан) — ждем выбора
     if (!v) return steps;
     resolvedMain = v;
   }
 
-  // 2. Свойства главного
-  const mainProps = validProps(resolvedMain.properties);
-  if (mainProps.length > 0) {
-    steps.push({ kind: 'properties', ctx: 'main', props: mainProps });
-  }
-
-  // 3. Соусы главного
+  // 2. Соусы главного
   if (
     resolvedMain.sauce_mode === 'with' &&
     (resolvedMain.allowed_sauces?.length ?? 0) > 0
@@ -240,7 +229,7 @@ function computeSteps(
     });
   }
 
-  // 4. Extras сета
+  // 3. Extras сета
   if (item.type === 'set' && item.set_extra_groups) {
     for (const group of item.set_extra_groups) {
       const ex = selections.extras[group.id];
@@ -257,15 +246,6 @@ function computeSteps(
 
       const optItem = group.options.find((o) => o.item.id === optId)?.item;
       if (!optItem) continue;
-
-      const extraProps = validProps(optItem.properties);
-      if (extraProps.length > 0) {
-        steps.push({
-          kind: 'properties',
-          ctx: { extra: group.id },
-          props: extraProps,
-        });
-      }
 
       if (
         optItem.sauce_mode === 'with' &&
@@ -284,6 +264,8 @@ function computeSteps(
 }
 
 function computePrice(item: MenuItem, selections: Selections): number {
+  let basePrice = 0;
+
   if (item.type === 'set') {
     const mainItem = item.set_main;
     if (!mainItem) return 0;
@@ -293,16 +275,51 @@ function computePrice(item: MenuItem, selections: Selections): number {
       const v = mainItem.variants?.find(
         (x) => x.id === selections.variantId
       );
-      return v ? v.price : 0;
+      basePrice = v ? v.price : 0;
+    } else {
+      basePrice = mainItem.price;
     }
-    return mainItem.price;
+  } else {
+    if (item.dish_kind === 'group' && selections.variantId && item.variants) {
+      const v = item.variants.find((x) => x.id === selections.variantId);
+      basePrice = v ? v.price : item.price;
+    } else {
+      basePrice = item.price;
+    }
   }
 
-  if (item.dish_kind === 'group' && selections.variantId && item.variants) {
-    const v = item.variants.find((x) => x.id === selections.variantId);
-    if (v) return v.price;
+  // Добавляем цену свойств
+  let propsPrice = 0;
+
+  const mainItem = item.type === 'set' ? item.set_main : item;
+  const resolvedMain =
+    mainItem?.dish_kind === 'group' && selections.variantId
+      ? mainItem.variants?.find((x) => x.id === selections.variantId)
+      : mainItem;
+
+  const mainProps = validProps(resolvedMain?.properties);
+  for (const p of mainProps) {
+    const values = selections.mainProps[p.id] || [];
+    propsPrice += (p.price || 0) * values.length;
   }
-  return item.price;
+
+  if (item.type === 'set' && item.set_extra_groups) {
+    for (const group of item.set_extra_groups) {
+      const ex = selections.extras[group.id];
+      const optId = ex?.optionId ?? (group.options.length === 1 ? group.options[0].item.id : null);
+      if (!optId) continue;
+      const optItem = group.options.find((o) => o.item.id === optId)?.item;
+      if (!optItem) continue;
+
+      const extraProps = validProps(optItem.properties);
+      for (const p of extraProps) {
+        const values = ex?.props?.[p.id] || [];
+        propsPrice += (p.price || 0) * values.length;
+      }
+    }
+  }
+
+  return basePrice + propsPrice;
 }
 
 function buildPropertyOptionName(p: HydratedProperty, value: string): string {
@@ -333,20 +350,19 @@ function buildResult(item: MenuItem, selections: Selections): BuilderResult {
 
   const mainProps = validProps(resolvedMain?.properties);
   for (const p of mainProps) {
-    const value = selections.mainProps[p.id];
-    if (value === undefined || value === null || value === '') continue;
-    options.push({
-      type: 'property',
-      name: buildPropertyOptionName(p, value),
-      price: 0,
-      quantity: 1,
-    });
+    const values = selections.mainProps[p.id] || [];
+    for (const value of values) {
+      options.push({
+        type: 'property',
+        name: buildPropertyOptionName(p, value),
+        price: p.price || 0,
+        quantity: 1,
+      });
+    }
   }
 
-  if (selections.mainSauceId) {
-    const s = mainItem?.allowed_sauces?.find(
-      (x) => x.id === selections.mainSauceId
-    );
+  for (const sauceId of selections.mainSauceIds) {
+    const s = mainItem?.allowed_sauces?.find((x) => x.id === sauceId);
     if (s) {
       options.push({ type: 'sauce', name: s.name, price: 0, quantity: 1 });
     }
@@ -371,18 +387,19 @@ function buildResult(item: MenuItem, selections: Selections): BuilderResult {
 
       const extraProps = validProps(optItem.properties);
       for (const p of extraProps) {
-        const value = ex?.props?.[p.id];
-        if (value === undefined || value === null || value === '') continue;
-        options.push({
-          type: 'property',
-          name: `${optItem.name}: ${buildPropertyOptionName(p, value)}`,
-          price: 0,
-          quantity: 1,
-        });
+        const values = ex?.props?.[p.id] || [];
+        for (const value of values) {
+          options.push({
+            type: 'property',
+            name: `${optItem.name}: ${buildPropertyOptionName(p, value)}`,
+            price: p.price || 0,
+            quantity: 1,
+          });
+        }
       }
 
-      if (ex?.sauceId) {
-        const s = optItem.allowed_sauces?.find((x) => x.id === ex.sauceId);
+      for (const sauceId of ex?.sauceIds || []) {
+        const s = optItem.allowed_sauces?.find((x) => x.id === sauceId);
         if (s) {
           options.push({
             type: 'sauce',
@@ -422,8 +439,6 @@ export function ProductBuilderDialog({
 
   const item = useMemo(() => normalizeMenuItem(rawItem), [rawItem]);
 
-  // Актуальное меню: копии соусов/напитков внутри блюда снимаются при
-  // сохранении и могут быть без фото — картинку берём из живого меню по id.
   const [liveMenu, setLiveMenu] = useState<MenuItem[]>([]);
   useEffect(() => subscribeMenu((m) => setLiveMenu(m.items)), []);
   const liveById = useMemo(() => {
@@ -443,7 +458,7 @@ export function ProductBuilderDialog({
   const [stepIndex, setStepIndex] = useState(0);
   const [selections, setSelections] = useState<Selections>({
     variantId: null,
-    mainSauceId: null,
+    mainSauceIds: [],
     mainProps: {},
     extras: {},
   });
@@ -457,7 +472,7 @@ export function ProductBuilderDialog({
 
     const initSel: Selections = {
       variantId: initialVariantId ?? null,
-      mainSauceId: null,
+      mainSauceIds: [],
       mainProps: {},
       extras: {},
     };
@@ -467,7 +482,7 @@ export function ProductBuilderDialog({
         if (group.options.length === 1) {
           initSel.extras[group.id] = {
             optionId: group.options[0].item.id,
-            sauceId: null,
+            sauceIds: [],
             props: {},
           };
         }
@@ -475,7 +490,7 @@ export function ProductBuilderDialog({
     }
 
     setSelections(initSel);
-    setStepIndex(0); // Всегда начинаем с 0. Если передан initialVariantId, шаг вариант просто не добавится в массив.
+    setStepIndex(0);
   }, [open, itemId, initialVariantId, item]);
 
   const steps = useMemo(
@@ -492,25 +507,44 @@ export function ProductBuilderDialog({
   const doFinish = useCallback(
     (sel: Selections) => {
       if (!item) return;
+
+      // Валидация обязательных свойств
+      const mainItem = item.type === 'set' ? item.set_main : item;
+      const resolvedMain =
+        mainItem?.dish_kind === 'group' && sel.variantId
+          ? mainItem.variants?.find((x) => x.id === sel.variantId)
+          : mainItem;
+
+      const mainProps = validProps(resolvedMain?.properties);
+      for (const p of mainProps) {
+        if (p.required && (!sel.mainProps[p.id] || sel.mainProps[p.id].length === 0)) {
+          setError(`Выберите: ${p.name}`);
+          return;
+        }
+      }
+
+      if (item.type === 'set' && item.set_extra_groups) {
+        for (const group of item.set_extra_groups) {
+          const ex = sel.extras[group.id];
+          const optId = ex?.optionId ?? (group.options.length === 1 ? group.options[0].item.id : null);
+          if (!optId) continue;
+          const optItem = group.options.find((o) => o.item.id === optId)?.item;
+          if (!optItem) continue;
+
+          const extraProps = validProps(optItem.properties);
+          for (const p of extraProps) {
+            if (p.required && (!ex?.props[p.id] || ex.props[p.id].length === 0)) {
+              setError(`Выберите: ${p.name} (${optItem.name})`);
+              return;
+            }
+          }
+        }
+      }
+
+      setError(null);
       onConfirm(buildResult(item, sel));
     },
     [item, onConfirm]
-  );
-
-  const advance = useCallback(
-    (newSel: Selections, reuse: boolean) => {
-      if (!item) return;
-      const newSteps = computeSteps(item, newSel, initialVariantId);
-      const nextIdx = reuse ? stepIndex : stepIndex + 1;
-
-      if (nextIdx >= newSteps.length) {
-        doFinish(newSel);
-      } else {
-        setSelections(newSel);
-        setStepIndex(nextIdx);
-      }
-    },
-    [item, stepIndex, doFinish, initialVariantId]
   );
 
   const goNext = () => {
@@ -519,21 +553,24 @@ export function ProductBuilderDialog({
       doFinish(selections);
       return;
     }
+
     if (current.kind === 'variant' && !selections.variantId) {
       setError(t('requiredChoice'));
       return;
     }
+
     if (current.kind === 'sauce') {
       const val =
         current.ctx === 'main'
-          ? selections.mainSauceId
+          ? selections.mainSauceIds
           : selections.extras[(current.ctx as { extra: string }).extra]
-              ?.sauceId ?? null;
-      if (!val) {
+              ?.sauceIds ?? [];
+      if (val.length === 0) {
         setError(t('requiredChoice'));
         return;
       }
     }
+
     if (current.kind === 'extra-option') {
       const ex = selections.extras[current.group.id];
       if (current.group.required && !ex?.optionId) {
@@ -551,59 +588,99 @@ export function ProductBuilderDialog({
   };
 
   const selectVariant = (v: MenuItem) => {
-    advance({ ...selections, variantId: v.id, mainSauceId: null, mainProps: {} }, false);
+    setSelections(s => ({ ...s, variantId: v.id, mainSauceIds: [], mainProps: {} }));
+    setError(null);
+    if (stepIndex < steps.length - 1) setStepIndex(stepIndex + 1);
   };
 
-  const selectMainSauce = (sauceId: string) => {
-    advance({ ...selections, mainSauceId: sauceId }, false);
-  };
-
-  const selectExtraSauce = (groupId: string, sauceId: string) => {
-    const cur = selections.extras[groupId] ?? { optionId: null, sauceId: null, props: {} };
-    advance({ ...selections, extras: { ...selections.extras, [groupId]: { ...cur, sauceId } } }, false);
-  };
-
-  const selectExtraOption = (groupId: string, optionId: string) => {
-    advance({ ...selections, extras: { ...selections.extras, [groupId]: { optionId, sauceId: null, props: {} } } }, true);
-  };
-
-  const skipExtraOption = (_groupId: string) => {
-    const nextIdx = stepIndex + 1;
-    if (nextIdx >= steps.length) doFinish(selections);
-    else setStepIndex(nextIdx);
-  };
-
-  const setMainPropOption = (pid: string, opt: string) => {
-    setSelections((s) => ({ ...s, mainProps: { ...s.mainProps, [pid]: opt } }));
-  };
-
-  const setExtraPropOption = (groupId: string, pid: string, opt: string) => {
+  const toggleMainSauce = (sauceId: string) => {
     setSelections((s) => {
-      const cur = s.extras[groupId] ?? { optionId: null, sauceId: null, props: {} };
-      return { ...s, extras: { ...s.extras, [groupId]: { ...cur, props: { ...cur.props, [pid]: opt } } } };
+      const cur = s.mainSauceIds || [];
+      if (cur.includes(sauceId)) {
+        return { ...s, mainSauceIds: cur.filter((id) => id !== sauceId) };
+      }
+      if (cur.length >= 2) return s;
+      return { ...s, mainSauceIds: [...cur, sauceId] };
     });
   };
 
-  const answerMainPropOption = (pid: string, opt: string) => {
-    advance({ ...selections, mainProps: { ...selections.mainProps, [pid]: opt } }, false);
+  const toggleExtraSauce = (groupId: string, sauceId: string) => {
+    setSelections((s) => {
+      const ex = s.extras[groupId] ?? { optionId: null, sauceIds: [], props: {} };
+      const cur = ex.sauceIds || [];
+      let nextIds: string[];
+
+      if (cur.includes(sauceId)) {
+        nextIds = cur.filter((id) => id !== sauceId);
+      } else {
+        if (cur.length >= 2) return s;
+        nextIds = [...cur, sauceId];
+      }
+
+      return {
+        ...s,
+        extras: {
+          ...s.extras,
+          [groupId]: { ...ex, sauceIds: nextIds },
+        },
+      };
+    });
   };
 
-  const answerExtraPropOption = (groupId: string, pid: string, opt: string) => {
-    const cur = selections.extras[groupId] ?? { optionId: null, sauceId: null, props: {} };
-    advance({ ...selections, extras: { ...selections.extras, [groupId]: { ...cur, props: { ...cur.props, [pid]: opt } } } }, false);
+  const selectExtraOption = (groupId: string, optionId: string) => {
+    setSelections(s => ({
+      ...s,
+      extras: {
+        ...s.extras,
+        [groupId]: { optionId, sauceIds: [], props: {} }
+      }
+    }));
+    setError(null);
+    if (stepIndex < steps.length - 1) setStepIndex(stepIndex + 1);
   };
 
-  const skipMainProp = (pid: string) => {
-    const np = { ...selections.mainProps };
-    delete np[pid];
-    advance({ ...selections, mainProps: np }, false);
+  const skipExtraOption = (_groupId: string) => {
+    setError(null);
+    if (stepIndex < steps.length - 1) setStepIndex(stepIndex + 1);
+    else doFinish(selections);
   };
 
-  const skipExtraProp = (groupId: string, pid: string) => {
-    const cur = selections.extras[groupId] ?? { optionId: null, sauceId: null, props: {} };
-    const np = { ...cur.props };
-    delete np[pid];
-    advance({ ...selections, extras: { ...selections.extras, [groupId]: { ...cur, props: np } } }, false);
+  const toggleProperty = (
+    ctx: Ctx,
+    pid: string,
+    opt: string,
+    required: boolean
+  ) => {
+    setSelections((s) => {
+      if (ctx === 'main') {
+        const cur = s.mainProps[pid] || [];
+        let next: string[];
+        if (required) {
+          next = [opt];
+        } else {
+          next = cur.includes(opt) ? cur.filter((v) => v !== opt) : [...cur, opt];
+        }
+        return { ...s, mainProps: { ...s.mainProps, [pid]: next } };
+      } else {
+        const groupId = ctx.extra;
+        const ex = s.extras[groupId] ?? { optionId: null, sauceIds: [], props: {} };
+        const cur = ex.props[pid] || [];
+        let next: string[];
+        if (required) {
+          next = [opt];
+        } else {
+          next = cur.includes(opt) ? cur.filter((v) => v !== opt) : [...cur, opt];
+        }
+        return {
+          ...s,
+          extras: {
+            ...s.extras,
+            [groupId]: { ...ex, props: { ...ex.props, [pid]: next } },
+          },
+        };
+      }
+    });
+    setError(null);
   };
 
   const back = () => {
@@ -621,7 +698,6 @@ export function ProductBuilderDialog({
     if (!currentStep) return '';
     if (currentStep.kind === 'variant') return t('chooseVariant');
     if (currentStep.kind === 'sauce') return t('chooseSauceStep');
-    if (currentStep.kind === 'properties') return t('chooseProperties');
     return currentStep.group.label || t('chooseExtra');
   })();
 
@@ -631,19 +707,44 @@ export function ProductBuilderDialog({
   );
   const selectedVariantName = selectedVariant?.name;
 
+  const resolvedMain =
+    mainItem?.dish_kind === 'group' && selections.variantId
+      ? mainItem.variants?.find((x) => x.id === selections.variantId)
+      : mainItem;
+
+  const mainProps = validProps(resolvedMain?.properties);
+
+  const extraPropsToRender: { groupId: string; itemName: string; props: HydratedProperty[] }[] = [];
+  if (item.type === 'set' && item.set_extra_groups) {
+    for (const group of item.set_extra_groups) {
+      const ex = selections.extras[group.id];
+      const optId = ex?.optionId ?? (group.options.length === 1 ? group.options[0].item.id : null);
+      if (!optId) continue;
+      const optItem = group.options.find((o) => o.item.id === optId)?.item;
+      if (!optItem) continue;
+      const props = validProps(optItem.properties);
+      if (props.length > 0) {
+        extraPropsToRender.push({ groupId: group.id, itemName: optItem.name, props });
+      }
+    }
+  }
+
+  const hasProps = mainProps.length > 0 || extraPropsToRender.length > 0;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onCancel}>
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-lg max-h-[92dvh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onCancel}>
+      <div
+        className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-5xl h-[85vh] max-h-[90dvh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 p-4 border-b border-gray-200 shrink-0">
+        <div className="flex items-center justify-between gap-3 p-4 border-b border-gray-200 shrink-0 bg-slate-50">
           <div className="flex-1 min-w-0">
             <div className="text-[0.625rem] font-bold text-orange-600 uppercase tracking-wider">
               {stepLabel}
               {steps.length > 0 && ` · ${stepIndex + 1}/${steps.length}`}
             </div>
-
-            {/* ✅ Обновленный вывод названия с выбранным вариантом */}
-            <h3 className="text-lg font-black text-gray-900 flex items-center gap-2 min-w-0">
+            <h3 className="text-xl font-black text-gray-900 flex items-center gap-2 min-w-0">
               <span className="truncate">{item.name}</span>
               {selectedVariantName && (
                 <span className="text-xs font-black text-orange-600 bg-orange-100 px-2 py-1 rounded-md shrink-0 border border-orange-200">
@@ -651,13 +752,12 @@ export function ProductBuilderDialog({
                 </span>
               )}
             </h3>
-
           </div>
           <button
             onClick={onCancel}
-            className="p-2 rounded-lg text-gray-400 active:bg-gray-100 shrink-0"
+            className="p-2 rounded-lg text-gray-400 hover:bg-gray-200 transition-colors shrink-0"
           >
-            <X className="w-5 h-5" />
+            <X className="w-6 h-6" />
           </button>
         </div>
 
@@ -667,182 +767,205 @@ export function ProductBuilderDialog({
           </div>
         )}
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {currentStep?.kind === 'variant' && (
-            <div className="grid grid-cols-2 gap-2">
-              {currentStep.variants.map((v) => (
-                <button
-                  key={v.id}
-                  onClick={() => selectVariant(v)}
-                  className={`p-4 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${
-                    selections.variantId === v.id
-                      ? 'bg-orange-500 border-orange-500 text-white shadow-md'
-                      : 'bg-white border-gray-200 hover:border-orange-300'
-                  }`}
-                >
-                  <div className="text-base font-black">{v.name}</div>
-                  <div className={`text-sm font-bold ${selections.variantId === v.id ? 'text-white/90' : 'text-orange-600'}`}>
-                    {v.free ? '' : formatYen(v.price)}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+        {/* Body: Две колонки */}
+        <div className="flex-1 min-h-0 flex overflow-hidden">
 
-          {currentStep?.kind === 'sauce' && (
-            <div className="grid grid-cols-3 gap-3">
-              {currentStep.sauces.map((s) => {
-                const selected = currentStep.ctx === 'main' ? selections.mainSauceId === s.id : selections.extras[currentStep.ctx.extra]?.sauceId === s.id;
-                const sImg = imageOf(s.id, s.image_url);
-                const sColor = colorOf(s.id, s.color);
-                return (
-                  <button
-                    key={s.id}
-                    onClick={() => currentStep.ctx === 'main' ? selectMainSauce(s.id) : selectExtraSauce(currentStep.ctx.extra, s.id)}
-                    className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-[0.97] ${selected ? 'bg-orange-50 ring-4 ring-orange-300' : 'bg-white hover:bg-gray-50'}`}
-                  >
-                    <div className="relative rounded-lg overflow-hidden w-full aspect-square" style={{ borderWidth: 3, borderStyle: 'solid', borderColor: sColor ?? '#e5e7eb', background: '#ffffff' }}>
-                      {sImg ? <img src={sImg} alt={s.name} className="absolute inset-0 w-full h-full object-cover" /> : <div className="absolute inset-0" style={{ backgroundColor: sColor ?? '#e5e7eb', opacity: 0.25 }} />}
-                      {selected && <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-orange-500 text-white flex items-center justify-center shadow-md"><Check className="w-3 h-3" /></div>}
-                    </div>
-                    <span className="text-xs font-black text-gray-900 truncate w-full text-center leading-tight">{s.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          {/* ЛЕВАЯ КОЛОНКА: Шаги (Варианты, Соусы, Допы) */}
+          <div className="flex-1 flex flex-col min-w-0 bg-white relative">
+            <div className="flex-1 min-h-0 overflow-y-auto p-5">
 
-          {currentStep?.kind === 'properties' && (() => {
-            const ctx = currentStep.ctx;
-            const isMain = ctx === 'main';
-            const getVal = (pid: string): string | undefined => isMain ? selections.mainProps[pid] : selections.extras[(ctx as { extra: string }).extra]?.props[pid];
-
-            if (currentStep.props.length === 1) {
-              const p = currentStep.props[0];
-              const val = getVal(p.id);
-              const handlePick = (opt: string) => {
-                if (isMain) answerMainPropOption(p.id, opt);
-                else answerExtraPropOption((ctx as { extra: string }).extra, p.id, opt);
-              };
-              return (
-                <div className="py-2">
-                  <div className="text-center text-xl font-black text-gray-900 mb-4">{p.name}</div>
-                  <PropertyOptionsLayout options={p.options} selectedValue={val} onPick={handlePick} size="large" />
-                </div>
-              );
-            }
-
-            return (
-              <div className="space-y-3">
-                {currentStep.props.map((p) => {
-                  const val = getVal(p.id);
-                  const handlePick = (opt: string) => {
-                    if (isMain) setMainPropOption(p.id, opt);
-                    else setExtraPropOption((ctx as { extra: string }).extra, p.id, opt);
-                  };
-                  return (
-                    <div key={p.id} className="border-2 border-gray-200 rounded-xl p-3 bg-white">
-                      <div className="text-sm font-black text-gray-900 mb-2">{p.name}</div>
-                      <PropertyOptionsLayout options={p.options} selectedValue={val} onPick={handlePick} size="small" />
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
-
-          {currentStep?.kind === 'extra-option' && (
-            <div className="space-y-2">
-              <div className="text-sm text-gray-500 mb-2">
-                {currentStep.group.label || t('chooseExtra')}
-                {currentStep.group.required && <span className="text-red-500 ml-1">*</span>}
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                {currentStep.group.options.map((o) => {
-                  const selected = selections.extras[currentStep.group.id]?.optionId === o.item.id;
-                  const it = o.item;
-                  const itImg = imageOf(it.id, it.image_url);
-                  const itColor = colorOf(it.id, it.color);
-                  const itPrice = liveById.get(it.id)?.price ?? it.price;
-                  const itFree = liveById.get(it.id)?.free ?? it.free;
-                  return (
+              {/* Варианты */}
+              {currentStep?.kind === 'variant' && (
+                <div className="grid grid-cols-2 gap-3">
+                  {currentStep.variants.map((v) => (
                     <button
-                      key={o.option_id}
-                      onClick={() => selectExtraOption(currentStep.group.id, it.id)}
-                      className={`flex flex-col items-center gap-1 p-1.5 rounded-xl transition-all active:scale-[0.97] ${selected ? 'bg-purple-50 ring-4 ring-purple-300' : 'bg-white hover:bg-gray-50'}`}
+                      key={v.id}
+                      onClick={() => selectVariant(v)}
+                      className={`p-4 rounded-xl border-2 text-left transition-all active:scale-[0.98] ${
+                        selections.variantId === v.id
+                          ? 'bg-orange-500 border-orange-500 text-white shadow-md'
+                          : 'bg-white border-gray-200 hover:border-orange-300'
+                      }`}
                     >
-                      <div
-                        className="relative rounded-lg overflow-hidden w-full aspect-square"
-                        style={{ borderWidth: 3, borderStyle: 'solid', borderColor: itColor ?? '#e5e7eb', background: '#ffffff' }}
-                      >
-                        {itImg ? (
-                          <img src={itImg} alt={it.name} className="absolute inset-0 w-full h-full object-cover" />
-                        ) : (
-                          <div className="absolute inset-0 bg-gradient-to-br from-orange-400 via-orange-500 to-red-600 flex items-center justify-center">
-                            <span className="font-black text-white/90 text-xl drop-shadow">{it.name.slice(0, 2).toUpperCase()}</span>
-                          </div>
-                        )}
-                        {selected && (
-                          <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-md">
-                            <Check className="w-3 h-3" />
-                          </div>
-                        )}
+                      <div className="text-base font-black">{v.name}</div>
+                      <div className={`text-sm font-bold ${selections.variantId === v.id ? 'text-white/90' : 'text-orange-600'}`}>
+                        {v.free ? '' : formatYen(v.price)}
                       </div>
-                      <span className="text-xs font-black text-gray-900 truncate w-full text-center leading-tight">{it.name}</span>
-                      {!itFree && itPrice > 0 && (
-                        <span className="text-[0.6875rem] font-bold text-orange-600 leading-none">{formatYen(itPrice)}</span>
-                      )}
                     </button>
-                  );
-                })}
-              </div>
-              {!currentStep.group.required && (
-                <button onClick={() => skipExtraOption(currentStep.group.id)} className="w-full py-2 text-xs text-gray-500 underline">
-                  {t('skip')}
-                </button>
-              )}
-            </div>
-          )}
-
-          {error && <div className="mt-3 p-2.5 bg-red-50 border border-red-300 rounded-lg text-red-700 text-xs font-bold">{error}</div>}
-        </div>
-
-        <div className="p-3 border-t border-gray-200 flex gap-2 shrink-0">
-          <button onClick={back} className="flex items-center justify-center gap-1 px-4 py-3 rounded-xl bg-gray-100 active:bg-gray-200 text-gray-800 text-sm font-bold">
-            <ChevronLeft className="w-4 h-4" />
-            {stepIndex === 0 ? t('cancel') : t('back')}
-          </button>
-
-          {(() => {
-            const singlePropStep = currentStep?.kind === 'properties' && currentStep.props.length === 1 ? currentStep : null;
-            const showNext = currentStep && !(currentStep.kind === 'variant' || currentStep.kind === 'sauce' || currentStep.kind === 'extra-option' || singlePropStep);
-
-            if (singlePropStep) {
-              const p = singlePropStep.props[0];
-              const ctx = singlePropStep.ctx;
-              const isMain = ctx === 'main';
-              const handleSkip = () => {
-                if (isMain) skipMainProp(p.id);
-                else skipExtraProp((ctx as { extra: string }).extra, p.id);
-              };
-              return (
-                <button onClick={handleSkip} className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold flex items-center justify-center active:scale-[0.98] shadow-md shadow-orange-500/30 transition-all" title={t('skip')}>
-                  {currentPrice > 0 ? formatYen(currentPrice) : t('addToCartBtn')}
-                </button>
-              );
-            }
-
-            if (!showNext) {
-              return (
-                <div className="flex-1 py-3 rounded-xl bg-gray-200 text-gray-500 text-sm font-bold flex items-center justify-center cursor-not-allowed select-none">
-                  {currentPrice > 0 ? formatYen(currentPrice) : t('addToCartBtn')}
+                  ))}
                 </div>
-              );
-            }
+              )}
 
-            return (
+              {/* Соусы (авто-подбор размера под контейнер) */}
+              {currentStep?.kind === 'sauce' && (
+                <div className="flex flex-col h-full gap-4">
+                  <div className="flex items-center justify-between text-sm font-bold text-gray-500 shrink-0">
+                    <span>{t('chooseSauce')}</span>
+                    <span className="text-orange-600 bg-orange-50 px-2 py-1 rounded-md">Максимум 2</span>
+                  </div>
+
+                  <FitGrid
+                    count={currentStep.sauces.length}
+                    labelH={28}
+                    render={(i, size) => {
+                      const s = currentStep.sauces[i];
+                      const isExtra = currentStep.ctx !== 'main';
+                      const groupId = isExtra ? (currentStep.ctx as { extra: string }).extra : null;
+                      const selectedIds = isExtra
+                        ? selections.extras[groupId!]?.sauceIds || []
+                        : selections.mainSauceIds;
+                      const selected = selectedIds.includes(s.id);
+                      const isMaxed = selectedIds.length >= 2 && !selected;
+
+                      const sImg = imageOf(s.id, s.image_url);
+                      const sColor = colorOf(s.id, s.color);
+                      const fontSize = Math.max(9, Math.min(14, size * 0.13));
+                      const checkSize = Math.max(12, size * 0.16);
+
+                      return (
+                        <button
+                          key={s.id}
+                          onClick={() => (isExtra ? toggleExtraSauce(groupId!, s.id) : toggleMainSauce(s.id))}
+                          disabled={isMaxed}
+                          style={{ width: size }}
+                          className={`flex flex-col items-center gap-1 p-1 rounded-xl transition-all active:scale-[0.97] ${
+                            selected
+                              ? `bg-orange-50 ${size > 110 ? 'ring-4' : 'ring-2'} ring-orange-300`
+                              : isMaxed
+                              ? 'opacity-40 cursor-not-allowed bg-gray-50'
+                              : 'bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <div
+                            className="relative rounded-lg overflow-hidden w-full aspect-square"
+                            style={{ borderWidth: 2, borderStyle: 'solid', borderColor: sColor ?? '#e5e7eb', background: '#fff' }}
+                          >
+                            {sImg ? (
+                              <img src={sImg} alt={s.name} className="absolute inset-0 w-full h-full object-cover" />
+                            ) : (
+                              <div className="absolute inset-0" style={{ backgroundColor: sColor ?? '#e5e7eb', opacity: 0.25 }} />
+                            )}
+                            {selected && (
+                              <div
+                                className="absolute top-0.5 right-0.5 rounded-full bg-orange-500 text-white flex items-center justify-center shadow-sm"
+                                style={{ width: checkSize, height: checkSize }}
+                              >
+                                <Check style={{ width: checkSize * 0.65, height: checkSize * 0.65 }} />
+                              </div>
+                            )}
+                          </div>
+                          <span
+                            className="font-black text-gray-900 truncate w-full text-center leading-tight"
+                            style={{ fontSize }}
+                          >
+                            {s.name}
+                          </span>
+                        </button>
+                      );
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Дополнительные опции (Extras, авто-подбор размера) */}
+              {currentStep?.kind === 'extra-option' && (
+                <div className="flex flex-col h-full gap-3">
+                  <div className="text-sm font-bold text-gray-500 shrink-0">
+                    {currentStep.group.label || t('chooseExtra')}
+                    {currentStep.group.required && <span className="text-red-500 ml-1">*</span>}
+                  </div>
+
+                  <FitGrid
+                    count={currentStep.group.options.length}
+                    labelH={42}
+                    render={(i, size) => {
+                      const o = currentStep.group.options[i];
+                      const it = o.item;
+                      const selected = selections.extras[currentStep.group.id]?.optionId === it.id;
+                      const itImg = imageOf(it.id, it.image_url);
+                      const itColor = colorOf(it.id, it.color);
+                      const itPrice = liveById.get(it.id)?.price ?? it.price;
+                      const itFree = liveById.get(it.id)?.free ?? it.free;
+                      const fontSize = Math.max(9, Math.min(14, size * 0.13));
+                      const checkSize = Math.max(12, size * 0.16);
+
+                      return (
+                        <button
+                          key={o.option_id}
+                          onClick={() => selectExtraOption(currentStep.group.id, it.id)}
+                          style={{ width: size }}
+                          className={`flex flex-col items-center gap-1 p-1 rounded-xl transition-all active:scale-[0.97] ${
+                            selected
+                              ? `bg-purple-50 ${size > 110 ? 'ring-4' : 'ring-2'} ring-purple-300`
+                              : 'bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <div
+                            className="relative rounded-lg overflow-hidden w-full aspect-square"
+                            style={{ borderWidth: 2, borderStyle: 'solid', borderColor: itColor ?? '#e5e7eb', background: '#fff' }}
+                          >
+                            {itImg ? (
+                              <img src={itImg} alt={it.name} className="absolute inset-0 w-full h-full object-cover" />
+                            ) : (
+                              <div className="absolute inset-0 bg-gradient-to-br from-orange-400 via-orange-500 to-red-600 flex items-center justify-center">
+                                <span className="font-black text-white/90 drop-shadow" style={{ fontSize: size * 0.25 }}>
+                                  {it.name.slice(0, 2).toUpperCase()}
+                                </span>
+                              </div>
+                            )}
+                            {selected && (
+                              <div
+                                className="absolute top-0.5 right-0.5 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-sm"
+                                style={{ width: checkSize, height: checkSize }}
+                              >
+                                <Check style={{ width: checkSize * 0.65, height: checkSize * 0.65 }} />
+                              </div>
+                            )}
+                          </div>
+                          <span className="font-black text-gray-900 truncate w-full text-center leading-tight" style={{ fontSize }}>
+                            {it.name}
+                          </span>
+                          {!itFree && itPrice > 0 && (
+                            <span className="font-bold text-orange-600 leading-none" style={{ fontSize: fontSize * 0.85 }}>
+                              {formatYen(itPrice)}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    }}
+                  />
+
+                  {!currentStep.group.required && (
+                    <div className="shrink-0 pt-2">
+                      <button
+                        onClick={() => skipExtraOption(currentStep.group.id)}
+                        className="w-full py-2.5 text-xs text-gray-500 font-bold bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                      >
+                        {t('skip')}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Если шагов нет (например, простое блюдо без соусов) */}
+              {!currentStep && (
+                <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                  <p className="text-sm">Все параметры выбраны</p>
+                </div>
+              )}
+
+            </div>
+
+            {/* Кнопки (Внизу левой колонки) */}
+            <div className="p-3 border-t border-gray-200 bg-slate-50 flex gap-2 shrink-0">
+              <button onClick={back} className="flex items-center justify-center gap-1 px-4 py-3 rounded-xl bg-white border border-gray-300 hover:bg-gray-100 text-gray-700 text-sm font-bold transition-colors">
+                <ChevronLeft className="w-4 h-4" />
+                {stepIndex === 0 ? t('cancel') : t('back')}
+              </button>
+
               <button onClick={goNext} className="flex-1 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-bold transition-all active:scale-[0.98] shadow-md shadow-orange-500/30 flex items-center justify-center gap-1">
-                {stepIndex >= steps.length - 1 ? (
+                {stepIndex >= steps.length - 1 || steps.length === 0 ? (
                   <>
                     {t('addToCartBtn')} · {currentPrice > 0 ? formatYen(currentPrice) : ''}
                   </>
@@ -853,12 +976,105 @@ export function ProductBuilderDialog({
                   </>
                 )}
               </button>
-            );
-          })()}
+            </div>
+          </div>
+
+          {/* ПРАВАЯ КОЛОНКА: Свойства */}
+          {hasProps && (
+            <div className="w-[340px] shrink-0 border-l border-gray-200 bg-slate-50 flex flex-col min-h-0">
+              <div className="p-4 border-b border-gray-200 shrink-0">
+                <h4 className="font-black text-sm text-gray-800 uppercase tracking-wide">{t('chooseProperties')}</h4>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-6">
+                {/* Свойства главного блюда */}
+                {mainProps.length > 0 && (
+                  <div className="space-y-4">
+                    {mainProps.map((p) => {
+                      const values = selections.mainProps[p.id] || [];
+                      return (
+                        <div key={p.id} className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm">
+                          <div className="text-sm font-bold text-gray-800 mb-2 flex items-start justify-between gap-2">
+                            <span>{p.name} {p.required && <span className="text-red-500">*</span>}</span>
+                            {p.price ? <span className="text-orange-600 text-[0.6875rem] bg-orange-50 px-1.5 py-0.5 rounded shrink-0">+{formatYen(p.price)}</span> : null}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {p.options.map((opt) => {
+                              const isSelected = values.includes(opt);
+                              return (
+                                <button
+                                  key={opt}
+                                  onClick={() => toggleProperty('main', p.id, opt, p.required)}
+                                  className={`px-3 py-1.5 rounded-lg border-2 font-bold text-xs transition-all active:scale-[0.98] ${
+                                    isSelected
+                                      ? 'bg-orange-500 border-orange-500 text-white shadow-sm'
+                                      : 'bg-white border-gray-200 text-gray-700 hover:border-orange-300'
+                                  }`}
+                                >
+                                  {opt}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Свойства допов (если выбраны) */}
+                {extraPropsToRender.map(({ groupId, itemName, props }) => (
+                  <div key={groupId} className="space-y-4">
+                    <div className="flex items-center gap-2">
+                      <span className="h-px bg-gray-300 flex-1"></span>
+                      <span className="text-[0.6875rem] font-black text-gray-400 uppercase">{itemName}</span>
+                      <span className="h-px bg-gray-300 flex-1"></span>
+                    </div>
+                    {props.map((p) => {
+                      const ex = selections.extras[groupId];
+                      const values = ex?.props[p.id] || [];
+                      return (
+                        <div key={p.id} className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm">
+                          <div className="text-sm font-bold text-gray-800 mb-2 flex items-start justify-between gap-2">
+                            <span>{p.name} {p.required && <span className="text-red-500">*</span>}</span>
+                            {p.price ? <span className="text-orange-600 text-[0.6875rem] bg-orange-50 px-1.5 py-0.5 rounded shrink-0">+{formatYen(p.price)}</span> : null}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {p.options.map((opt) => {
+                              const isSelected = values.includes(opt);
+                              return (
+                                <button
+                                  key={opt}
+                                  onClick={() => toggleProperty({ extra: groupId }, p.id, opt, p.required)}
+                                  className={`px-3 py-1.5 rounded-lg border-2 font-bold text-xs transition-all active:scale-[0.98] ${
+                                    isSelected
+                                      ? 'bg-orange-500 border-orange-500 text-white shadow-sm'
+                                      : 'bg-white border-gray-200 text-gray-700 hover:border-orange-300'
+                                  }`}
+                                >
+                                  {opt}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
         </div>
+
+        {/* Ошибка */}
+        {error && (
+          <div className="p-3 bg-red-50 border-t border-red-200 text-red-700 text-sm font-bold text-center shrink-0">
+            {error}
+          </div>
+        )}
       </div>
     </div>
   );
 }
-
-export type { TranslationKey };
