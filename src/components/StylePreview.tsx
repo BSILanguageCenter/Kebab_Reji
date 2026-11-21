@@ -1,6 +1,8 @@
 // src/components/StylePreview.tsx
 import { useMemo, useState } from 'react';
-import { useI18n } from '@/locale';
+import { Send } from 'lucide-react';
+import { SendToKitchenButton } from '@/components/SendToKitchenButton';
+import { useI18n, type TranslationKey } from '@/locale';
 import { formatYen } from '@/locale/format';
 import { useLayoutSettings } from '@/lib/layoutSettings';
 import { useViewport } from '@/lib/useViewport';
@@ -96,16 +98,18 @@ const MOCK_CART: MockCartLine[] = [
 // ============================================================
 // ХЕЛПЕРЫ
 // ============================================================
+type TFn = (key: TranslationKey) => string;
+
 function typeEmoji(t: OrderType): string {
   if (t === 'INSIDE') return '🍽️';
   if (t === 'ON_THE_WAY') return '🚶';
   return '🥡';
 }
 
-function typeLabel(t: OrderType, lang: string): string {
-  if (t === 'INSIDE') return lang === 'ru' ? 'В зале' : 'Inside';
-  if (t === 'ON_THE_WAY') return lang === 'ru' ? 'По дороге' : 'On the way';
-  return lang === 'ru' ? 'С собой' : 'Takeaway';
+function typeLabel(type: OrderType, t: TFn): string {
+  if (type === 'INSIDE') return t('typeInside');
+  if (type === 'ON_THE_WAY') return t('typeOnTheWay');
+  return t('typeTakeaway');
 }
 
 function typeBadgeCls(t: OrderType): string {
@@ -114,10 +118,10 @@ function typeBadgeCls(t: OrderType): string {
   return 'bg-purple-100 text-purple-700';
 }
 
-function statusLabel(s: MockOrder['status'], lang: string): string {
-  if (s === 'READY') return lang === 'ru' ? '✓ Готов' : '✓ Ready';
-  if (s === 'PREPARING') return lang === 'ru' ? 'Готовится' : 'Preparing';
-  return lang === 'ru' ? 'Новый' : 'New';
+function statusLabel(s: MockOrder['status'], t: TFn): string {
+  if (s === 'READY') return t('statusReadyShort');
+  if (s === 'PREPARING') return t('statusPreparing');
+  return t('statusNew');
 }
 
 // ============================================================
@@ -207,13 +211,11 @@ function MiniGrid({
 function OrdersPanel({
   orders,
   layout,
-  lang,
   headerSize,
   numberSize,
 }: {
   orders: MockOrder[];
   layout: ScaledLayout;
-  lang: string;
   headerSize: number;
   numberSize: number;
 }) {
@@ -262,19 +264,17 @@ function OrdersPanel({
                   o.type
                 )}`}
               >
-                {typeEmoji(o.type)} {typeLabel(o.type, lang)}
+                {typeEmoji(o.type)} {typeLabel(o.type, t)}
               </span>
             </div>
             <div className="mt-1 text-[0.6875rem] font-bold text-slate-500">
-              {statusLabel(o.status, lang)}
+              {statusLabel(o.status, t)}
             </div>
             <div className="flex items-center justify-between mt-1">
               <span className="text-[0.6875rem] text-slate-500">
                 {o.minutesAgo === 0
-                  ? lang === 'ru'
-                    ? 'только что'
-                    : 'just now'
-                  : `${o.minutesAgo} ${lang === 'ru' ? 'мин' : 'min'}`}
+                  ? t('timeAgoJustNow')
+                  : `${o.minutesAgo} ${t('min')}`}
               </span>
               <span className="text-sm font-black text-slate-700 tabular-nums">
                 {formatYen(o.total)}
@@ -293,18 +293,17 @@ function OrdersPanel({
 function CartPanel({
   cart,
   layout,
-  lang,
 }: {
   cart: MockCartLine[];
   layout: ScaledLayout;
-  lang: string;
 }) {
+  const { t } = useI18n();
   const total = cart.reduce((s, c) => s + c.qty * c.price, 0);
   return (
     <>
       <div className="px-4 py-3 border-b border-slate-200 shrink-0 bg-slate-50">
         <h2 className="text-base font-black text-slate-900">
-          {lang === 'ru' ? 'Текущий заказ' : 'Current order'}
+          {t('previewCurrentOrder')}
         </h2>
       </div>
       <div
@@ -342,14 +341,17 @@ function CartPanel({
       <div className="p-3 border-t border-slate-200 bg-white shrink-0">
         <div className="flex items-end justify-between">
           <span className="text-sm font-bold text-slate-500">
-            {lang === 'ru' ? 'Итого' : 'Total'}
+            {t('total')}
           </span>
           <span className="text-2xl font-black text-slate-900 tabular-nums leading-none">
             {formatYen(total)}
           </span>
         </div>
-        <div className="mt-3 w-full h-12 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black flex items-center justify-center text-sm shadow-lg shadow-orange-500/30">
-          {lang === 'ru' ? 'Отправить на кухню' : 'Send to kitchen'}
+        <div className="mt-3">
+          <SendToKitchenButton
+            icon={<Send className="w-5 h-5" />}
+            label={t('sendToKitchen')}
+          />
         </div>
       </div>
     </>
@@ -360,7 +362,7 @@ function CartPanel({
 // ОСНОВНОЙ КОМПОНЕНТ
 // ============================================================
 export function StylePreview({ className }: { className?: string } = {}) {
-  const { lang } = useI18n();
+  const { t } = useI18n();
   const { scale: ui } = useViewport();
   const [rawLayout] = useLayoutSettings();
   const [tab, setTab] = useState<PreviewTab>('cashier');
@@ -398,13 +400,13 @@ export function StylePreview({ className }: { className?: string } = {}) {
       {/* === Переключатель: Касса / Зал === */}
       <div className="shrink-0 flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-300">
         <span className="text-[0.6875rem] font-black text-slate-500 uppercase tracking-wide">
-          {lang === 'ru' ? 'Превью стиля' : 'Style preview'}
+          {t('stylePreview')}
         </span>
         <div className="ml-auto flex gap-1 rounded-lg bg-slate-100 p-1">
           {(
             [
-              ['cashier', lang === 'ru' ? 'Касса' : 'Cashier'],
-              ['hall', lang === 'ru' ? 'Зал' : 'Hall'],
+              ['cashier', t('cashier')],
+              ['hall', t('hall')],
             ] as const
           ).map(([key, label]) => (
             <button
@@ -425,12 +427,11 @@ export function StylePreview({ className }: { className?: string } = {}) {
       {tab === 'cashier' ? (
         <CashierPreview
           layout={layout}
-          lang={lang}
           headerSize={headerSize}
           numberSize={numberSize}
         />
       ) : (
-        <HallPreview layout={layout} lang={lang} headerSize={headerSize} />
+        <HallPreview layout={layout} headerSize={headerSize} />
       )}
     </div>
   );
@@ -441,12 +442,10 @@ export function StylePreview({ className }: { className?: string } = {}) {
 // ============================================================
 function CashierPreview({
   layout,
-  lang,
   headerSize,
   numberSize,
 }: {
   layout: ScaledLayout;
-  lang: string;
   headerSize: number;
   numberSize: number;
 }) {
@@ -461,7 +460,6 @@ function CashierPreview({
         <OrdersPanel
           orders={MOCK_ORDERS}
           layout={layout}
-          lang={lang}
           headerSize={headerSize}
           numberSize={numberSize}
         />
@@ -559,7 +557,7 @@ function CashierPreview({
         className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
         style={{ width: layout.cartWidth }}
       >
-        <CartPanel cart={MOCK_CART} layout={layout} lang={lang} />
+        <CartPanel cart={MOCK_CART} layout={layout} />
       </div>
     </div>
   );
@@ -570,11 +568,9 @@ function CashierPreview({
 // ============================================================
 function HallPreview({
   layout,
-  lang,
   headerSize,
 }: {
   layout: ScaledLayout;
-  lang: string;
   headerSize: number;
 }) {
   const { t } = useI18n();
@@ -616,7 +612,7 @@ function HallPreview({
         className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
         style={{ width: layout.cartWidth }}
       >
-        <CartPanel cart={MOCK_CART} layout={layout} lang={lang} />
+        <CartPanel cart={MOCK_CART} layout={layout} />
       </div>
     </div>
   );

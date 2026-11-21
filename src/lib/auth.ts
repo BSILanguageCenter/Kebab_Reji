@@ -4,6 +4,7 @@ import {
   signOut as firebaseSignOut,
 } from 'firebase/auth';
 import { auth } from './firebase';
+import { supabase } from './supabase';
 
 export type Role = 'admin' | 'manager' | 'cashier';
 export interface AuthUser { login: string; role: Role; loggedInAt: number; }
@@ -18,6 +19,8 @@ const STORAGE_KEY = 'kebab-pos-auth';
  */
 export function detectRole(login: string): Role {
   const l = login.trim().toLowerCase();
+  // Разработчик видит всё (как admin): меню, статистика, все роли
+  if (isDeveloper(l)) return 'admin';
   if (l.includes('admin')) return 'admin';
   if (l.includes('manager')) return 'manager';
   return 'cashier';
@@ -54,6 +57,19 @@ export async function login(
       loggedInAt: Date.now(),
     };
 
+    // 3. Разработчик: тот же email/пароль для Supabase (нужен для DELETE по RLS).
+    if (isDeveloper(email)) {
+      const { error: sbErr } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (sbErr) {
+        console.warn('[auth] Supabase sign-in (developer) failed:', sbErr.message);
+      } else {
+        console.info('[auth] Supabase sign-in OK (роль authenticated):', email);
+      }
+    }
+
     localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
     return user;
   } catch (error: unknown) {
@@ -87,6 +103,8 @@ export function getCurrentUser(): AuthUser | null {
   try {
     const parsed = JSON.parse(raw) as AuthUser;
     if (!parsed?.login || !parsed?.role) return null;
+    // сохранённая ранее сессия разработчика тоже получает полный доступ
+    if (isDeveloper(parsed.login)) parsed.role = 'admin';
     return parsed;
   } catch {
     return null;
@@ -99,11 +117,25 @@ export function getCurrentUser(): AuthUser | null {
  */
 export async function logout(): Promise<void> {
   try {
+    await supabase.auth.signOut();
     await firebaseSignOut(auth);
   } catch (e) {
     console.warn('[auth] Firebase signOut failed:', e);
   }
   localStorage.removeItem(STORAGE_KEY);
+}
+
+/**
+ * Режим разработчика: последние три буквы логина перед @ — «pro»
+ * (например kebabpospro@wago.uz). Роль (admin / manager / cashier)
+ * от этого не меняется — открывается только кнопка разработчика.
+ * ВАЖНО: это проверка в интерфейсе. Настоящую защиту удаления данных
+ * нужно держать в правилах Supabase (RLS) и Firebase.
+ */
+export function isDeveloper(login: string | null | undefined): boolean {
+  if (!login) return false;
+  const local = login.trim().toLowerCase().split('@')[0] ?? '';
+  return local.endsWith('pro');
 }
 
 export function canSeeStatistics(role: Role): boolean {

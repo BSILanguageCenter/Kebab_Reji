@@ -1,7 +1,8 @@
 /* eslint-disable react-refresh/only-export-components */
-import { memo, useRef } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { MoreVertical, ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatYen } from '@/locale/format';
+import { useI18n } from '@/locale';
 import type { MenuItem } from '@/types/database';
 
 type Mode = 'view' | 'edit';
@@ -16,6 +17,8 @@ interface MenuCardProps {
   mode?: Mode;
   /** Варианты группы переносятся на новую строку (узкие экраны) */
   wrapVariants?: boolean;
+  /** Группа рисуется ОДНОЙ иконкой (клик → окно выбора блюда, затем свойства) */
+  singleIcon?: boolean;
   /** Отступ сетки (px): карточка группы заполняет ячейку и держит тот же зазор */
   gap?: number;
 
@@ -106,6 +109,99 @@ function ImagePlaceholder({
   );
 }
 
+/** Фиолетовый — цвет сетов (рамка вокруг иконки/карточки). */
+const FLIP_MS = 700;
+const FLIP_EVERY_MS = 7000;
+
+/** Картинки блюд внутри группы/сета (нужно ≥2, иначе пусто). */
+export function collectFlipImages(
+  item: MenuItem,
+  variants?: MenuItem[]
+): string[] {
+  const uniq = (a: (string | null | undefined)[]) =>
+    Array.from(new Set(a.filter((x): x is string => Boolean(x))));
+  let imgs = uniq((variants ?? []).map((v) => v.image_url));
+  if (imgs.length < 2 && item.type === 'set') {
+    imgs = uniq(item.set_main?.variants?.map((v) => v.image_url) ?? []);
+  }
+  return imgs.length > 1 ? imgs : [];
+}
+
+/**
+ * Несколько картинок в одной иконке: каждые 7 секунд страница
+ * «перелистывается», как в книге, и открывается следующая картинка.
+ */
+export function FlipImage({ images, alt }: { images: string[]; alt: string }) {
+  const n = images.length;
+  const [idx, setIdx] = useState(0);
+  const [flipping, setFlipping] = useState(false);
+
+  useEffect(() => {
+    if (n < 2) return;
+    const reduce =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let tick: number | undefined;
+    let done: number | undefined;
+    const run = () => {
+      if (document.hidden) return;
+      if (reduce) {
+        setIdx((i) => (i + 1) % n);
+        return;
+      }
+      setFlipping(true);
+      done = window.setTimeout(() => {
+        setIdx((i) => (i + 1) % n);
+        setFlipping(false);
+      }, FLIP_MS);
+    };
+    // небольшой случайный сдвиг, чтобы карточки не листались хором
+    const first = window.setTimeout(() => {
+      run();
+      tick = window.setInterval(run, FLIP_EVERY_MS);
+    }, Math.random() * 1200);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(tick);
+      window.clearTimeout(done);
+    };
+  }, [n]);
+
+  const cur = idx % n;
+  const next = (cur + 1) % n;
+
+  return (
+    <div
+      className="absolute inset-0 pointer-events-none"
+      style={{ perspective: 900 }}
+    >
+      {/* следующая картинка — лежит под страницей */}
+      <img
+        src={images[next]}
+        alt=""
+        className="absolute inset-0 w-full h-full object-cover"
+        draggable={false}
+      />
+      {flipping && <div className="page-flip-under absolute inset-0 bg-black" />}
+      {/* текущая «страница» */}
+      <div
+        className={`absolute inset-0 ${flipping ? 'page-flip' : ''}`}
+        style={{ transformOrigin: 'left center', backfaceVisibility: 'hidden' }}
+      >
+        <img
+          src={images[cur]}
+          alt={alt}
+          className="absolute inset-0 w-full h-full object-cover"
+          draggable={false}
+        />
+        {flipping && (
+          <div className="page-flip-shade absolute inset-0 bg-gradient-to-l from-black/50 via-transparent to-transparent" />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ImageSquare({
   src,
   name,
@@ -115,6 +211,8 @@ function ImageSquare({
   radius,
   fontSize,
   fluid,
+  images,
+  accent,
 }: {
   src: string | null;
   name: string;
@@ -125,6 +223,10 @@ function ImageSquare({
   fontSize: number;
   /** true — квадрат занимает всю ширину родителя (size игнорируется) */
   fluid?: boolean;
+  /** несколько картинок — листаются каждые 3 секунды */
+  images?: string[];
+  /** цвет рамки (фиолетовый у сетов) */
+  accent?: string;
 }) {
   const isSauce = type === 'sauce';
   return (
@@ -135,19 +237,27 @@ function ImageSquare({
         height: fluid ? undefined : size,
         aspectRatio: fluid ? '1 / 1' : undefined,
         borderRadius: radius,
-        borderColor: isSauce ? color ?? '#e5e7eb' : '#ffffff',
-        borderWidth: isSauce ? 4 : 2,
+        borderColor: accent
+          ? accent
+          : isSauce
+          ? color ?? '#e5e7eb'
+          : 'var(--card-ring, #ffffff)',
+        borderWidth: accent ? 3 : isSauce ? 4 : 2,
       }}
     >
-      {src ? (
+      {src || (images && images.length > 0) ? (
         <>
-          <img
-            src={src}
-            alt={name}
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-            loading="lazy"
-            draggable={false}
-          />
+          {images && images.length > 1 ? (
+            <FlipImage images={images} alt={name} />
+          ) : (
+            <img
+              src={src ?? images![0]}
+              alt={name}
+              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+              loading="lazy"
+              draggable={false}
+            />
+          )}
           {!isSauce && (
             <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent pointer-events-none" />
           )}
@@ -204,6 +314,7 @@ function MoveArrows({
   onMoveLeft?: () => void;
   onMoveRight?: () => void;
 }) {
+  const { t } = useI18n();
   const cls =
     'absolute z-20 w-6 h-6 -translate-y-1/2 rounded-full border border-slate-300 bg-white/95 text-slate-700 shadow flex items-center justify-center cursor-pointer transition-opacity opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-orange-100 hover:border-orange-400';
   return (
@@ -219,7 +330,7 @@ function MoveArrows({
           onPointerDown={(e) => e.stopPropagation()}
           className={`${cls} left-1`}
           style={{ top }}
-          title="Сдвинуть влево"
+          title={t('shiftLeft')}
         >
           <ChevronLeft className="w-4 h-4" />
         </button>
@@ -235,7 +346,7 @@ function MoveArrows({
           onPointerDown={(e) => e.stopPropagation()}
           className={`${cls} right-1`}
           style={{ top }}
-          title="Сдвинуть вправо"
+          title={t('shiftRight')}
         >
           <ChevronRight className="w-4 h-4" />
         </button>
@@ -256,6 +367,7 @@ export const MenuCard = memo(function MenuCard({
   cardRadius,
   mode = 'view',
   wrapVariants,
+  singleIcon,
   gap = 12,
   onClick,
   onVariantClick,
@@ -267,11 +379,24 @@ export const MenuCard = memo(function MenuCard({
   isDragged,
   onOpenMenu,
 }: MenuCardProps) {
-  const isGroup = (variants?.length ?? 0) > 0;
+  const { t } = useI18n();
+  const groupCount = variants?.length ?? 0;
+  const isGroup = groupCount > 0 && !singleIcon;
+  const isSingleGroup = groupCount > 0 && Boolean(singleIcon);
+  const groupMinPrice = isSingleGroup
+    ? Math.min(...variants!.filter((v) => !v.free).map((v) => v.price), Infinity)
+    : Infinity;
+  const shownPrice =
+    item.price > 0 ? item.price : Number.isFinite(groupMinPrice) ? groupMinPrice : 0;
   const isInactive = !item.active;
   const nameSize = compact ? textSize * 0.85 : textSize;
   const priceSize = compact ? textSize * 0.85 : textSize;
   const { onPointerDown, shouldClick } = useClickOrDrag();
+
+  // Одна иконка у группы/сета с несколькими блюдами: картинки листаются
+  const flipImages: string[] = isSingleGroup
+    ? collectFlipImages(item, variants)
+    : [];
 
   const onContextMenu = (e: React.MouseEvent) => {
     if (mode !== 'edit' || !onOpenMenu) return;
@@ -291,7 +416,7 @@ export const MenuCard = memo(function MenuCard({
       }}
       onPointerDown={(e) => e.stopPropagation()}
       className="absolute top-1 right-1 z-30 w-7 h-7 rounded-full bg-white/95 backdrop-blur shadow-md border border-slate-300 text-slate-700 flex items-center justify-center hover:bg-white hover:border-orange-400 hover:text-orange-600 active:scale-95 transition-all"
-      title="Действия"
+      title={t('actions')}
     >
       <MoreVertical className="w-4 h-4" />
     </button>
@@ -345,8 +470,11 @@ export const MenuCard = memo(function MenuCard({
                   ? (item.set_main?.variants?.[0]?.image_url ??
                     item.set_main?.image_url ??
                     null)
+                  : isSingleGroup
+                  ? (variants![0]?.image_url ?? null)
                   : null
               }
+              images={flipImages.length > 1 ? flipImages : undefined}
               name={item.name}
               type={item.type}
               color={item.color}
@@ -355,24 +483,22 @@ export const MenuCard = memo(function MenuCard({
               fontSize={nameSize}
             />
 
-            <div className="absolute top-1 left-1 flex flex-col gap-1 pointer-events-none">
-              {item.type === 'set' && (
-                <span
-                  className="font-black bg-purple-600 text-white px-1.5 py-0.5 rounded shadow-md"
-                  style={{ fontSize: nameSize * 0.65 }}
-                >
-                  SET
-                </span>
-              )}
-              {item.free && (
-                <span
-                  className="font-black bg-green-500 text-white px-1.5 py-0.5 rounded shadow-md"
-                  style={{ fontSize: nameSize * 0.65 }}
-                >
-                  FREE
-                </span>
-              )}
-            </div>
+            {item.type === 'set' && (
+              <div
+                aria-hidden
+                className="absolute inset-0 z-10 pointer-events-none border-2 border-orange-500"
+                style={{ borderRadius: cardRadius }}
+              />
+            )}
+
+            {isSingleGroup && (
+              <span
+                className="absolute top-1.5 left-1.5 font-black bg-orange-500 text-white px-1.5 py-0.5 rounded-md shadow-md pointer-events-none leading-none"
+                style={{ fontSize: nameSize * 0.75 }}
+              >
+                ×{groupCount}
+              </span>
+            )}
 
             {isInactive && (
               <div
@@ -390,7 +516,13 @@ export const MenuCard = memo(function MenuCard({
           </div>
 
           <div
-            className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
+            className={`mt-1 text-center font-black truncate w-full px-0.5 leading-[1.05] ${
+              item.type === 'set'
+                ? 'bg-orange-500 text-white rounded-md py-0.5 shadow-sm'
+                : item.free
+                ? 'text-green-600'
+                : 'text-slate-800'
+            }`}
             style={{ fontSize: nameSize }}
             title={item.name}
           >
@@ -399,15 +531,15 @@ export const MenuCard = memo(function MenuCard({
 
           <div
             className={`mt-0.5 text-center font-black w-full leading-none ${
-              item.free
-                ? 'text-green-600'
-                : item.price > 0
-                ? 'text-orange-600'
-                : 'text-slate-400'
+              shownPrice > 0 ? 'text-orange-600' : 'text-slate-400'
             }`}
             style={{ fontSize: priceSize }}
           >
-            {item.free ? 'FREE' : item.price > 0 ? formatYen(item.price) : '—'}
+            {item.free
+              ? '\u00A0'
+              : shownPrice > 0
+              ? `${isSingleGroup && item.price <= 0 ? (t('fromPrefix')) : ''}${formatYen(shownPrice)}`
+              : '—'}
           </div>
         </div>
 
@@ -464,9 +596,11 @@ export const MenuCard = memo(function MenuCard({
         onClick={() => {
           if (mode === 'view') onClick(item);
         }}
-        className={`bg-slate-200 shadow-md ring-1 ring-slate-400/70 hover:ring-orange-400 flex flex-col overflow-hidden transition-all ${
-          isInactive ? 'opacity-70' : ''
-        }`}
+        className={`bg-slate-200 shadow-md hover:ring-orange-400 flex flex-col overflow-hidden transition-all ${
+          item.type === 'set'
+            ? 'ring-2 ring-orange-500'
+            : 'ring-1 ring-slate-400/70'
+        } ${isInactive ? 'opacity-70' : ''}`}
         style={{
           width: '100%',
           minHeight: wrapVariants
@@ -482,34 +616,21 @@ export const MenuCard = memo(function MenuCard({
             // detail === 0 — активация с клавиатуры
             if (mode === 'view' || e.detail === 0) onClick(item);
           }}
-          className="flex items-center justify-between w-full px-2 py-1.5 border-b border-slate-300 bg-gradient-to-r from-slate-300/80 to-slate-300 hover:from-orange-100 hover:to-orange-100 transition-colors shrink-0 leading-none"
+          className={`grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center w-full py-1.5 border-b transition-colors shrink-0 leading-none ${
+            item.type === 'set'
+              ? 'border-orange-600 bg-orange-500 hover:bg-orange-600'
+              : 'border-slate-300 bg-gradient-to-r from-slate-300/80 to-slate-300 hover:from-orange-100 hover:to-orange-100'
+          }`}
           style={{
             borderTopLeftRadius: cardRadius,
             borderTopRightRadius: cardRadius,
+            // отступ растёт вместе со скруглением — текст не заходит в угол
+            paddingInline: Math.max(8, Math.round(cardRadius * 0.75)),
+            columnGap: 4,
           }}
         >
-          <span
-            className="font-black text-slate-900 tracking-wide truncate text-left leading-none pr-8"
-            style={{ fontSize: nameSize }}
-          >
-            {item.name}
-          </span>
-
-          <div className="flex items-center gap-1 shrink-0 ml-1">
-            {item.type === 'set' && (
-              <span
-                className="font-black bg-purple-600 text-white px-1.5 rounded-full leading-none py-0.5"
-                style={{ fontSize: nameSize * 0.75 }}
-              >
-                SET
-              </span>
-            )}
-            <span
-              className="font-black bg-orange-500 text-white px-1.5 rounded-full leading-none py-0.5"
-              style={{ fontSize: nameSize * 0.75 }}
-            >
-              ×{variants!.length}
-            </span>
+          {/* слева — бейджи, по центру — название, справа — место под меню «⋮» */}
+          <div className="flex items-center gap-1 justify-start min-w-0 overflow-hidden">
             {isInactive && (
               <span
                 className="font-black bg-slate-700 text-white px-1.5 rounded-full leading-none py-0.5 uppercase tracking-wider"
@@ -519,6 +640,18 @@ export const MenuCard = memo(function MenuCard({
               </span>
             )}
           </div>
+
+          <span
+            className={`font-black tracking-wide text-center leading-none truncate min-w-0 max-w-full ${
+              item.type === 'set' ? 'text-white' : 'text-slate-900'
+            }`}
+            style={{ fontSize: nameSize }}
+            title={item.name}
+          >
+            {item.name}
+          </span>
+
+          <div aria-hidden className="min-w-0" />
         </button>
 
         <div
@@ -562,19 +695,19 @@ export const MenuCard = memo(function MenuCard({
                 fontSize={nameSize}
               />
               <div
-                className="mt-1 text-center font-black text-slate-800 truncate w-full px-0.5 leading-[1.05]"
+                className={`mt-1 text-center font-black truncate w-full px-0.5 leading-[1.05] ${
+                  v.free ? 'text-green-600' : 'text-slate-800'
+                }`}
                 style={{ fontSize: nameSize }}
                 title={v.name}
               >
                 {v.name}
               </div>
               <div
-                className={`mt-0.5 text-center font-black w-full leading-none ${
-                  v.free ? 'text-green-600' : 'text-orange-600'
-                }`}
+                className="mt-0.5 text-center font-black w-full leading-none text-orange-600"
                 style={{ fontSize: priceSize }}
               >
-                {v.free ? 'FREE' : formatYen(v.price)}
+                {v.free ? '\u00A0' : formatYen(v.price)}
               </div>
             </button>
           ))}

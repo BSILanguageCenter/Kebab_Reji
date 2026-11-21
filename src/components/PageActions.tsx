@@ -1,7 +1,12 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-export type PageRole = 'cashier' | 'queue' | 'kitchen' | 'manager';
+export type PageRole =
+  | 'cashier'
+  | 'queue'
+  | 'kitchen'
+  | 'manager'
+  | 'developer';
 
 /** Контейнер (слот) в верхней панели App.tsx */
 export const PageActionsContext = createContext<HTMLDivElement | null>(null);

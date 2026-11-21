@@ -29,6 +29,18 @@ export async function fetchAllProductsFromDb(): Promise<MenuItem[]> {
   }
   if (!data) return [];
 
+  {
+    const { data: sess } = await supabase.auth.getSession();
+    const who = sess.session?.user.email ?? 'anon (не вошли в Supabase)';
+    console.info(`[menu] products из Supabase: ${data.length} · сессия: ${who}`);
+    if (data.length === 0) {
+      console.warn(
+        '[menu] Supabase вернул 0 позиций — проверьте RLS SELECT для роли',
+        sess.session ? 'authenticated' : 'anon'
+      );
+    }
+  }
+
   return data
     .map((row) => row.data as MenuItem)
     .filter((it): it is MenuItem => it != null && typeof it === 'object');
@@ -98,6 +110,39 @@ export async function upsertProductsToDb(
   }
 }
 
+/**
+ * Точечная синхронизация: отправляет только изменённые карточки и удаляет
+ * только удалённые. Не затрагивает остальное меню в облаке.
+ * Бросает ошибку при неудаче — вызывающий код повторяет попытку.
+ */
+export async function upsertProductsPartialToDb(
+  changed: MenuItem[],
+  removedIds: string[]
+): Promise<void> {
+  if (changed.length > 0) {
+    const now = new Date().toISOString();
+    const rows = changed.map((item) => ({
+      id: item.id,
+      data: item,
+      type: item.type,
+      name: item.name,
+      active: item.active,
+      sort_order: item.sort_order,
+      updated_at: now,
+    }));
+    const { error } = await supabase.from(TABLE).upsert(rows, { onConflict: 'id' });
+    if (error) {
+      throw new Error(`Supabase partial upsert failed: ${error.message}`);
+    }
+  }
+  if (removedIds.length > 0) {
+    const { error } = await supabase.from(TABLE).delete().in('id', removedIds);
+    if (error) {
+      throw new Error(`Supabase partial delete failed: ${error.message}`);
+    }
+  }
+}
+
 export async function upsertProductToDb(item: MenuItem): Promise<void> {
   const now = new Date().toISOString();
   const { error } = await supabase.from(TABLE).upsert(
@@ -132,14 +177,28 @@ export function subscribeProductsFromDb(
   callback: (items: MenuItem[]) => void
 ): () => void {
   let cancelled = false;
+  let inFlight = false;
 
-  fetchAllProductsFromDb()
-    .then((items) => {
-      if (!cancelled) callback(items);
-    })
-    .catch((e: unknown) => {
-      console.error('[supabaseDb] initial fetch failed:', e);
-    });
+  // Загрузка меню целиком. Запускается: при старте, на каждое событие
+  // realtime, после (пере)подключения канала, при возврате на вкладку,
+  // при появлении сети и раз в минуту — иначе планшет, у которого
+  // websocket тихо умер, не увидел бы правок меню до перезапуска.
+  const refetch = () => {
+    if (cancelled || inFlight) return;
+    inFlight = true;
+    fetchAllProductsFromDb()
+      .then((items) => {
+        if (!cancelled) callback(items);
+      })
+      .catch((e: unknown) => {
+        console.error('[supabaseDb] refetch failed:', e);
+      })
+      .finally(() => {
+        inFlight = false;
+      });
+  };
+
+  refetch();
 
   const channel = supabase
     .channel(CHANNEL_NAME)
@@ -147,16 +206,13 @@ export function subscribeProductsFromDb(
       'postgres_changes',
       { event: '*', schema: 'public', table: TABLE },
       () => {
-        fetchAllProductsFromDb()
-          .then((items) => {
-            if (!cancelled) callback(items);
-          })
-          .catch((e: unknown) => {
-            console.error('[supabaseDb] realtime refetch failed:', e);
-          });
+        // событие могло прийти, пока шёл прошлый запрос — повторим чуть позже
+        if (inFlight) window.setTimeout(refetch, 800);
+        else refetch();
       }
     )
     .subscribe((status) => {
+      if (status === 'SUBSCRIBED') refetch();
       if (status === 'CHANNEL_ERROR') {
         console.error(
           '[supabaseDb] realtime channel error — проверь Publication'
@@ -164,8 +220,18 @@ export function subscribeProductsFromDb(
       }
     });
 
+  const onVisible = () => {
+    if (document.visibilityState === 'visible') refetch();
+  };
+  window.addEventListener('online', refetch);
+  document.addEventListener('visibilitychange', onVisible);
+  const timer = window.setInterval(refetch, 60_000);
+
   return () => {
     cancelled = true;
+    window.clearInterval(timer);
+    window.removeEventListener('online', refetch);
+    document.removeEventListener('visibilitychange', onVisible);
     supabase.removeChannel(channel).catch(() => {
       /* ignore */
     });

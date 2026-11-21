@@ -14,18 +14,41 @@ import {
   flushNow,
   retryAllSyncFailed,
 } from '@/services/googleSheetsSync';
+import {
+  getRealtimeInfo,
+  pendingOrdersCount,
+  stuckOrdersCount,
+} from '@/services/supabaseOrders';
 import type { SyncStatusSnapshot } from '@/types/sync';
+
+interface DbStatus {
+  pending: number;
+  stuck: number;
+  rt: string;
+}
+
+function readDbStatus(): DbStatus {
+  return {
+    pending: pendingOrdersCount(),
+    stuck: stuckOrdersCount(),
+    rt: getRealtimeInfo().status,
+  };
+}
 
 export function SyncIndicator() {
   const { t } = useI18n();
   const [status, setStatus] = useState<SyncStatusSnapshot | null>(() =>
     getSyncStatus()
   );
+  const [db, setDb] = useState<DbStatus>(() => readDbStatus());
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
-    const tick = () => setStatus(getSyncStatus());
+    const tick = () => {
+      setStatus(getSyncStatus());
+      setDb(readDbStatus());
+    };
     tick();
     const id = window.setInterval(tick, 2000);
     return () => window.clearInterval(id);
@@ -34,8 +57,13 @@ export function SyncIndicator() {
   if (!status) return null;
 
   const isOnline = status.isOnline;
-  const hasWork = hasUnsyncedWork();
-  const hasError = status.failed > 0 || !!status.lastError;
+  // Основное хранилище — Supabase: заказы в outbox, отклонённые сервером и
+  // потеря realtime-связи важнее, чем состояние копии в Google Sheets.
+  const rtLost =
+    db.rt === 'CHANNEL_ERROR' || db.rt === 'TIMED_OUT' || db.rt === 'CLOSED';
+  const hasWork = hasUnsyncedWork() || db.pending > 0;
+  const hasError =
+    status.failed > 0 || !!status.lastError || db.stuck > 0 || rtLost;
 
   const handleSendNow = async () => {
     setSending(true);
@@ -77,7 +105,7 @@ export function SyncIndicator() {
         type="button"
         onClick={() => setOpen(true)}
         title={t('syncPanelTitle')}
-        className="relative flex items-center justify-center w-9 h-9 rounded-lg bg-slate-100 border border-slate-200 hover:bg-slate-200 active:scale-95 transition-all"
+        className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 hover:bg-slate-200 active:scale-95 transition-all"
       >
         {!isOnline ? (
           <CloudOff className="w-4 h-4 text-red-600" />
@@ -99,7 +127,7 @@ export function SyncIndicator() {
       {/* ============================================ */}
       {open && (
         <div
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[10040] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
           onClick={() => setOpen(false)}
         >
           <div
@@ -150,6 +178,23 @@ export function SyncIndicator() {
                   </>
                 )}
               </div>
+
+              <Row label={t('syncDbQueue')}>
+                <span
+                  className={`tabular-nums ${
+                    db.stuck > 0 ? 'text-red-600' : 'text-slate-900'
+                  }`}
+                >
+                  {db.pending}
+                  {db.stuck > 0 ? ` (⚠ ${db.stuck})` : ''}
+                </span>
+              </Row>
+
+              <Row label={t('syncRealtime')}>
+                <span className={rtLost ? 'text-red-600' : 'text-slate-900'}>
+                  {db.rt === 'SUBSCRIBED' ? t('online') : db.rt}
+                </span>
+              </Row>
 
               <Row label={t('syncPanelLastSync')}>
                 {status.lastSyncAt

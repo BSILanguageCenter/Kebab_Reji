@@ -53,8 +53,12 @@ export interface Order {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** Когда последний раз менялся СТАТУС (отдельно от правок позиций). */
+  status_updated_at?: string | null;
   order_items?: OrderItem[];
   is_modified?: boolean;
+  /** Номер устройства-автора (1, 2, 3…) — для офлайн-номеров вида 12.2 */
+  device_no?: number;
 }
 
 // ============================================================
@@ -97,6 +101,12 @@ export interface MenuSetExtraGroup {
   set_item_id: string;
   label: string;
   required: boolean;
+  /** Показывать группу окном выбора в кассе (нет поля = да) */
+  popup?: boolean;
+  /** Сколько вариантов можно выбрать (по умолчанию 1) */
+  pick_count?: number;
+  /** Лимит задан вручную (нужен для групп без окна: «Included») */
+  pick_set?: boolean;
   sort_order: number;
 }
 
@@ -118,6 +128,8 @@ export interface HydratedSauce {
   free: boolean;
   color: string | null;
   active: boolean;
+  /** Доплата за эту позицию именно в этом продукте (0 / нет = бесплатно). */
+  extra_price?: number;
 }
 
 export interface HydratedProperty {
@@ -140,6 +152,11 @@ export interface HydratedSetExtraGroup {
   set_item_id: string;
   label: string;
   required: boolean;
+  /** Показывать группу окном выбора в кассе (нет поля = да) */
+  popup?: boolean;
+  /** Сколько вариантов можно выбрать (по умолчанию 1) */
+  pick_count?: number;
+  pick_set?: boolean;
   sort_order: number;
   options: HydratedSetExtraOption[];
 }
@@ -160,11 +177,19 @@ export interface MenuItem {
   parent_id: string | null;
   active: boolean;
   sort_order: number;
+  /** Позиция в режиме «одна иконка» (если не задана — берётся sort_order) */
+  sort_order_single?: number;
   created_at: string;
   updated_at: string;
 
   properties?: HydratedProperty[];
   allowed_sauces?: HydratedSauce[];
+  allowed_drinks?: HydratedSauce[];
+  allowed_toppings?: HydratedSauce[];
+  /** Сколько соусов / напитков / топпингов можно выбрать у блюда (нет поля: соусы 2, остальное без лимита) */
+  max_sauces?: number;
+  max_drinks?: number;
+  max_toppings?: number;
   variants?: MenuItem[];
   set_main?: MenuItem;
   set_extra_groups?: HydratedSetExtraGroup[];

@@ -1,7 +1,9 @@
 // src/components/SaveStyleDialog.tsx
+import { createPortal } from 'react-dom';
 import { useEffect, useRef, useState } from 'react';
 import { Save, X, AlertCircle } from 'lucide-react';
 import { useI18n } from '@/locale';
+import { dateLocale } from '@/locale/format';
 
 export function SaveStyleDialog({
   open,
@@ -16,15 +18,15 @@ export function SaveStyleDialog({
   onCancel: () => void;
   onConfirm: (name: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [name, setName] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const now = new Date();
-    const suggested = `Стиль ${now.toLocaleDateString('ru-RU')} ${now.toLocaleTimeString(
-      'ru-RU',
+    const suggested = `${t('styleNamePrefix')} ${now.toLocaleDateString(dateLocale(lang))} ${now.toLocaleTimeString(
+      dateLocale(lang),
       { hour: '2-digit', minute: '2-digit' }
     )}`;
     setName(suggested);
@@ -45,9 +47,10 @@ export function SaveStyleDialog({
     onConfirm(trimmed);
   };
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      style={{ zIndex: 100000 }}
       onClick={saving ? undefined : onCancel}
     >
       <div
@@ -114,6 +117,7 @@ export function SaveStyleDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

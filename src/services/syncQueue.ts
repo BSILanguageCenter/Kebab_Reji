@@ -310,11 +310,16 @@ export function markSynced(operationId: string): void {
   if (idx === -1) return;
   const op = queue[idx];
 
+  // Синхронизированная операция хранится 7 дней только как запись в журнале:
+  // тяжёлую часть (позиции заказа, всё меню) выбрасываем, иначе очередь
+  // съедает квоту localStorage (~5 МБ) вместе с основными данными.
   queue[idx] = {
     ...op,
     syncStatus: 'synced',
     lastAttemptAt: Date.now(),
     lastError: null,
+    menuItems: undefined,
+    order: { ...op.order, order_items: [] },
   };
   writeQueue(queue);
 
@@ -451,6 +456,21 @@ export function removeOperation(operationId: string): boolean {
   writeQueue(next);
   void removeSyncOperation(operationId);
   return true;
+}
+
+/**
+ * Убрать из очереди все операции заказа (create/update/status),
+ * чтобы удалённый заказ не «воскрес» при повторной отправке.
+ */
+export function removeOperationsForOrder(orderId: string): void {
+  const queue = [...getQueue()];
+  const gone = queue.filter(
+    (op) => op.orderId === orderId && op.operationType !== 'menu'
+  );
+  if (gone.length === 0) return;
+  const goneIds = new Set(gone.map((op) => op.operationId));
+  writeQueue(queue.filter((op) => !goneIds.has(op.operationId)));
+  for (const op of gone) void removeSyncOperation(op.operationId);
 }
 
 /**

@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { useI18n } from '@/locale';
 
 export function Resizer({
   onStart,
@@ -11,6 +12,7 @@ export function Resizer({
   onEnd?: (totalDelta: number) => void;
   direction?: 'vertical' | 'horizontal';
 }) {
+  const { t } = useI18n();
   const dragging = useRef(false);
   const startPos = useRef(0);
   const totalDelta = useRef(0);
@@ -82,8 +84,10 @@ export function Resizer({
         onPointerCancel={finish}
         className="shrink-0 w-2 relative cursor-col-resize group select-none"
         style={{ touchAction: 'none' }}
-        title="Потяните, чтобы изменить ширину"
+        title={t('dragToResizeWidth')}
       >
+        {/* увеличенная область нажатия для пальца */}
+        <div className="absolute inset-y-0 -inset-x-2" />
         <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-[4px] rounded-full bg-gray-300 group-hover:bg-orange-400 group-active:bg-orange-500 transition-colors pointer-events-none" />
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
           <div className="flex flex-col gap-0.5">
@@ -105,8 +109,10 @@ export function Resizer({
       onPointerCancel={finish}
       className="shrink-0 h-2 relative cursor-row-resize group select-none"
       style={{ touchAction: 'none' }}
-      title="Потяните, чтобы изменить высоту"
+      title={t('dragToResizeHeight')}
     >
+      {/* увеличенная область нажатия для пальца */}
+      <div className="absolute inset-x-0 -inset-y-2" />
       <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-[4px] rounded-full bg-gray-300 group-hover:bg-orange-400 group-active:bg-orange-500 transition-colors pointer-events-none" />
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
         <div className="flex gap-0.5">

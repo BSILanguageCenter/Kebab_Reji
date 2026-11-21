@@ -1,4 +1,5 @@
 // src/lib/localStore.ts
+import { uuid } from '@/lib/uuid';
 import type {
   MenuItem,
   Order,
@@ -13,11 +14,19 @@ import {
   enqueueMenuForSync,
 } from '@/services/googleSheetsSync';
 import {
-  saveOrder,
-  updateOrderStatus,
-  nextSharedOrderNumber,
-} from '@/services/firebaseSync';
-import { upsertProductsToDb } from '@/services/supabaseDb';
+  queueOrderToDb,
+  nextOrderNumberFromDb,
+  getCachedDeviceNo,
+  ensureDeviceNo,
+  hasPendingOrder,
+  isOrdersMigrated,
+} from '@/services/supabaseOrders';
+import {
+  upsertProductsToDb,
+  upsertProductsPartialToDb,
+} from '@/services/supabaseDb';
+import { migrateMenuSchema } from '@/lib/menuMigrations';
+import { isOrderDeleted } from '@/services/deletedOrders';
 
 // ============================================================
 // STORAGE SHAPE
@@ -131,12 +140,43 @@ try {
 
 let persistTimer: number | null = null;
 
-function persist() {
-  if (typeof window === 'undefined') return;
+function writeToStorage(): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    return true;
   } catch (e: unknown) {
     console.error('[localStore] localStorage persist failed:', e);
+    return false;
+  }
+}
+
+function persist() {
+  if (typeof window === 'undefined') return;
+  if (persistTimer != null) {
+    window.clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  let ok = writeToStorage();
+  if (!ok && isOrdersMigrated()) {
+    // Квота localStorage (~5 МБ) переполнена — раньше изменения меню молча
+    // терялись и после обновления страницы «откатывались». Освобождаем место
+    // за счёт старых заказов (они уже в Supabase) и пробуем снова.
+    for (const days of [14, 3]) {
+      const cutoff = Date.now() - days * 24 * 3600 * 1000;
+      data.orders = data.orders.filter(
+        (o) =>
+          new Date(o.created_at).getTime() >= cutoff || hasPendingOrder(o.id)
+      );
+      ok = writeToStorage();
+      if (ok) break;
+    }
+  }
+  if (!ok) {
+    try {
+      window.dispatchEvent(new CustomEvent('pos-storage-error'));
+    } catch {
+      /* ignore */
+    }
   }
   try {
     bc?.postMessage({ type: 'update' });
@@ -152,6 +192,19 @@ function schedulePersist() {
     persistTimer = null;
     persist();
   }, 50);
+}
+
+// Обновили страницу в течение 50 мс после изменения — запись не успевала.
+// Сбрасываем отложенную запись при закрытии / сворачивании вкладки.
+if (typeof window !== 'undefined') {
+  const flushPending = () => {
+    if (persistTimer != null) persist();
+  };
+  window.addEventListener('pagehide', flushPending);
+  window.addEventListener('beforeunload', flushPending);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPending();
+  });
 }
 
 // ============================================================
@@ -383,10 +436,7 @@ export interface SyncStats {
 // HELPERS
 // ============================================================
 export function newId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return uuid();
 }
 
 export interface OrderItemPayload {
@@ -449,22 +499,36 @@ export async function emitCreateOrder(payload: {
     schedulePersist();
   }
 
-  // Номер берём из ОБЩЕГО счётчика (Firebase), чтобы у всех устройств он
-  // был единым и продолжал текущий. floor — максимальный номер за сегодня,
-  // уже известный этому устройству (включая заказы с других устройств).
+  // Номер берём из ОБЩЕГО счётчика (Supabase), чтобы у всех устройств он
+  // был единым. floor — максимальный номер за сегодня, уже известный этому
+  // устройству (дробную часть офлайн-номеров 12.2 отбрасываем).
+  //
+  // Нет сети → запасной локальный номер. Чтобы два устройства не выдали
+  // одинаковый номер (и не совпал с целыми номерами общего счётчика):
+  // устройство №1 → 12.1, №2 → 12.2, №3 → 12.3 (до №9; дальше по кругу).
   const today = todayStr();
   const floor = data.orders
     .filter((o) => dayOf(o.created_at) === today)
-    .reduce((m, o) => Math.max(m, o.order_number), 0);
+    .reduce((m, o) => Math.max(m, Math.floor(o.order_number)), 0);
+
+  const deviceNo =
+    getCachedDeviceNo() ??
+    (await Promise.race([
+      ensureDeviceNo(),
+      new Promise<null>((r) => setTimeout(() => r(null), 1500)),
+    ])) ??
+    1;
 
   let orderNumber: number;
   try {
-    orderNumber = await nextSharedOrderNumber(today, floor);
+    orderNumber = await nextOrderNumberFromDb(today, floor);
   } catch (e: unknown) {
-    console.warn('[localStore] shared counter unavailable, local fallback:', e);
-    orderNumber = Math.max(floor, data.nextOrderNumber - 1) + 1;
+    console.warn('[localStore] shared counter unavailable, offline number:', e);
+    const base = Math.max(floor, data.nextOrderNumber - 1) + 1;
+    const suffix = (((deviceNo - 1) % 9) + 1) / 10;
+    orderNumber = Number((base + suffix).toFixed(1));
   }
-  data.nextOrderNumber = orderNumber + 1;
+  data.nextOrderNumber = Math.floor(orderNumber) + 1;
 
   const id = newId();
   const now = new Date().toISOString();
@@ -479,6 +543,8 @@ export async function emitCreateOrder(payload: {
     created_at: now,
     updated_at: now,
     completed_at: null,
+    status_updated_at: now,
+    device_no: deviceNo,
     order_items: (payload.order_items ?? []).map((i) => toOrderItem(id, i)),
   };
 
@@ -486,9 +552,7 @@ export async function emitCreateOrder(payload: {
   schedulePersist();
   notifyAll();
 
-  saveOrder(order).catch((e: unknown) => {
-    console.warn('[localStore] RTDB saveOrder (create) failed:', e);
-  });
+  queueOrderToDb(order);
 
   try {
     enqueueForSync(order, 'create');
@@ -525,9 +589,7 @@ export async function emitUpdateOrder(payload: {
   schedulePersist();
   notifyAll();
 
-  saveOrder(updated).catch((e: unknown) => {
-    console.warn('[localStore] RTDB saveOrder (update) failed:', e);
-  });
+  queueOrderToDb(updated);
 
   try {
     enqueueForSync(updated, 'update');
@@ -551,6 +613,7 @@ export async function emitUpdateStatus(
     ...data.orders[idx],
     status,
     updated_at: now,
+    status_updated_at: now,
     completed_at: isFinal ? now : data.orders[idx].completed_at ?? null,
   };
 
@@ -558,9 +621,7 @@ export async function emitUpdateStatus(
   schedulePersist();
   notifyAll();
 
-  updateOrderStatus(orderId, status).catch((e: unknown) => {
-    console.warn('[localStore] RTDB updateOrderStatus failed:', e);
-  });
+  queueOrderToDb(updated);
 
   try {
     enqueueForSync(updated, 'status');
@@ -582,14 +643,180 @@ export function emitLayoutSettings(settings: unknown): void {
 // ============================================================
 // MENU — WRITE
 // ============================================================
+// ---------- Очередь синхронизации меню с Supabase ----------
+// Раньше каждое изменение отправляло ВСЁ меню отдельным запросом, и запросы
+// могли завершиться не по порядку (или тихо упасть) — после входа из облака
+// возвращались старые позиции. Теперь: отправляем только изменённые карточки,
+// строго по очереди, с повтором при ошибке.
+const dbQueueChanged = new Map<string, MenuItem>();
+const dbQueueRemoved = new Set<string>();
+let dbFlushing = false;
+
+// Очередь раньше жила только в памяти: если отправка в облако не удалась и
+// страницу обновляли — изменение терялось, а облако возвращало СТАРОЕ меню.
+// Теперь id неотправленных карточек хранятся в localStorage.
+const PENDING_KEY = 'kebab-pos-menu-pending-v1';
+// Какие id точно есть в облаке (нужно, чтобы отличить «удалено на другом
+// устройстве» от «создано здесь, но ещё не отправлено»).
+const SYNCED_IDS_KEY = 'kebab-pos-menu-synced-ids-v1';
+let syncedIds: Set<string> = new Set();
+
+function savePendingIds(): void {
+  try {
+    if (dbQueueChanged.size === 0 && dbQueueRemoved.size === 0) {
+      localStorage.removeItem(PENDING_KEY);
+      return;
+    }
+    localStorage.setItem(
+      PENDING_KEY,
+      JSON.stringify({
+        changed: [...dbQueueChanged.keys()],
+        removed: [...dbQueueRemoved],
+      })
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function saveSyncedIds(): void {
+  try {
+    localStorage.setItem(SYNCED_IDS_KEY, JSON.stringify([...syncedIds]));
+  } catch {
+    /* ignore */
+  }
+}
+
+function restoreMenuQueue(): void {
+  try {
+    const raw = localStorage.getItem(SYNCED_IDS_KEY);
+    if (raw) {
+      const arr: unknown = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        syncedIds = new Set(arr.filter((x): x is string => typeof x === 'string'));
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const raw = localStorage.getItem(PENDING_KEY);
+    if (!raw) return;
+    const p = JSON.parse(raw) as { changed?: string[]; removed?: string[] };
+    const byId = new Map(data.menuItems.map((i) => [i.id, i]));
+    for (const id of p.changed ?? []) {
+      const it = byId.get(id);
+      if (it) dbQueueChanged.set(id, it);
+    }
+    for (const id of p.removed ?? []) {
+      if (!byId.has(id)) dbQueueRemoved.add(id);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Время изменения карточки (мс); 0 — неизвестно. */
+function itemTs(it: MenuItem | undefined): number {
+  if (!it) return 0;
+  const t = new Date(it.updated_at).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Состояние очереди отправки меню в Supabase (для диагностики). */
+export function getMenuSyncState(): {
+  flushing: boolean;
+  pendingChanged: number;
+  pendingRemoved: number;
+} {
+  return {
+    flushing: dbFlushing,
+    pendingChanged: dbQueueChanged.size,
+    pendingRemoved: dbQueueRemoved.size,
+  };
+}
+
+/** Повторная отправка застрявших изменений меню. */
+export function retryMenuSync(): void {
+  if (!dbFlushing && (dbQueueChanged.size > 0 || dbQueueRemoved.size > 0)) {
+    void flushDbQueue();
+  }
+}
+
+if (typeof window !== 'undefined') {
+  restoreMenuQueue();
+  // Застрявшая очередь — повторяем сами (и сразу после запуска).
+  window.setInterval(retryMenuSync, 20_000);
+  window.addEventListener('online', retryMenuSync);
+  window.setTimeout(retryMenuSync, 1500);
+}
+
+function queueDbSync(prev: MenuItem[], next: MenuItem[]): void {
+  const prevMap = new Map(prev.map((i) => [i.id, i]));
+  const nextIds = new Set<string>();
+  for (const n of next) {
+    nextIds.add(n.id);
+    if (prevMap.get(n.id) !== n) {
+      dbQueueChanged.set(n.id, n);
+      dbQueueRemoved.delete(n.id);
+    }
+  }
+  for (const p of prev) {
+    if (!nextIds.has(p.id)) {
+      dbQueueRemoved.add(p.id);
+      dbQueueChanged.delete(p.id);
+    }
+  }
+  savePendingIds();
+  void flushDbQueue();
+}
+
+async function flushDbQueue(): Promise<void> {
+  if (dbFlushing) return;
+  dbFlushing = true;
+  try {
+    while (dbQueueChanged.size > 0 || dbQueueRemoved.size > 0) {
+      const changed = [...dbQueueChanged.values()];
+      const removed = [...dbQueueRemoved];
+      dbQueueChanged.clear();
+      dbQueueRemoved.clear();
+
+      let ok = false;
+      for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+        try {
+          await upsertProductsPartialToDb(changed, removed);
+          ok = true;
+          for (const it of changed) syncedIds.add(it.id);
+          for (const id of removed) syncedIds.delete(id);
+          saveSyncedIds();
+        } catch (e: unknown) {
+          console.warn('[localStore] Supabase menu sync failed:', e);
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        }
+      }
+      if (!ok) {
+        // вернуть в очередь (если за это время не появилось более новое)
+        for (const it of changed) {
+          if (!dbQueueChanged.has(it.id)) dbQueueChanged.set(it.id, it);
+        }
+        for (const id of removed) dbQueueRemoved.add(id);
+        savePendingIds();
+        break; // повторим при следующем изменении
+      }
+      savePendingIds();
+    }
+  } finally {
+    dbFlushing = false;
+  }
+}
+
 export function setMenuItems(items: MenuItem[]): void {
+  const prev = data.menuItems;
   data.menuItems = items;
-  schedulePersist();
+  persist(); // меню пишем на диск немедленно, а не через 50 мс
   notifyAll();
 
-  upsertProductsToDb(items).catch((e: unknown) => {
-    console.warn('[localStore] Supabase upsertProductsToDb failed:', e);
-  });
+  queueDbSync(prev, items);
 
   try {
     enqueueMenuForSync(items);
@@ -606,7 +833,7 @@ export function updateMenuItem(itemId: string, patch: Partial<MenuItem>): void {
   const idx = data.menuItems.findIndex((i) => i.id === itemId);
   if (idx !== -1) {
     const next = [...data.menuItems];
-    next[idx] = { ...next[idx], ...patch };
+    next[idx] = { ...next[idx], ...patch, updated_at: new Date().toISOString() };
     setMenuItems(next);
     return;
   }
@@ -620,6 +847,7 @@ export function updateMenuItem(itemId: string, patch: Partial<MenuItem>): void {
       nextParent.variants = nextParent.variants!.map((v, j) =>
         j === vIdx ? { ...v, ...patch } : v
       );
+      nextParent.updated_at = new Date().toISOString();
       next[i] = nextParent;
       setMenuItems(next);
       return;
@@ -643,6 +871,7 @@ export function removeMenuItem(itemId: string): void {
       next[i] = {
         ...next[i],
         variants: next[i].variants!.filter((_, j) => j !== vIdx),
+        updated_at: new Date().toISOString(),
       };
       setMenuItems(next);
       return;
@@ -653,36 +882,206 @@ export function removeMenuItem(itemId: string): void {
 // ============================================================
 // PULL (входящие)
 // ============================================================
+/** Сколько дней заказов держим в localStorage (остальное — в Supabase). */
+const KEEP_LOCAL_DAYS = 45;
+
+/**
+ * Входящие заказы из Supabase — СЛИЯНИЕ, а не замена:
+ *  - новых заказов добавляем;
+ *  - существующие обновляем, только если пришла более свежая версия;
+ *  - заказы, ещё не отправленные в облако, не трогаем (офлайн-режим).
+ */
+function msOf(s?: string | null): number {
+  const v = s ? new Date(s).getTime() : 0;
+  return Number.isFinite(v) ? v : 0;
+}
+
+function statusMs(o: Order): number {
+  return msOf(o.status_updated_at) || msOf(o.created_at);
+}
+
+/**
+ * Слияние двух версий заказа ПО ПОЛЯМ:
+ *  - позиции / сумма / комментарий — от версии с более новым updated_at;
+ *  - статус — от версии с более новым status_updated_at.
+ * Поэтому правка кассира не откатывает статус кухни и наоборот.
+ */
+function mergeOrders(local: Order, remote: Order): Order {
+  const base = msOf(remote.updated_at) > msOf(local.updated_at) ? remote : local;
+  const st = statusMs(remote) > statusMs(local) ? remote : local;
+  return {
+    ...base,
+    status: st.status,
+    completed_at: st.completed_at ?? null,
+    status_updated_at: st.status_updated_at ?? base.status_updated_at ?? null,
+  };
+}
+
 export function applyRemoteOrders(remote: Order[]): void {
-  if (!Array.isArray(remote)) return;
+  if (!Array.isArray(remote) || remote.length === 0) return;
 
-  const remoteIds = new Set(remote.map((o) => o.id));
-  const now = Date.now();
-  const pending = data.orders.filter((o) => {
-    if (remoteIds.has(o.id)) return false;
-    const age = now - new Date(o.created_at).getTime();
-    return age < 5000;
-  });
+  const byId = new Map(data.orders.map((o) => [o.id, o]));
+  let changed = false;
 
-  data.orders = [...remote, ...pending];
+  for (const r of remote) {
+    if (!r || !r.id) continue;
+    if (isOrderDeleted(r.id)) continue; // удалён разработчиком
+    const local = byId.get(r.id);
+    if (!local) {
+      console.warn('[order-source] +добавлен из Supabase (realtime/catch-up):', r.id, r.created_at);
+      byId.set(r.id, r);
+      changed = true;
+      continue;
+    }
+    if (hasPendingOrder(r.id)) continue; // своё ещё не отправлено — сольётся после отправки
+    const merged = mergeOrders(local, r);
+    if (
+      merged.status !== local.status ||
+      msOf(r.updated_at) > msOf(local.updated_at)
+    ) {
+      byId.set(r.id, merged);
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+  data.orders = [...byId.values()];
+  pruneOldLocalOrders();
   schedulePersist();
   notifyAll();
 }
 
-export function applyRemoteMenu(remote: MenuItem[]): void {
-  if (!Array.isArray(remote)) return;
+/** Убрать заказы из localStorage этого устройства (режим разработчика). */
+export function removeOrdersLocally(ids: string[]): void {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const gone = new Set(ids);
+  const before = data.orders.length;
+  data.orders = data.orders.filter((o) => !gone.has(o.id));
+  if (data.orders.length === before) return;
+  persist();
+  notifyAll();
+}
 
-  try {
-    if (JSON.stringify(data.menuItems) === JSON.stringify(remote)) {
-      return;
+/** Удаление, пришедшее с другого устройства (Supabase realtime DELETE). */
+export function applyRemoteDeletes(ids: string[]): void {
+  removeOrdersLocally(ids);
+}
+
+/**
+ * Старые заказы (> KEEP_LOCAL_DAYS) убираем из localStorage — иначе он
+ * переполнится (лимит ~5 МБ). Только после того, как все локальные заказы
+ * загружены в Supabase; ждущие отправки не трогаем.
+ */
+function pruneOldLocalOrders(): void {
+  if (!isOrdersMigrated()) return;
+  const cutoff = Date.now() - KEEP_LOCAL_DAYS * 24 * 3600 * 1000;
+  data.orders = data.orders.filter(
+    (o) => new Date(o.created_at).getTime() >= cutoff || hasPendingOrder(o.id)
+  );
+}
+
+export function applyRemoteMenu(incoming: MenuItem[]): void {
+  if (!Array.isArray(incoming)) return;
+
+  // Идёт отправка наших изменений — ответ облака может быть устаревшим.
+  // После отправки облако само пришлёт realtime-событие, и мы сольёмся.
+  if (dbFlushing) {
+    console.warn('[menu] входящее меню отложено: идёт отправка изменений');
+    return;
+  }
+
+  // Пустой ответ не должен стирать локальное меню
+  if (incoming.length === 0 && data.menuItems.length > 0) {
+    console.warn('[menu] из облака пришло пустое меню — локальное сохранено');
+    return;
+  }
+
+  // Старые данные из Supabase (например, свойство «с капустой / без
+  // капусты») приводим к схеме «одно значение» и отправляем обратно.
+  const remote = migrateMenuSchema(incoming);
+  if (remote !== incoming) {
+    upsertProductsToDb(remote).catch((e: unknown) => {
+      console.warn('[localStore] Supabase migration upsert failed:', e);
+    });
+  }
+
+  // ---------- СЛИЯНИЕ по карточкам ----------
+  // Раньше локальное меню целиком заменялось ответом облака — любое
+  // неотправленное изменение (и перестановка) пропадало после обновления.
+  //  • карточка с неотправленными изменениями — остаётся локальной;
+  //  • у остальных побеждает более новая (по updated_at);
+  //  • создана здесь и ещё не в облаке — остаётся и отправляется;
+  //  • была в облаке, а теперь её там нет — удалена на другом устройстве.
+  const localById = new Map(data.menuItems.map((i) => [i.id, i]));
+  const remoteIds = new Set<string>();
+  const merged: MenuItem[] = [];
+  const toPush: MenuItem[] = [];
+
+  for (const r of remote) {
+    if (!r || !r.id) continue;
+    remoteIds.add(r.id);
+    if (dbQueueRemoved.has(r.id)) continue; // удалено здесь, удаление в очереди
+    const l = localById.get(r.id);
+    if (!l) {
+      merged.push(r);
+      continue;
     }
+    if (dbQueueChanged.has(r.id)) {
+      merged.push(dbQueueChanged.get(r.id) ?? l);
+      continue;
+    }
+    if (itemTs(l) > itemTs(r)) {
+      merged.push(l);
+      toPush.push(l); // локальная версия новее — досылаем в облако
+      continue;
+    }
+    // Расположение карточек — СВОЁ на каждом устройстве: берём из локального
+    // хранилища, а из облака только остальные данные (название, цена, фото…).
+    merged.push({
+      ...r,
+      sort_order: l.sort_order,
+      sort_order_single: l.sort_order_single,
+    });
+  }
+
+  for (const l of data.menuItems) {
+    if (remoteIds.has(l.id)) continue;
+    if (dbQueueChanged.has(l.id) || !syncedIds.has(l.id)) {
+      merged.push(l);
+      toPush.push(l);
+    }
+    // иначе: была в облаке и пропала → удалена на другом устройстве
+  }
+
+  for (const id of remoteIds) syncedIds.add(id);
+  saveSyncedIds();
+
+  // Сохраняем прежний порядок массива: сначала локальный, затем новые
+  const order = new Map(data.menuItems.map((i, idx) => [i.id, idx]));
+  merged.sort(
+    (a, b) =>
+      (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+      (order.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+  );
+
+  let same = false;
+  try {
+    same = JSON.stringify(data.menuItems) === JSON.stringify(merged);
   } catch {
     /* ignore */
   }
 
-  data.menuItems = remote;
-  schedulePersist();
-  notifyAll();
+  if (!same) {
+    data.menuItems = merged;
+    persist();
+    notifyAll();
+  }
+
+  if (toPush.length > 0) {
+    for (const it of toPush) dbQueueChanged.set(it.id, it);
+    savePendingIds();
+    void flushDbQueue();
+  }
 }
 
 // ============================================================

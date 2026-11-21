@@ -1,4 +1,5 @@
 // src/services/menu.ts
+import { patchSlots } from '@/lib/menuOrder';
 import type {
   MenuItem,
   MenuItemType,
@@ -10,6 +11,7 @@ import type {
   HydratedSetExtraGroup,
   HydratedSetExtraOption,
 } from '@/types/database';
+import { migrateMenuSchema, pickSingleOption } from '@/lib/menuMigrations';
 import {
   getMenuItems,
   setMenuItems,
@@ -20,11 +22,19 @@ import { uploadImageToSupabase } from '@/services/supabaseStorage';
 // ============================================================
 // ТИПЫ ПЕЙЛОАДОВ
 // ============================================================
+/** Выбранный для продукта соус / напиток / топпинг + доплата. */
+export interface AddonPick {
+  id: string;
+  extra_price: number;
+}
+
 export interface PropertyDraftPayload {
   name: string;
+  /** Одно значение свойства (массив оставлен для совместимости данных). */
   options: string[];
   required: boolean;
   sort_order?: number;
+  price?: number;
 }
 
 export interface VariantDraftPayload {
@@ -37,7 +47,12 @@ export interface VariantDraftPayload {
   station: Station;
   cook_time_min: number | null;
   sauce_mode: SauceMode;
-  allowed_sauce_ids?: string[];
+  allowed_sauces?: AddonPick[];
+  allowed_drinks?: AddonPick[];
+  allowed_toppings?: AddonPick[];
+  max_sauces?: number;
+  max_drinks?: number;
+  max_toppings?: number;
   properties?: PropertyDraftPayload[];
 }
 
@@ -50,6 +65,9 @@ export interface SetExtraOptionPayload {
 export interface SetExtraGroupPayload {
   label: string;
   required: boolean;
+  popup?: boolean;
+  pick_count?: number;
+  pick_set?: boolean;
   options: SetExtraOptionPayload[];
 }
 
@@ -73,7 +91,12 @@ export interface SaveItemPayload {
   color: string | null;
   dish_kind: DishKind | null;
   sauce_mode: SauceMode | null;
-  allowed_sauce_ids?: string[];
+  allowed_sauces?: AddonPick[];
+  allowed_drinks?: AddonPick[];
+  allowed_toppings?: AddonPick[];
+  max_sauces?: number;
+  max_drinks?: number;
+  max_toppings?: number;
   properties?: PropertyDraftPayload[];
   variants?: VariantDraftPayload[];
   set_main_item_id?: string | null;
@@ -90,13 +113,17 @@ export interface ReorderUpdate {
 // READ
 // ============================================================
 export async function fetchAllMenuItems(): Promise<MenuItem[]> {
-  const items = getMenuItems();
+  const stored = getMenuItems();
+
+  // Миграция схемы (одно значение у свойства). setMenuItems заодно
+  // отправит исправленное меню в Supabase.
+  const items = migrateMenuSchema(stored);
 
   // ✅ ФИКС: при каждой загрузке пересобираем set_main всех сетов
   // из актуальных блюд (фото, имена, цены, свойства, варианты).
   // Overrides (своя цена/фото варианта сета) сохраняются.
   const resolved = resolveSetsFromDishes(items);
-  if (resolved !== items) {
+  if (resolved !== stored) {
     setMenuItems(resolved);
   }
   return resolved;
@@ -166,7 +193,12 @@ export async function updateItem(
       cook_time_min: payload.cook_time_min,
       sauce_mode:
         (payload.sauce_mode ?? prevVariant.sauce_mode ?? 'none') as SauceMode,
-      allowed_sauce_ids: payload.allowed_sauce_ids,
+      allowed_sauces: payload.allowed_sauces,
+      allowed_drinks: payload.allowed_drinks,
+      allowed_toppings: payload.allowed_toppings,
+      max_sauces: payload.max_sauces,
+      max_drinks: payload.max_drinks,
+      max_toppings: payload.max_toppings,
       properties: payload.properties,
     };
 
@@ -269,6 +301,7 @@ function sameSetMain(a: MenuItem, b: MenuItem): boolean {
   if (a.short_name !== b.short_name) return false;
   if (a.image_url !== b.image_url) return false;
   if (a.price !== b.price) return false;
+  if (addonSig(a) !== addonSig(b)) return false;
 
   const av = a.variants ?? [];
   const bv = b.variants ?? [];
@@ -285,6 +318,7 @@ function sameSetMain(a: MenuItem, b: MenuItem): boolean {
     if (x.station !== y.station) return false;
     if (x.cook_time_min !== y.cook_time_min) return false;
     if (x.sauce_mode !== y.sauce_mode) return false;
+    if (addonSig(x) !== addonSig(y)) return false;
     // properties — поверхностно
     const ap = x.properties ?? [];
     const bp = y.properties ?? [];
@@ -293,10 +327,19 @@ function sameSetMain(a: MenuItem, b: MenuItem): boolean {
       if (ap[k].name !== bp[k].name) return false;
       if (ap[k].required !== bp[k].required) return false;
       if (ap[k].options.join('|') !== bp[k].options.join('|')) return false;
+      if ((ap[k].price ?? 0) !== (bp[k].price ?? 0)) return false;
     }
   }
 
   return true;
+}
+
+function addonSig(it: MenuItem): string {
+  const one = (list: HydratedSauce[] | undefined) =>
+    (list ?? []).map((s) => `${s.id}:${s.extra_price ?? 0}`).join(',');
+  return `${one(it.allowed_sauces)}#${one(it.allowed_drinks)}#${one(
+    it.allowed_toppings
+  )}`;
 }
 
 // ============================================================
@@ -335,11 +378,8 @@ export async function reorderItems(
 ): Promise<void> {
   if (!updates.length) return;
   const map = new Map(updates.map((u) => [u.id, u.sort_order]));
-  const next = getMenuItems().map((it) => {
-    const newOrder = map.get(it.id);
-    return newOrder !== undefined ? { ...it, sort_order: newOrder } : it;
-  });
-  setMenuItems(next);
+  // Режим «одна иконка» пишет в sort_order_single, «все блюда» — в sort_order
+  setMenuItems(patchSlots(getMenuItems(), map));
 }
 
 // ============================================================
@@ -397,6 +437,7 @@ function buildItem(
     parent_id: null,
     active: payload.active,
     sort_order: payload.sort_order,
+    sort_order_single: prev?.sort_order_single,
     created_at: prev?.created_at ?? now,
     updated_at: now,
   };
@@ -413,15 +454,14 @@ function buildItem(
   }
 
   if (payload.type === 'dish' && payload.dish_kind === 'single') {
-    if (payload.sauce_mode === 'with' && payload.allowed_sauce_ids) {
-      item.allowed_sauces = resolveSauces(
-        payload.allowed_sauce_ids,
-        currentMenu
-      );
-    }
+    attachAddons(item, payload, currentMenu);
     if (payload.properties) {
       item.properties = buildProperties(payload.properties, id);
     }
+  }
+
+  if (payload.type === 'topping' && payload.properties) {
+    item.properties = buildProperties(payload.properties, id);
   }
 
   if (payload.type === 'set') {
@@ -480,9 +520,7 @@ function buildVariant(
     updated_at: now,
   };
 
-  if (v.sauce_mode === 'with' && v.allowed_sauce_ids) {
-    variant.allowed_sauces = resolveSauces(v.allowed_sauce_ids, currentMenu);
-  }
+  attachAddons(variant, v, currentMenu);
   if (v.properties) {
     variant.properties = buildProperties(v.properties, variantId);
   }
@@ -499,32 +537,73 @@ function buildProperties(
       id: newId(),
       item_id: itemId,
       name: p.name.trim(),
-      options: Array.isArray(p.options) ? p.options : [],
+      // у свойства ровно одно значение
+      options: pickSingleOption(p.options),
       required: Boolean(p.required),
       sort_order: p.sort_order ?? i,
+      ...(typeof p.price === 'number' && p.price > 0 ? { price: p.price } : {}),
     }));
 }
 
-function resolveSauces(
-  ids: string[],
-  currentMenu: MenuItem[]
+type AddonKind = 'sauce' | 'drink' | 'topping';
+
+function resolveAddons(
+  picks: AddonPick[],
+  currentMenu: MenuItem[],
+  kind: AddonKind
 ): HydratedSauce[] {
   const out: HydratedSauce[] = [];
-  for (const id of ids) {
-    const sauce = currentMenu.find((i) => i.id === id && i.type === 'sauce');
-    if (!sauce || !sauce.active) continue;
+  for (const pick of picks) {
+    const src = currentMenu.find((i) => i.id === pick.id && i.type === kind);
+    if (!src || !src.active) continue;
+    const extra = Number(pick.extra_price);
     out.push({
-      id: sauce.id,
-      name: sauce.name,
-      short_name: sauce.short_name,
-      image_url: sauce.image_url,
-      price: sauce.price,
-      free: sauce.free,
-      color: sauce.color,
-      active: sauce.active,
+      id: src.id,
+      name: src.name,
+      short_name: src.short_name,
+      image_url: src.image_url,
+      price: src.price,
+      free: src.free,
+      color: src.color,
+      active: src.active,
+      extra_price: Number.isFinite(extra) && extra > 0 ? extra : 0,
     });
   }
   return out;
+}
+
+/** Соусы / напитки / топпинги продукта (или варианта группы). */
+function attachAddons(
+  target: MenuItem,
+  src: {
+    sauce_mode?: SauceMode | null;
+    allowed_sauces?: AddonPick[];
+    allowed_drinks?: AddonPick[];
+    allowed_toppings?: AddonPick[];
+    max_sauces?: number;
+    max_drinks?: number;
+    max_toppings?: number;
+  },
+  currentMenu: MenuItem[]
+): void {
+  const lim = (n: number | undefined) =>
+    typeof n === 'number' && n >= 1 ? Math.floor(n) : undefined;
+  target.max_sauces = lim(src.max_sauces);
+  target.max_drinks = lim(src.max_drinks);
+  target.max_toppings = lim(src.max_toppings);
+  if (src.sauce_mode === 'with' && src.allowed_sauces) {
+    target.allowed_sauces = resolveAddons(src.allowed_sauces, currentMenu, 'sauce');
+  }
+  if (src.allowed_drinks) {
+    target.allowed_drinks = resolveAddons(src.allowed_drinks, currentMenu, 'drink');
+  }
+  if (src.allowed_toppings) {
+    target.allowed_toppings = resolveAddons(
+      src.allowed_toppings,
+      currentMenu,
+      'topping'
+    );
+  }
 }
 
 // ============================================================
@@ -593,6 +672,9 @@ function buildExtraGroups(
       set_item_id: setId,
       label: g.label.trim() || '',
       required: Boolean(g.required),
+      popup: g.popup !== false,
+      pick_count: Math.max(1, Math.min(Math.floor(g.pick_count ?? 1), options.length)),
+      pick_set: g.pick_set ? true : undefined,
       sort_order: gi,
       options,
     });
@@ -615,6 +697,10 @@ function deepCloneItem(
       ? src.short_name + opts.nameSuffix
       : src.short_name,
     sort_order: src.sort_order + (opts?.sortOrderOffset ?? 0),
+    sort_order_single:
+      src.sort_order_single != null
+        ? src.sort_order_single + (opts?.sortOrderOffset ?? 0)
+        : undefined,
     created_at: now,
     updated_at: now,
     parent_id: null,
@@ -631,6 +717,8 @@ function deepCloneItem(
         ? cloneProperties(v.properties, newId())
         : undefined,
       allowed_sauces: v.allowed_sauces ? [...v.allowed_sauces] : undefined,
+      allowed_drinks: v.allowed_drinks ? [...v.allowed_drinks] : undefined,
+      allowed_toppings: v.allowed_toppings ? [...v.allowed_toppings] : undefined,
     }));
   }
 
@@ -639,6 +727,12 @@ function deepCloneItem(
   }
   if (src.allowed_sauces) {
     copy.allowed_sauces = [...src.allowed_sauces];
+  }
+  if (src.allowed_drinks) {
+    copy.allowed_drinks = [...src.allowed_drinks];
+  }
+  if (src.allowed_toppings) {
+    copy.allowed_toppings = [...src.allowed_toppings];
   }
   if (src.set_main) {
     copy.set_main = deepCloneItem(src.set_main, src.set_main.id, now);

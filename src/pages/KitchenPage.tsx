@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { formatTimeAgo } from '@/locale/format';
 import {
   pushUndo,
@@ -21,15 +21,30 @@ import type { Order, OrderStatus, OrderType } from '@/types/database';
 import {
   ChefHat,
   Clock,
-  CheckCircle2,
+  Check,
   Undo2,
   AlertTriangle,
   Pencil,
   Bell,
+  Utensils,
+  ShoppingBag,
+  Footprints,
 } from 'lucide-react';
 
 const FRESH_MS = 15_000;
-const CRITICAL_MIN = 10;
+// Пороги срочности (минуты с момента создания заказа)
+const WARN_MIN = 3; // жёлтый
+const DANGER_MIN = 5; // красный
+const CRITICAL_MIN = 10; // красный + пульсация
+
+// На кухне 3 повара, одновременно готовятся ~3-4 блюда, поэтому
+// «горят» (жёлтый/красный) только самые старые заказы очереди.
+// Всё, что новее этого лимита, остаётся зелёным — до него просто не дошли.
+const MAX_URGENT_ORDERS = 10;
+
+// Размер шрифта позиций (px): подбирается так, чтобы заказ влез целиком
+const FONT_MAX = 20;
+const FONT_MIN = 9;
 const MODIFIED_MS = 30_000;
 
 const CARD_W = 360;
@@ -51,13 +66,19 @@ interface Urgency {
   pulse: boolean;
 }
 
-function getUrgency(createdAt: string, now: number): Urgency {
+function getUrgency(
+  createdAt: string,
+  now: number,
+  eligible: boolean
+): Urgency {
   const min = Math.max(
     0,
     Math.floor((now - new Date(createdAt).getTime()) / 60_000)
   );
+  // Заказы вне «горячих» N самых старых не краснеют/не желтеют
+  const lvlMin = eligible ? min : 0;
 
-  if (min >= CRITICAL_MIN) {
+  if (lvlMin >= CRITICAL_MIN) {
     return {
       level: 'critical',
       min,
@@ -69,7 +90,7 @@ function getUrgency(createdAt: string, now: number): Urgency {
       pulse: true,
     };
   }
-  if (min >= 5) {
+  if (lvlMin >= DANGER_MIN) {
     return {
       level: 'danger',
       min,
@@ -81,7 +102,7 @@ function getUrgency(createdAt: string, now: number): Urgency {
       pulse: false,
     };
   }
-  if (min >= 2) {
+  if (lvlMin >= WARN_MIN) {
     return {
       level: 'warning',
       min,
@@ -184,7 +205,7 @@ export default function KitchenPage() {
 
   const kitchen = [...rawKitchen].sort(
     (a, b) =>
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   );
 
   const isFresh = (id: string) => {
@@ -409,7 +430,7 @@ export default function KitchenPage() {
       )}
 
       {/* ============================================ */}
-      {/* ГОРИЗОНТАЛЬНАЯ ЛЕНТА (новые слева)           */}
+      {/* ГОРИЗОНТАЛЬНАЯ ЛЕНТА (старые слева, новые справа)           */}
       {/* ============================================ */}
       {loading ? (
         <div className="flex-1 flex items-center justify-center">
@@ -428,7 +449,7 @@ export default function KitchenPage() {
       ) : (
         <KitchenScroller itemWidth={cardW + Math.round(CARD_GAP * ui)}>
           <div className="flex gap-4 items-stretch h-full">
-            {kitchen.map((order) => (
+            {kitchen.map((order, idx) => (
               <div
                 key={order.id}
                 className="flex-shrink-0 h-full"
@@ -437,6 +458,7 @@ export default function KitchenPage() {
                 <KitchenOrderCard
                   order={order}
                   now={now}
+                  urgentEligible={idx < MAX_URGENT_ORDERS}
                   fresh={isFresh(order.id)}
                   modified={isModified(order)}
                   onReady={handleReady}
@@ -482,6 +504,7 @@ export default function KitchenPage() {
 function KitchenOrderCard({
   order,
   now,
+  urgentEligible,
   fresh,
   modified,
   onReady,
@@ -490,16 +513,46 @@ function KitchenOrderCard({
 }: {
   order: Order;
   now: number;
+  urgentEligible: boolean;
   fresh: boolean;
   modified: boolean;
   onReady: (order: Order) => void;
   lang: Lang;
   t: (key: TranslationKey) => string;
 }) {
-  const urgency = getUrgency(order.created_at, now);
+  const urgency = getUrgency(order.created_at, now, urgentEligible);
   const isInside = order.order_type === 'INSIDE';
   const isCritical = urgency.level === 'critical';
+  const typeLabel = isInside
+    ? t('orderTypeInside')
+    : order.order_type === 'ON_THE_WAY'
+    ? t('orderTypeOnTheWay')
+    : t('orderTypeOutside');
   const emoji = typeEmoji(order.order_type);
+  const TypeIcon = isInside
+    ? Utensils
+    : order.order_type === 'ON_THE_WAY'
+    ? Footprints
+    : ShoppingBag;
+
+  // ---------- Авто-подбор шрифта: чем больше позиций, тем мельче ----------
+  const itemsRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = itemsRef.current;
+    if (!el) return;
+    const fit = () => {
+      let size = FONT_MAX;
+      el.style.fontSize = `${size}px`;
+      while (size > FONT_MIN && el.scrollHeight > el.clientHeight + 1) {
+        size -= 0.5;
+        el.style.fontSize = `${size}px`;
+      }
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [order.order_items, order.comment, fresh]);
 
   const blinkClass = fresh
     ? 'kitchen-flash'
@@ -514,67 +567,68 @@ function KitchenOrderCard({
       className={`rounded-2xl border-4 ${urgency.border} ${urgency.cardBg} shadow-lg flex flex-col overflow-hidden ring-2 ${urgency.ring} h-full transition-shadow duration-500 ${blinkClass}`}
     >
       {fresh && (
-        <div className="kitchen-fresh-banner text-center text-lg font-black tracking-[0.25em] py-1.5">
+        <div className="kitchen-fresh-banner text-center text-xs font-black tracking-[0.25em] py-0.5">
           🔔 {t('newOrderBadge')}
         </div>
       )}
 
-      {/* ШАПКА */}
+      {/* ШАПКА — маленькая, одна строка */}
       <div
-        className={`${urgency.headerBg} text-white px-4 py-3 flex items-start justify-between gap-3 shrink-0 ${
+        className={`${urgency.headerBg} text-white px-2.5 py-1 flex items-center gap-2 shrink-0 ${
           isCritical && !fresh ? 'kitchen-critical-header' : ''
         }`}
       >
-        <div className="flex flex-col min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-3xl sm:text-4xl xl:text-5xl font-black leading-none tabular-nums drop-shadow-lg">
-              #{order.order_number}
-            </span>
-            <span
-              className="text-4xl sm:text-5xl xl:text-6xl leading-none drop-shadow-lg select-none"
-              aria-label={order.order_type}
-            >
-              {emoji}
-            </span>
-          </div>
-          <span className="mt-1 text-sm font-black uppercase tracking-wide opacity-95 truncate">
-            {isInside
-              ? t('orderTypeInside')
-              : order.order_type === 'ON_THE_WAY'
-              ? t('orderTypeOnTheWay')
-              : t('orderTypeOutside')}
-          </span>
-        </div>
+        <span className="text-xl font-black leading-none tabular-nums drop-shadow shrink-0">
+          #{order.order_number}
+        </span>
 
-        <div className="flex flex-col items-end gap-1 shrink-0">
+        {/* Иконка типа заказа (в зале / по дороге / с собой) */}
+        <span
+          className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-white/25 shrink-0"
+          title={typeLabel}
+          aria-label={typeLabel}
+        >
+          <TypeIcon className="w-5 h-5" strokeWidth={2.5} />
+        </span>
+
+        <div className="ml-auto flex items-center gap-1.5 min-w-0">
           {modified && !fresh ? (
-            <span className="animate-kpulse-amber inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md">
+            <span className="animate-kpulse-amber inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-500 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md whitespace-nowrap">
               <Pencil className="w-3 h-3" />
               {t('modified')}
             </span>
           ) : isCritical && !fresh ? (
-            <span className="animate-kpulse-urgent inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-700 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md">
+            <span className="animate-kpulse-urgent inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-red-700 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md whitespace-nowrap">
               <AlertTriangle className="w-3 h-3" />
-              {t('urgencyCritical')} · {urgency.min}м
+              {urgency.min}м
             </span>
           ) : fresh ? (
-            <span className="animate-kpulse-soft inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md">
+            <span className="animate-kpulse-soft inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-black uppercase tracking-wider leading-none shadow-md whitespace-nowrap">
               <Bell className="w-3 h-3" />
-              {t('newOrderBadge')}
             </span>
           ) : null}
 
-          <span className="flex items-center gap-1 text-sm font-black tabular-nums whitespace-nowrap opacity-95">
+          <span className="flex items-center gap-1 text-xs font-black tabular-nums whitespace-nowrap opacity-95">
             <Clock className="w-3.5 h-3.5" />
             {formatTimeAgo(order.created_at, lang)}
           </span>
         </div>
       </div>
 
-      {/* ============================================ */}
-      {/* ПОЗИЦИИ — УМЕНЬШЕННЫЙ ТЕКСТ                   */}
-      {/* ============================================ */}
-      <div className="flex-1 px-3 py-1.5 overflow-y-auto">
+      {/* ПОЗИЦИИ — размер шрифта подбирается автоматически (em) */}
+      <div className="relative flex-1 min-h-0 flex flex-col">
+        {/* Прозрачная иконка типа заказа в правом нижнем углу списка */}
+        <span
+          className="absolute bottom-6 right-2 text-6xl leading-none opacity-20 pointer-events-none select-none z-0"
+          aria-hidden="true"
+        >
+          {emoji}
+        </span>
+      <div
+        ref={itemsRef}
+        className="relative z-10 flex-1 min-h-0 px-3 py-1 overflow-y-auto"
+        style={{ fontSize: FONT_MAX }}
+      >
         {order.order_items?.map((item, idx) => {
           const displayName = item.variant
             ? `${item.name} ${item.variant}`
@@ -585,26 +639,31 @@ function KitchenOrderCard({
           return (
             <div
               key={idx}
-              className={`py-1.5 border-b border-slate-200/70 last:border-b-0 ${
+              className={`border-b border-slate-200/70 last:border-b-0 ${
                 isNew && !removed ? '-mx-3 px-3 bg-orange-100/80' : ''
               } ${removed ? 'opacity-60' : ''}`}
+              style={{ padding: '0.25em 0' }}
             >
-              <div className="flex items-start gap-2">
-                {/* Бейдж количества — маленький */}
+              <div className="flex items-start" style={{ gap: '0.5em' }}>
                 <span
-                  className={`inline-flex items-center justify-center min-w-[1.9rem] h-7 px-1.5 rounded-md text-sm font-black shrink-0 tabular-nums shadow-sm ${
+                  className={`inline-flex items-center justify-center rounded-md font-black shrink-0 tabular-nums shadow-sm ${
                     removed
                       ? 'bg-slate-300 text-slate-600'
                       : 'bg-slate-900 text-white'
                   }`}
+                  style={{
+                    fontSize: '0.9em',
+                    minWidth: '1.8em',
+                    height: '1.6em',
+                    padding: '0 0.3em',
+                  }}
                 >
                   {item.quantity}
                 </span>
 
                 <div className="flex-1 min-w-0">
-                  {/* Название блюда — компактнее */}
                   <div
-                    className={`text-sm sm:text-base font-black leading-tight break-words ${
+                    className={`font-black leading-tight break-words ${
                       removed
                         ? 'text-red-700 line-through'
                         : isNew
@@ -613,27 +672,31 @@ function KitchenOrderCard({
                     }`}
                   >
                     {displayName}
+                    {(removed || isNew) && (
+                      <span
+                        className={`inline-block align-middle font-black uppercase rounded ${
+                          removed
+                            ? 'bg-red-600 text-white'
+                            : 'bg-orange-500 text-white'
+                        }`}
+                        style={{
+                          fontSize: '0.55em',
+                          marginLeft: '0.6em',
+                          padding: '0.1em 0.5em',
+                        }}
+                      >
+                        {removed ? t('removed') : t('newItem')}
+                      </span>
+                    )}
                   </div>
 
-                  {(removed || isNew) && (
-                    <span
-                      className={`inline-block mt-0.5 text-[10px] font-black uppercase px-1.5 py-0 rounded ${
-                        removed
-                          ? 'bg-red-600 text-white'
-                          : 'bg-orange-500 text-white'
-                      }`}
-                    >
-                      {removed ? t('removed') : t('newItem')}
-                    </span>
-                  )}
-
-                  {/* Опции (соус/капуста/напиток) — мелкие */}
                   {item.options && item.options.length > 0 && (
-                    <div className="mt-0.5 space-y-0">
+                    <div>
                       {item.options.map((o, optIdx) => (
                         <div
                           key={optIdx}
-                          className="text-xs sm:text-sm font-bold text-slate-700 flex items-baseline gap-1 leading-snug"
+                          className="font-bold text-slate-700 flex items-baseline gap-1 leading-snug"
+                          style={{ fontSize: '0.8em' }}
                         >
                           <span className="text-orange-600 font-black">+</span>
                           <span>
@@ -653,28 +716,31 @@ function KitchenOrderCard({
             </div>
           );
         })}
+
+        {/* КОММЕНТАРИЙ */}
+        {order.comment && order.comment.trim() && (
+          <div
+            className="mt-1 px-2 py-1 rounded-lg bg-yellow-300 border border-yellow-600 font-black text-slate-900 leading-snug flex items-start gap-1.5 shadow-inner"
+            style={{ fontSize: '0.8em' }}
+          >
+            <AlertTriangle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
+            <div>{order.comment}</div>
+          </div>
+        )}
+      </div>
       </div>
 
-      {/* КОММЕНТАРИЙ — компактнее */}
-      {order.comment && order.comment.trim() && (
-        <div className="mx-3 mb-2 px-2 py-1.5 rounded-lg bg-yellow-300 border border-yellow-600 text-sm font-black text-slate-900 leading-snug flex items-start gap-1.5 shadow-inner shrink-0">
-          <AlertTriangle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
-          <div>
-            <div className="text-[9px] font-black uppercase tracking-widest text-red-700">
-              {t('note')}
-            </div>
-            {order.comment}
-          </div>
-        </div>
-      )}
-
-      {/* КНОПКА */}
+      {/* КНОПКА «ГОТОВО» — галочка + иконка типа заказа */}
       <button
         onClick={() => onReady(order)}
-        className="w-full h-16 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 active:from-green-700 active:to-emerald-700 text-white font-black text-2xl transition-all flex items-center justify-center gap-3 shrink-0 shadow-inner"
+        aria-label={t('markReady')}
+        title={t('markReady')}
+        className="w-full h-14 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 active:from-green-700 active:to-emerald-700 text-white transition-all flex items-center justify-center gap-4 shrink-0 shadow-inner"
       >
-        <CheckCircle2 className="w-7 h-7" />
-        {t('markReady')}
+        <Check className="w-9 h-9" strokeWidth={4} />
+        <span className="text-4xl leading-none select-none" aria-hidden="true">
+          {emoji}
+        </span>
       </button>
     </div>
   );

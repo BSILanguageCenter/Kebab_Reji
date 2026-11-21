@@ -1,9 +1,10 @@
 // src/App.tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import CashierPage from '@/pages/CashierPage';
 import KitchenPage from '@/pages/KitchenPage';
 import ManagerPage from '@/pages/ManagerPage';
 import QueuePage from '@/pages/QueuePage';
+import DeveloperPage from '@/pages/DeveloperPage';
 import LoginPage from '@/pages/LoginPage';
 import { useI18n, languages, type Lang, type TranslationKey } from '@/locale';
 import {
@@ -11,6 +12,7 @@ import {
   ActiveRoleContext,
   type PageRole,
 } from '@/components/PageActions';
+import { dateLocale } from '@/locale/format';
 import { SyncIndicator } from '@/components/SyncIndicator';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { KitchenAlerts } from '@/components/KitchenAlerts';
@@ -19,16 +21,24 @@ import {
   startGoogleSheetsSync,
   stopGoogleSheetsSync,
 } from '@/services/googleSheetsSync';
-import { listenToOrders } from '@/services/firebaseSync';
 import {
-  fetchAllProductsFromDb,
-  subscribeProductsFromDb,
-} from '@/services/supabaseDb';
-import { applyRemoteOrders, applyRemoteMenu } from '@/lib/localStore';
+  subscribeOrdersFromDb,
+  startOrdersOutbox,
+} from '@/services/supabaseOrders';
+import { startLayoutSync } from '@/services/layoutSync';
+import { startDeletionSync } from '@/services/orderDeletion';
+import { subscribeProductsFromDb } from '@/services/supabaseDb';
+import {
+  applyRemoteOrders,
+  applyRemoteDeletes,
+  applyRemoteMenu,
+  getAllOrders,
+} from '@/lib/localStore';
 import {
   getCurrentUser,
   logout,
   allowedRoles,
+  isDeveloper,
   type AuthUser,
 } from '@/lib/auth';
 import type { Order, MenuItem } from '@/types/database';
@@ -39,9 +49,12 @@ import {
   ListOrdered,
   LogOut,
   UserCircle2,
+  Code2,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 
-type Role = 'cashier' | 'queue' | 'kitchen' | 'manager';
+type Role = 'cashier' | 'queue' | 'kitchen' | 'manager' | 'developer';
 
 export default function App() {
   const [user, setUser] = useState<AuthUser | null>(() => getCurrentUser());
@@ -62,37 +75,40 @@ export default function App() {
     };
   }, []);
 
-  // Firebase RTDB — заказы
+  // Supabase — заказы: отправка (outbox) + получение с других устройств
   useEffect(() => {
-    const unsubOrders = listenToOrders((orders: Order[]) => {
-      applyRemoteOrders(orders);
-    });
+    const stopOutbox = startOrdersOutbox(getAllOrders);
+    const unsubOrders = subscribeOrdersFromDb(
+      (orders: Order[]) => {
+        applyRemoteOrders(orders);
+      },
+      // заказ удалён разработчиком на другом устройстве
+      (ids: string[]) => applyRemoteDeletes(ids)
+    );
+    // добивает незавершённые удаления (нет сети в момент удаления)
+    const stopDeletions = startDeletionSync();
     return () => {
+      stopOutbox();
       unsubOrders();
+      stopDeletions();
     };
   }, []);
 
   // Supabase DB — меню
   useEffect(() => {
-    let cancelled = false;
-
-    void fetchAllProductsFromDb()
-      .then((items: MenuItem[]) => {
-        if (!cancelled) applyRemoteMenu(items);
-      })
-      .catch((e: unknown) => {
-        console.error('[App] fetchAllProductsFromDb failed:', e);
-      });
-
+    // первая загрузка, realtime, догрузка и опрос — внутри subscribeProductsFromDb
     const unsub = subscribeProductsFromDb((items: MenuItem[]) => {
       applyRemoteMenu(items);
     });
-
-    return () => {
-      cancelled = true;
-      unsub();
-    };
+    return unsub;
   }, []);
+
+  // Стиль (размеры, отступы, текст): менеджер задаёт — касса наследует
+  const userRole = user?.role;
+  useEffect(() => {
+    if (!userRole) return;
+    return startLayoutSync(userRole === 'admin' || userRole === 'manager');
+  }, [userRole]);
 
   useEffect(() => {
     if (role) {
@@ -129,26 +145,19 @@ export default function App() {
   }
 
   const roleLabel =
-    user.role === 'admin' ? 'ADMIN' : user.role === 'manager' ? 'MANAGER' : 'CASHIER';
+    user.role === 'admin'
+      ? t('roleAdmin')
+      : user.role === 'manager'
+      ? t('manager')
+      : t('roleCashier');
 
   return (
     <PageActionsContext.Provider value={slot}>
       <div className="h-dvh w-full bg-slate-100 text-gray-900 flex flex-col overflow-hidden">
-        <header className="flex items-center gap-3 px-4 py-2.5 bg-white border-b border-gray-200 shrink-0 shadow-sm">
-          <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-md shadow-orange-500/20">
-              <UtensilsCrossed className="w-5 h-5 text-white" />
-            </div>
-            <span className="text-base font-black tracking-tight text-gray-900 hidden sm:block">
-              {t('appName')}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2 pl-3 border-l border-gray-200 shrink-0">
-            <h1 className="text-lg font-bold text-orange-600">
-              {t(role as TranslationKey)}
-            </h1>
-          </div>
+        <header className="flex items-center gap-3 px-3 py-0.5 bg-white border-b border-gray-200 shrink-0">
+          <h1 className="shrink-0 text-sm font-black uppercase tracking-wider text-orange-600">
+            {t(role as TranslationKey)}
+          </h1>
 
           {/* Слот для кнопок типа "Undo" или "Настройки" */}
           <div
@@ -158,26 +167,21 @@ export default function App() {
 
           {role === 'kitchen' && <KitchenAlerts />}
 
-          <div className="flex items-center gap-3 shrink-0">
-            <span className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-[11px] font-bold text-slate-600">
-              <UserCircle2 className="w-3.5 h-3.5" />
-              {user.login}
-              <span className="ml-1 text-[9px] uppercase text-orange-600">
-                {roleLabel}
-              </span>
-            </span>
+          <Clock />
+
+          <div className="flex items-center gap-1.5 shrink-0">
             <SyncIndicator />
             <ThemeToggle />
-            <DateLabel lang={lang} />
             {languages.length > 1 && (
               <LanguageSwitcher lang={lang} setLang={setLang} />
             )}
             <button
               onClick={() => setRole(null)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold transition-colors active:scale-[0.98]"
+              title={`${t('exit')} · ${user.login} (${roleLabel})`}
+              aria-label={t('exit')}
+              className="flex items-center justify-center w-8 h-8 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors active:scale-95"
             >
-              <LogOut className="w-3.5 h-3.5" />
-              {t('exit')}
+              <LogOut className="w-4 h-4" />
             </button>
           </div>
         </header>
@@ -204,6 +208,11 @@ export default function App() {
                 <ManagerPage />
               </div>
             )}
+            {visited.has('developer') && isDeveloper(user.login) && (
+              <div className={role === 'developer' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+                <DeveloperPage />
+              </div>
+            )}
           </main>
         </ActiveRoleContext.Provider>
       </div>
@@ -228,7 +237,7 @@ function RoleSelectionScreen({
   const allowed = allowedRoles(user.role);
 
   const roleCards: Array<{
-    key: Role;
+    key: Exclude<Role, 'developer'>;
     icon: React.ReactNode;
     label: string;
     color: 'orange' | 'yellow' | 'blue' | 'purple';
@@ -241,7 +250,11 @@ function RoleSelectionScreen({
 
   const visibleCards = roleCards.filter((c) => allowed.includes(c.key));
   const roleLabel =
-    user.role === 'admin' ? 'ADMIN' : user.role === 'manager' ? 'MANAGER' : 'CASHIER';
+    user.role === 'admin'
+      ? t('roleAdmin')
+      : user.role === 'manager'
+      ? t('manager')
+      : t('roleCashier');
 
   return (
     <div className="h-dvh w-full bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200 flex flex-col">
@@ -293,15 +306,25 @@ function RoleSelectionScreen({
           <DateLabel lang={lang} />
         </div>
         <div className="flex items-center gap-2">
+          {isDeveloper(user.login) && (
+            <button
+              onClick={() => onSelectRole('developer')}
+              title={t('developer')}
+              aria-label={t('developer')}
+              className="flex items-center justify-center w-9 h-9 rounded-lg bg-slate-900 hover:bg-slate-700 text-emerald-400 border border-slate-700 transition-colors active:scale-95"
+            >
+              <Code2 className="w-4 h-4" />
+            </button>
+          )}
           {languages.length > 1 && (
-            <LanguageSwitcher lang={lang} setLang={setLang} />
+            <LanguageSwitcher lang={lang} setLang={setLang} up />
           )}
           <button
             onClick={onLogout}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold transition-colors active:scale-[0.98] border border-red-200"
           >
             <LogOut className="w-3.5 h-3.5" />
-            Выйти
+            {t('exit')}
           </button>
         </div>
       </footer>
@@ -350,10 +373,31 @@ function RoleCard({
   );
 }
 
+/** Время с секундами сверху, под ним дата цифрами */
+function Clock() {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const p = (n: number) => String(n).padStart(2, '0');
+  const time = `${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+  const date = `${p(now.getDate())}.${p(now.getMonth() + 1)}.${now.getFullYear()}`;
+
+  return (
+    <div className="shrink-0 flex flex-col items-center leading-none tabular-nums select-none">
+      <span className="text-base font-black text-gray-900">{time}</span>
+      <span className="mt-0.5 text-[11px] font-semibold text-gray-500">{date}</span>
+    </div>
+  );
+}
+
 function DateLabel({ lang }: { lang: Lang }) {
   return (
     <span className="text-xs text-gray-500 hidden md:block">
-      {new Date().toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-US', {
+      {new Date().toLocaleDateString(dateLocale(lang), {
         month: 'short',
         day: 'numeric',
       })}
@@ -361,28 +405,93 @@ function DateLabel({ lang }: { lang: Lang }) {
   );
 }
 
+const LANGUAGE_NAMES: Record<Lang, string> = {
+  ru: 'Русский',
+  en: 'English',
+  uz: "O'zbekcha",
+  tr: 'Türkçe',
+  ja: '日本語',
+  ne: 'नेपाली',
+};
+
+/** Переключатель языка — раскрывающийся список */
 function LanguageSwitcher({
   lang,
   setLang,
+  up = false,
 }: {
   lang: Lang;
   setLang: (l: Lang) => void;
+  /** открывать список вверх (для нижней панели) */
+  up?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const current = languages.find((l) => l.code === lang) ?? languages[0];
+
   return (
-    <div className="flex rounded-lg overflow-hidden border border-gray-300 shadow-sm">
-      {languages.map((opt) => (
-        <button
-          key={opt.code}
-          onClick={() => setLang(opt.code)}
-          className={`px-2.5 py-1 text-[11px] font-bold transition-colors ${
-            lang === opt.code
-              ? 'bg-orange-500 text-white'
-              : 'bg-white text-gray-600 hover:bg-gray-100'
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex items-center gap-1 h-8 px-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-100 text-[11px] font-bold text-gray-700 active:scale-95 transition-all"
+      >
+        <span>{current?.label}</span>
+        <ChevronDown
+          className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <ul
+          role="listbox"
+          className={`absolute right-0 z-[10050] min-w-[9rem] py-1 rounded-xl border border-gray-200 bg-white shadow-xl ${
+            up ? 'bottom-full mb-1' : 'top-full mt-1'
           }`}
         >
-          {opt.label}
-        </button>
-      ))}
+          {languages.map((opt) => {
+            const active = lang === opt.code;
+            return (
+              <li key={opt.code} role="option" aria-selected={active}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLang(opt.code);
+                    setOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left text-xs font-bold transition-colors ${
+                    active
+                      ? 'bg-orange-50 text-orange-600'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  <span>{LANGUAGE_NAMES[opt.code] ?? opt.label}</span>
+                  {active && <Check className="w-3.5 h-3.5" />}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

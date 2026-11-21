@@ -1,4 +1,6 @@
 // src/services/layoutStyle.ts
+import { uuid } from '@/lib/uuid';
+import { tr, dateLocale } from '@/locale/format';
 import { supabase } from '@/lib/supabase';
 import type { LayoutSettings } from '@/lib/layoutSettings';
 
@@ -12,7 +14,10 @@ const LEGACY_KEY = 'menu_layout'; // старое имя (миграция)
 export interface SavedStyle {
   id: string;
   name: string;
+  /** Стиль режима «все блюда» (у старых стилей — единственный стиль) */
   layout: LayoutSettings;
+  /** Стиль режима «одна иконка». Нет у стилей, сохранённых до разделения режимов */
+  layoutSingle?: LayoutSettings;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,19 +46,24 @@ export async function fetchAllStyles(): Promise<SavedStyle[]> {
   return data
     .map((row): SavedStyle | null => {
       const key = row.key as string;
-      const payload = row.data as { name?: string; layout?: LayoutSettings };
+      const payload = row.data as {
+        name?: string;
+        layout?: LayoutSettings;
+        layoutSingle?: LayoutSettings;
+      };
       if (!payload?.layout) return null;
 
       const isLegacy = key === LEGACY_KEY;
       const id = isLegacy ? 'legacy' : key.slice(KEY_PREFIX.length);
       const fallbackName = isLegacy
-        ? `Старый стиль (${new Date(row.updated_at as string).toLocaleDateString('ru-RU')})`
-        : `Стиль ${new Date(row.updated_at as string).toLocaleDateString('ru-RU')}`;
+        ? `${tr('styleLegacy')} (${new Date(row.updated_at as string).toLocaleDateString(dateLocale())})`
+        : `${tr('styleNamePrefix')} ${new Date(row.updated_at as string).toLocaleDateString(dateLocale())}`;
 
       return {
         id,
         name: payload.name?.trim() || fallbackName,
         layout: payload.layout,
+        layoutSingle: payload.layoutSingle,
         createdAt: (row.created_at as string) ?? (row.updated_at as string),
         updatedAt: row.updated_at as string,
       };
@@ -80,18 +90,23 @@ export async function fetchStyleById(
   }
   if (!data) return null;
 
-  const payload = data.data as { name?: string; layout?: LayoutSettings };
+  const payload = data.data as {
+    name?: string;
+    layout?: LayoutSettings;
+    layoutSingle?: LayoutSettings;
+  };
   if (!payload?.layout) return null;
 
   const fallbackName =
     id === 'legacy'
-      ? 'Старый стиль'
-      : `Стиль ${id.slice(0, 6)}`;
+      ? tr('styleLegacy')
+      : `${tr('styleNamePrefix')} ${id.slice(0, 6)}`;
 
   return {
     id,
     name: payload.name?.trim() || fallbackName,
     layout: payload.layout,
+    layoutSingle: payload.layoutSingle,
     createdAt: (data.created_at as string) ?? (data.updated_at as string),
     updatedAt: data.updated_at as string,
   };
@@ -102,12 +117,13 @@ export async function fetchStyleById(
 // ============================================================
 export async function saveStyle(
   name: string,
-  layout: LayoutSettings
+  layout: LayoutSettings,
+  layoutSingle?: LayoutSettings
 ): Promise<SavedStyle> {
-  const id = crypto.randomUUID();
+  const id = uuid();
   const now = new Date().toISOString();
 
-  const fallbackName = `Стиль ${new Date().toLocaleString('ru-RU', {
+  const fallbackName = `${tr('styleNamePrefix')} ${new Date().toLocaleString(dateLocale(), {
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
@@ -118,7 +134,7 @@ export async function saveStyle(
   const { error } = await supabase.from(TABLE).upsert(
     {
       key: `${KEY_PREFIX}${id}`,
-      data: { name: cleanName, layout },
+      data: { name: cleanName, layout, layoutSingle },
       created_at: now,
       updated_at: now,
     },
@@ -133,6 +149,7 @@ export async function saveStyle(
     id,
     name: cleanName,
     layout,
+    layoutSingle,
     createdAt: now,
     updatedAt: now,
   };
@@ -153,7 +170,11 @@ export async function renameStyle(
   const { error } = await supabase.from(TABLE).upsert(
     {
       key,
-      data: { name: name.trim(), layout: existing.layout },
+      data: {
+        name: name.trim(),
+        layout: existing.layout,
+        layoutSingle: existing.layoutSingle,
+      },
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'key' }

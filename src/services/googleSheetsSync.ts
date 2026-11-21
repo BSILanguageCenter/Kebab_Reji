@@ -10,6 +10,7 @@
  *   - заказы идут батчем (batchSize)
  *   - меню идёт отдельно (1 операция)
  */
+import { tr } from '@/locale/format';
 import type {
   GoogleSheetsSyncConfig,
   SyncOperation,
@@ -95,6 +96,7 @@ let boundOffline: (() => void) | null = null;
 // ============================================================
 interface AppsScriptResponse {
   ok: boolean;
+  version?: string;
   applied?: number;
   skipped?: number;
   total?: number;
@@ -105,7 +107,7 @@ interface AppsScriptResponse {
     operationId: string | null;
     orderId: string | null;
     status: 'applied' | 'skipped' | 'error';
-    action?: 'created' | 'updated';
+    action?: 'created' | 'updated' | 'deleted';
     sheet?: string;
     row?: number;
     reason?: string;
@@ -116,16 +118,8 @@ interface AppsScriptResponse {
 async function postBatch(
   operations: SyncOperation[]
 ): Promise<AppsScriptResponse> {
-  if (!config.endpoint) {
-    throw new Error('VITE_SHEETS_ENDPOINT is not configured');
-  }
-  if (!config.secret) {
-    throw new Error('VITE_SHEETS_SECRET is not configured');
-  }
-
-  const body = {
-    secret: config.secret,
-    operations: operations.map((op) => {
+  return postOperations(
+    operations.map((op) => {
       const base = {
         operationId: op.operationId,
         orderId: op.orderId,
@@ -137,20 +131,46 @@ async function postBatch(
         return { ...base, menuItems: op.menuItems ?? [] };
       }
       return { ...base, order: op.order };
-    }),
+    })
+  );
+}
+
+async function postOperations(
+  operations: unknown[]
+): Promise<AppsScriptResponse> {
+  if (!config.endpoint) {
+    throw new Error('VITE_SHEETS_ENDPOINT is not configured');
+  }
+  if (!config.secret) {
+    throw new Error('VITE_SHEETS_SECRET is not configured');
+  }
+
+  const body = {
+    secret: config.secret,
+    operations,
   };
 
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), 30_000);
 
   try {
-    const res = await fetch(config.endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-      credentials: 'omit',
-    });
+    let res: Response;
+    try {
+      // text/plain = «простой» запрос, без preflight (Apps Script не умеет OPTIONS)
+      res = await fetch(config.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+        credentials: 'omit',
+        redirect: 'follow',
+      });
+    } catch (e) {
+      // CORS / сеть: браузер не даёт увидеть причину.
+      // Почти всегда — Apps Script отдал HTML-страницу (не «Anyone», старый деплой, нет авторизации).
+      if (e instanceof TypeError) throw new Error(tr('sheetsUnreachable'));
+      throw e;
+    }
 
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
@@ -380,6 +400,126 @@ export function enqueueMenuForSync(items: MenuItem[]): void {
   if (config.enabled && running) {
     void flushOnce();
   }
+}
+
+let deleteSupportChecked = false;
+
+/**
+ * Старый скрипт (v3) не знает операцию 'delete' и ПЕРЕЗАПИСАЛ бы заказ
+ * пустышкой — поэтому сначала спрашиваем версию (ping) и шлём delete
+ * только в v4+.
+ */
+async function assertScriptSupportsDelete(): Promise<void> {
+  if (deleteSupportChecked) return;
+  const url =
+    config.endpoint +
+    (config.endpoint.includes('?') ? '&' : '?') +
+    `action=ping&secret=${encodeURIComponent(config.secret)}`;
+  let json: { ok?: boolean; version?: string; error?: string };
+  try {
+    const res = await fetch(url, { credentials: 'omit', redirect: 'follow' });
+    json = (await res.json()) as typeof json;
+  } catch {
+    throw new Error(tr('sheetsUnreachable'));
+  }
+  if (!json.ok) throw new Error(json.error || 'Apps Script ping failed');
+  const major = parseInt(String(json.version ?? '').replace(/^v/, ''), 10);
+  if (!Number.isFinite(major) || major < 4) {
+    throw new Error(
+      'Apps Script старой версии (нет операции delete): задеплойте v4 — Deploy → Manage deployments → Edit → New version'
+    );
+  }
+  deleteSupportChecked = true;
+}
+
+/**
+ * Удалить заказы из Google Sheets (строки в листах MM.YY).
+ * Нужен Apps Script v4 (операция 'delete'). Если синхронизация с таблицей
+ * не настроена — ничего не делаем. Бросает ошибку при сбое → вызывающий
+ * код повторит позже.
+ */
+export async function deleteOrdersInSheets(
+  orders: Array<{ id: string; created_at: string }>
+): Promise<void> {
+  if (!config.enabled || orders.length === 0) return;
+  await assertScriptSupportsDelete();
+  const size = Math.max(1, config.batchSize);
+  for (let i = 0; i < orders.length; i += size) {
+    const chunk = orders.slice(i, i + size);
+    const res = await postOperations(
+      chunk.map((o) => ({
+        operationId: `del-${o.id}-${Date.now()}`,
+        orderId: o.id,
+        operationType: 'delete',
+        createdAt: o.created_at,
+        version: 0,
+      }))
+    );
+    const bad = (res.results ?? []).find((r) => r.status === 'error');
+    if (bad) throw new Error(bad.error || 'Apps Script delete error');
+  }
+}
+
+/** Включена ли синхронизация с Google Sheets. */
+export function isSheetsEnabled(): boolean {
+  return !!config.enabled && !!config.endpoint && !!config.secret;
+}
+
+async function sheetsGet<T>(
+  action: string,
+  extra: Record<string, string> = {}
+): Promise<T> {
+  const qs = new URLSearchParams({ action, secret: config.secret, ...extra });
+  const url =
+    config.endpoint + (config.endpoint.includes('?') ? '&' : '?') + qs;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 25_000);
+  try {
+    const res = await fetch(url, {
+      credentials: 'omit',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    const json = (await res.json()) as T & { ok?: boolean; error?: string };
+    if (json.ok === false) throw new Error(json.error || `${action} failed`);
+    return json;
+  } catch (e) {
+    if (e instanceof TypeError) throw new Error(tr('sheetsUnreachable'));
+    throw e;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Диагностика таблицы: версия скрипта, всего заказов, по месяцам и
+ * заказы, изменённые после `sinceIso` (для сверки «за сегодня»).
+ */
+export async function fetchSheetsDiag(sinceIso: string): Promise<{
+  version: string;
+  totalOrders: number;
+  hasMenu: boolean;
+  months: Array<{ month: string; orders: number }>;
+  changed: Order[];
+}> {
+  const [ping, stats, changes] = await Promise.all([
+    sheetsGet<{ version?: string }>('ping'),
+    sheetsGet<{
+      stats?: {
+        totalOrders: number;
+        hasMenu: boolean;
+        months: Array<{ month: string; orders: number }>;
+      };
+    }>('stats'),
+    sheetsGet<{ changes?: Order[] }>('changes', { since: sinceIso }),
+  ]);
+  return {
+    version: ping.version ?? '?',
+    totalOrders: stats.stats?.totalOrders ?? 0,
+    hasMenu: !!stats.stats?.hasMenu,
+    months: stats.stats?.months ?? [],
+    changed: changes.changes ?? [],
+  };
 }
 
 export function retryAllSyncFailed(): number {

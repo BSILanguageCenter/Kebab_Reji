@@ -10,9 +10,10 @@ import {
   translations,
   languageLabels,
   defaultLang,
+  LANG_STORAGE_KEY,
   type Lang,
 } from './config';
-import type { TranslationKey } from './lg';
+import type { TranslationKey } from './en';
 
 export type { Lang, TranslationKey };
 export { languageLabels, defaultLang };
@@ -25,7 +26,7 @@ interface I18nContextValue {
 
 const I18nContext = createContext<I18nContextValue | null>(null);
 
-const STORAGE_KEY = 'kebab-pos-lang';
+const STORAGE_KEY = LANG_STORAGE_KEY;
 const allCodes = Object.keys(translations) as Lang[];
 
 function isLang(value: string | null): value is Lang {

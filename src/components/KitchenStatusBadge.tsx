@@ -31,7 +31,7 @@ export function KitchenStatusBadge({ order }: { order: Order }) {
     return (
       <span className="animate-kpulse-urgent inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-red-600 text-white text-[10px] font-black uppercase tracking-wide leading-none">
         <AlertCircle className="w-2.5 h-2.5" />
-        {t('urgencyCritical')} {mins}м
+        {t('urgencyCritical')} {mins} {t('min')}
       </span>
     );
   }

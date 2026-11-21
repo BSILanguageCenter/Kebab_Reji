@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Pencil, Copy, Trash2 } from 'lucide-react';
+import { useI18n } from '@/locale';
 
 export interface MenuCardMenuState {
   itemId: string;
@@ -22,6 +23,7 @@ export function MenuCardMenu({
   onDelete: () => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: state.x, top: state.y });
 
@@ -87,7 +89,7 @@ export function MenuCardMenu({
     <div
       ref={ref}
       role="menu"
-      className="fixed z-[100] bg-white rounded-2xl shadow-2xl border border-slate-200 p-1.5 min-w-[220px]"
+      className="fixed z-[9000] bg-white rounded-2xl shadow-2xl border border-slate-200 p-1.5 min-w-[220px]"
       style={{ left: pos.left, top: pos.top }}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -104,7 +106,7 @@ export function MenuCardMenu({
         className={`${itemCls} hover:bg-slate-100 focus:bg-slate-100`}
       >
         <Pencil className="w-4 h-4 text-slate-600" />
-        <span className="text-sm font-bold text-slate-800">Редактировать</span>
+        <span className="text-sm font-bold text-slate-800">{t('editAction')}</span>
       </button>
 
       <button
@@ -116,7 +118,7 @@ export function MenuCardMenu({
         className={`${itemCls} hover:bg-slate-100 focus:bg-slate-100`}
       >
         <Copy className="w-4 h-4 text-slate-600" />
-        <span className="text-sm font-bold text-slate-800">Дублировать</span>
+        <span className="text-sm font-bold text-slate-800">{t('duplicate')}</span>
       </button>
 
       <div className="my-1 border-t border-slate-100" />
@@ -130,7 +132,7 @@ export function MenuCardMenu({
         className={`${itemCls} hover:bg-red-50 focus:bg-red-50`}
       >
         <Trash2 className="w-4 h-4 text-red-600" />
-        <span className="text-sm font-bold text-red-600">Удалить</span>
+        <span className="text-sm font-bold text-red-600">{t('delete')}</span>
       </button>
     </div>,
     document.body

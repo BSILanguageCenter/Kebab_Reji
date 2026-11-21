@@ -46,7 +46,7 @@ export function SyncPanel({
   open: boolean;
   onClose: () => void;
 }) {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
   const [ops, setOps] = useState<SyncOperation[]>([]);
   const [filter, setFilter] = useState<SyncStatus | 'all'>('all');
   const [sending, setSending] = useState(false);
@@ -197,17 +197,17 @@ export function SyncPanel({
 
   const opTypeLabel = (op: SyncOperation) => {
     if (op.operationType === 'create') {
-      return lang === 'ru' ? 'Создание' : 'Create';
+      return t('opCreate');
     }
     if (op.operationType === 'update') {
-      return lang === 'ru' ? 'Обновление' : 'Update';
+      return t('opUpdate');
     }
-    return lang === 'ru' ? 'Статус' : 'Status';
+    return t('opStatus');
   };
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[10040] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
       onClick={onClose}
     >
       <div
@@ -234,7 +234,7 @@ export function SyncPanel({
           <button
             onClick={onClose}
             className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 active:scale-95"
-            aria-label="Close"
+            aria-label={t('close')}
           >
             <X className="w-5 h-5" />
           </button>

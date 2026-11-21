@@ -1,3 +1,10 @@
+/* eslint-disable react-hooks/exhaustive-deps */
+import {
+  BottomPanelCats,
+  SidePanelCats,
+  splitPanelCats,
+  type PanelCat,
+} from '@/components/CategoryPanels';
 import {
   useState,
   useEffect,
@@ -19,12 +26,24 @@ import {
   todayStr,
 } from '@/lib/localStore';
 import { ClearCartDialog } from '@/components/ClearCartDialog';
-import { ProductBuilderDialog } from '@/components/ProductBuilderDialog';
+import {
+  ProductBuilderDialog,
+  extrasNeedDialog,
+  autoExtraOptions,
+} from '@/components/ProductBuilderDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageActions';
+import { SendToKitchenButton } from '@/components/SendToKitchenButton';
 import { Resizer } from '@/components/Resizer';
 import { MenuCard, groupCardHeight } from '@/components/MenuCard';
+import { slotOf } from '@/lib/menuOrder';
+import type { LayoutSettings } from '@/lib/layoutSettings';
 import { useViewport } from '@/lib/useViewport';
+import { useViewPrefs } from '@/lib/viewPrefs';
+import {
+  GroupViewToggle,
+  OrdersHeaderButton,
+} from '@/components/ViewToggles';
 import {
   pushUndo,
   popUndo,
@@ -35,6 +54,7 @@ import {
   useLayoutSettings,
   clampLayout,
   snapValue,
+  fitColumns,
 } from '@/lib/layoutSettings';
 import type {
   MenuItem,
@@ -58,6 +78,10 @@ import {
   ClipboardList,
   UtensilsCrossed,
   X,
+  Pin,
+  PinOff,
+  ChevronsUpDown,
+  ChevronsDownUp,
 } from 'lucide-react';
 
 type CategorySpace = 'dishset' | 'drink' | 'sauce' | 'topping';
@@ -93,7 +117,8 @@ function getSpaceItems(items: MenuItem[], space: CategorySpace): MenuItem[] {
   return items.filter((i) => i.type === space);
 }
 
-function getItemWidth(item: MenuItem): number {
+function getItemWidth(item: MenuItem, singleGroups = false): number {
+  if (singleGroups) return 1;
   if (item.type === 'dish' && item.dish_kind === 'group') {
     return Math.max(1, item.variants?.length ?? 1);
   }
@@ -122,8 +147,41 @@ function typeEmoji(t: OrderType): string {
   return '🥡';
 }
 
+/** Измеряет ширину контейнера и отдаёт её в render-функцию */
+function MeasuredGrid({
+  children,
+}: {
+  children: (width: number) => ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => setWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <div ref={ref} style={{ width: '100%' }}>
+      {width > 0 ? children(width) : null}
+    </div>
+  );
+}
+
+const COLS_KEY: Record<CategorySpace, keyof LayoutSettings> = {
+  dishset: 'gridColsDishset',
+  drink: 'gridColsDrink',
+  sauce: 'gridColsSauce',
+  topping: 'gridColsTopping',
+};
+
 export default function CashierPage() {
   const { t, lang } = useI18n();
+  const [prefs, setPrefs] = useViewPrefs();
+  const singleGroups = prefs.groupView === 'single';
 
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -134,6 +192,8 @@ export default function CashierPage() {
   const [error, setError] = useState<string | null>(null);
   const [lastOrderNumber, setLastOrderNumber] = useState<number | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  // Заказы, которые уже были изменены (остаются жёлтыми после сохранения)
+  const [editedIds, setEditedIds] = useState<Set<string>>(() => new Set());
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
 
   // Модалка выбора способа получения (после "Отправить на кухню")
@@ -142,6 +202,9 @@ export default function CashierPage() {
   const [builder, setBuilder] = useState<{
     item: MenuItem;
     variantId?: string;
+    /** если задано — редактируем позицию корзины, а не добавляем новую */
+    editCartId?: string;
+    initialOptions?: CartItemOption[];
   } | null>(null);
 
   const [pendingUndo, setPendingUndo] = useState<UndoRecord | null>(null);
@@ -150,6 +213,7 @@ export default function CashierPage() {
   const undoStack = useUndoStack('cashier');
   const [rawLayout, setLayout] = useLayoutSettings();
   const drinksWrapRef = useRef<HTMLDivElement>(null);
+  const leftWrapRef = useRef<HTMLDivElement>(null);
 
   // ---------- адаптивность ----------
   const { width: vw, device, scale: ui } = useViewport();
@@ -164,6 +228,7 @@ export default function CashierPage() {
       ...rawLayout,
       ordersWidth: s(rawLayout.ordersWidth),
       menuRightWidth: s(rawLayout.menuRightWidth),
+      menuLeftWidth: s(rawLayout.menuLeftWidth),
       cartWidth: s(rawLayout.cartWidth),
       dishCardSize: s(rawLayout.dishCardSize),
       toppingCardSize: s(rawLayout.toppingCardSize),
@@ -225,6 +290,7 @@ export default function CashierPage() {
       setComment('');
       setEditingOrder(null);
       setOrderType('OUTSIDE');
+      setEditedIds(new Set());
       setLastOrderNumber(null);
       setPendingAction(null);
       setBuilder(null);
@@ -243,8 +309,8 @@ export default function CashierPage() {
     () =>
       menuItems
         .filter((i) => i.active && !i.parent_id)
-        .sort((a, b) => a.sort_order - b.sort_order),
-    [menuItems]
+        .sort((a, b) => slotOf(a) - slotOf(b)),
+    [menuItems, singleGroups]
   );
 
   const cartTotal = useMemo(
@@ -372,12 +438,16 @@ export default function CashierPage() {
       const hasProps = (item.properties?.length ?? 0) > 0;
       const hasSauces =
         item.sauce_mode === 'with' && (item.allowed_sauces?.length ?? 0) > 0;
+      const hasAddons =
+        (item.allowed_drinks?.length ?? 0) > 0 ||
+        (item.allowed_toppings?.length ?? 0) > 0;
 
       if (
         item.type === 'dish' &&
         item.dish_kind === 'single' &&
         !hasProps &&
-        !hasSauces
+        !hasSauces &&
+        !hasAddons
       ) {
         addToCart(item);
         return;
@@ -398,12 +468,13 @@ export default function CashierPage() {
         variant.sauce_mode === 'with' &&
         (variant.allowed_sauces?.length ?? 0) > 0;
 
-      const setHasExtras =
-        parent.type === 'set' &&
-        (parent.set_extra_groups?.some((g) => g.options.length > 0) ??
-          false);
+      const vHasAddons =
+        (variant.allowed_drinks?.length ?? 0) > 0 ||
+        (variant.allowed_toppings?.length ?? 0) > 0;
 
-      if (!vHasProps && !vHasSauces && !setHasExtras) {
+      const setHasExtras = extrasNeedDialog(parent);
+
+      if (!vHasProps && !vHasSauces && !vHasAddons && !setHasExtras) {
         // Нечего выбирать — сразу в корзину с меткой варианта
         addToCartFromBuilder(
           parent,
@@ -416,6 +487,8 @@ export default function CashierPage() {
               price: 0,
               quantity: 1,
             },
+            // группы без окна идут в заказ целиком
+            ...autoExtraOptions(parent),
           ]
         );
         return;
@@ -425,6 +498,44 @@ export default function CashierPage() {
     },
     [addToCartFromBuilder]
   );
+
+  // Клик по позиции в корзине: открываем окно выбора соусов/напитка
+  // с уже выбранными значениями. Позиции без выбора не открываем.
+  const handleEditCartItem = (ci: CartItem) => {
+    if (ci.is_removed) return;
+    const menuItem = menuItems.find((m) => m.id === ci.menu_item_id);
+    if (!menuItem) return;
+    if (menuItem.type !== 'dish' && menuItem.type !== 'set') return;
+
+    const mainItem = menuItem.type === 'set' ? menuItem.set_main : menuItem;
+    const variantOpt = ci.options.find((o) => o.type === 'variant');
+    const variantId = variantOpt
+      ? mainItem?.variants?.find((v) => v.name === variantOpt.name)?.id
+      : undefined;
+    const resolved =
+      (variantId && mainItem?.variants?.find((v) => v.id === variantId)) ||
+      mainItem;
+
+    const hasSauces =
+      resolved?.sauce_mode === 'with' &&
+      (resolved.allowed_sauces?.length ?? 0) > 0;
+    const hasProps = (resolved?.properties ?? []).some(
+      (p) => Array.isArray(p.options) && p.options.length > 0
+    );
+    const hasAddons =
+      (resolved?.allowed_drinks?.length ?? 0) > 0 ||
+      (resolved?.allowed_toppings?.length ?? 0) > 0;
+    const hasExtras = extrasNeedDialog(menuItem);
+
+    if (!hasSauces && !hasProps && !hasAddons && !hasExtras) return;
+
+    setBuilder({
+      item: menuItem,
+      variantId,
+      editCartId: ci.id,
+      initialOptions: ci.options,
+    });
+  };
 
   const incrementItem = (cartId: string) => {
     try {
@@ -608,6 +719,34 @@ export default function CashierPage() {
         })),
       });
 
+      // Помечаем заказ как изменённый ТОЛЬКО если что-то реально поменялось
+      const itemSig = (
+        items: {
+          menu_item_id?: string | null;
+          variant?: string | null;
+          quantity: number;
+          is_removed?: boolean | null;
+          options?: { type: string; name: string; quantity: number }[] | null;
+        }[]
+      ) =>
+        JSON.stringify(
+          items.map((i) => [
+            i.menu_item_id ?? '',
+            i.variant ?? '',
+            i.quantity,
+            Boolean(i.is_removed),
+            (i.options ?? []).map((o) => [o.type, o.name, o.quantity]),
+          ])
+        );
+      const changed =
+        itemSig(editingOrder.order_items ?? []) !== itemSig(cart) ||
+        (editingOrder.comment ?? '') !== comment ||
+        editingOrder.order_type !== orderType;
+      if (changed) {
+        const editedId = editingOrder.id;
+        setEditedIds((prev) => new Set(prev).add(editedId));
+      }
+
       try {
         if ('vibrate' in navigator) navigator.vibrate(30);
       } catch {
@@ -740,6 +879,14 @@ export default function CashierPage() {
         'drinksShare',
         snapValue(prev.drinksShare, [30, 50, 70], 8)
       ),
+      menuLeftWidth: clampLayout(
+        'menuLeftWidth',
+        snapValue(prev.menuLeftWidth, [160, 200, 240, 300], 12)
+      ),
+      leftShare: clampLayout(
+        'leftShare',
+        snapValue(prev.leftShare, [30, 50, 70], 8)
+      ),
     }));
     startLayoutRef.current = null;
   };
@@ -757,6 +904,24 @@ export default function CashierPage() {
     setLayout((prev) => ({
       ...prev,
       menuRightWidth: clampLayout('menuRightWidth', base.menuRightWidth - d / ui),
+    }));
+  };
+
+  const handleResizeMenuLeft = (d: number) => {
+    const base = startLayoutRef.current ?? rawLayout;
+    setLayout((prev) => ({
+      ...prev,
+      menuLeftWidth: clampLayout('menuLeftWidth', base.menuLeftWidth + d / ui),
+    }));
+  };
+
+  const handleResizeLeftShare = (d: number) => {
+    const base = startLayoutRef.current ?? rawLayout;
+    const containerH = leftWrapRef.current?.clientHeight ?? 400;
+    const pctDelta = (d / containerH) * 100;
+    setLayout((prev) => ({
+      ...prev,
+      leftShare: clampLayout('leftShare', base.leftShare + pctDelta),
     }));
   };
 
@@ -786,16 +951,30 @@ export default function CashierPage() {
     }));
   };
 
-  const renderGrid = (
+  /** Колонка + ширина карточки в сетке placeCols колонок (как у менеджера) */
+  const placement = (card: MenuItem, w: number, placeCols: number): string => {
+    const span = Math.min(w, placeCols);
+    let col = slotOf(card) % placeCols;
+    if (col + span > placeCols) col = placeCols - span;
+    return `${col + 1} / span ${span}`;
+  };
+
+  /**
+   * forcedCols — жёстко задать число колонок сетки менеджера (placeCols).
+   * Нужно, чтобы расстановка совпадала с менеджером всегда, а не только
+   * когда панель кассы достаточно широка.
+   */
+  const renderGridAt = (
     space: CategorySpace,
     size: number,
     compact: boolean,
-    fluidCols?: number
-  ) => {
+    fluidCols?: number,
+    forcedCols?: number
+  ): JSX.Element => {
     const fluid = fluidCols != null;
     const spaceItems = getSpaceItems(tops, space);
     const sorted = [...spaceItems].sort(
-      (a, b) => a.sort_order - b.sort_order
+      (a, b) => slotOf(a) - slotOf(b)
     );
     let cellH = Math.round(
       size + (compact ? 32 : 50) * (layout.itemTextSize / 12)
@@ -803,7 +982,7 @@ export default function CashierPage() {
     if (!fluid) {
       // строка должна вмещать самую высокую группу — тогда зазоры равны
       for (const it of sorted) {
-        const w = getItemWidth(it);
+        const w = getItemWidth(it, singleGroups);
         if (w > 1) {
           cellH = Math.max(
             cellH,
@@ -813,19 +992,22 @@ export default function CashierPage() {
       }
     }
 
-    return (
+    // Точная расстановка как у менеджера (те же ячейки, те же пустые места)
+    const renderInner = (placeCols: number) => (
       <div
         className="grid"
         style={{
           gridTemplateColumns: fluid
             ? `repeat(${fluidCols}, minmax(0, 1fr))`
+            : placeCols > 0
+            ? `repeat(${placeCols}, ${size}px)`
             : `repeat(auto-fill, ${size}px)`,
           gridAutoRows: fluid ? 'auto' : `${cellH}px`,
           gap: fluid ? FLUID_GAP * ui : layout.gridGap,
         }}
       >
         {sorted.map((card) => {
-          const w = getItemWidth(card);
+          const w = getItemWidth(card, singleGroups);
 
           let variants: MenuItem[] | undefined;
           if (card.type === 'dish' && card.dish_kind === 'group') {
@@ -842,10 +1024,15 @@ export default function CashierPage() {
               key={card.id}
               style={{
                 gridColumn: fluid
-                  ? variants
+                  ? variants && !singleGroups
                     ? '1 / -1'
                     : 'span 1'
+                  : placeCols > 0
+                  ? placement(card, w, placeCols)
                   : `span ${w}`,
+                ...(placeCols > 0 && !fluid
+                  ? { gridRowStart: Math.floor(slotOf(card) / placeCols) + 1 }
+                  : {}),
                 display: 'flex',
                 alignItems: fluid ? 'flex-start' : 'center',
                 justifyContent: 'center',
@@ -869,6 +1056,7 @@ export default function CashierPage() {
                 }
                 compact={fluid ? false : compact}
                 wrapVariants={fluid}
+                singleIcon={singleGroups}
                 gap={layout.gridGap}
                 cardRadius={layout.cardRadius}
               />
@@ -877,7 +1065,41 @@ export default function CashierPage() {
         })}
       </div>
     );
+
+    if (fluid) return renderInner(0);
+    if (forcedCols != null) return renderInner(forcedCols);
+
+    // Расстановка берётся из локального хранилища ровно так, как её сохранил менеджер:
+    // позиции карточек (sort_order) + число колонок его сетки (gridCols*).
+    // Никаких «догадок»: если число колонок сохранено — ставим карточки в те же ячейки,
+    // если нет (хранилище пустое) — просто выкладываем блюда по порядку.
+    const storedCols = Number(rawLayout[COLS_KEY[space]]) || 0;
+    if (storedCols <= 0) {
+      return renderGridAt(space, size, compact, undefined, 0);
+    }
+
+    return (
+      <MeasuredGrid>
+        {(w) => {
+          const gap = layout.gridGap;
+          // Число колонок — как у менеджера; карточки подгоняются под ширину
+          // пропорционально (на большом экране крупнее, на малом мельче)
+          const fitSize = Math.min(
+            Math.round(size * 1.6),
+            Math.max(24, Math.floor((w + gap) / storedCols - gap))
+          );
+          return renderGridAt(space, fitSize, compact, undefined, storedCols);
+        }}
+      </MeasuredGrid>
+    );
   };
+
+  const renderGrid = (
+    space: CategorySpace,
+    size: number,
+    compact: boolean,
+    fluidCols?: number
+  ) => renderGridAt(space, size, compact, fluidCols);
 
   const hasDishSet = getSpaceItems(tops, 'dishset').length > 0;
   const hasTopping = getSpaceItems(tops, 'topping').length > 0;
@@ -925,26 +1147,75 @@ export default function CashierPage() {
   ].filter((c) => c.has);
   const activeCat = catList.find((c) => c.key === menuCat) ?? catList[0];
 
+  // ---------- масштаб корзины и списка заказов (зависит от ширины колонки) ----------
+  const clamp = (v: number, a: number, b: number) =>
+    Math.min(b, Math.max(a, v));
+
+  const cartW = isDesktop ? layout.cartWidth : isPhone ? vw : tabletCartW;
+  const cartBase = isPhone ? 400 : 340 * ui;
+  const cs = clamp(cartW / cartBase, 0.8, 1.1);
+  const cz = (n: number) => Math.round(n * cs * ui * 10) / 10; // размер в корзине
+
+  const ordersBase = 208 * ui;
+  const os = isDesktop ? clamp(layout.ordersWidth / ordersBase, 0.8, 1.1) : 1;
+  const oz = (n: number) => Math.round(n * os * ui * 10) / 10; // размер в заказах
+
   // ---------- общие куски интерфейса ----------
   const ordersInner = (
     <>
       <div className="px-3 py-2 border-b border-slate-200 shrink-0 bg-slate-50">
+        <div className="flex items-center justify-between gap-1">
+          <span
+            className="font-black text-orange-600 leading-none pl-1 tabular-nums"
+            style={{ fontSize: numSize }}
+          >
+            {ordersCount}
+          </span>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setPrefs({ ordersExpanded: !prefs.ordersExpanded })}
+              title={prefs.ordersExpanded ? (t('collapseOrders')) : (t('expandOrders'))}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-200 active:scale-90"
+            >
+              {prefs.ordersExpanded ? <ChevronsDownUp className="w-3.5 h-3.5" /> : <ChevronsUpDown className="w-3.5 h-3.5" />}
+            </button>
+            {isDesktop && (
+              <>
+            <button
+              type="button"
+              onClick={() => setPrefs({ ordersPinned: !prefs.ordersPinned })}
+              title={prefs.ordersPinned ? (t('unpinPanel')) : (t('pinPanelLeft'))}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center active:scale-90 ${
+                prefs.ordersPinned
+                  ? 'bg-orange-100 text-orange-600'
+                  : 'text-slate-500 hover:bg-slate-200'
+              }`}
+            >
+              {prefs.ordersPinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setPrefs({ ordersOpen: false })}
+              title={t('hidePanel')}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-200 active:scale-90"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+              </>
+            )}
+          </div>
+        </div>
         <h2
-          className="font-black text-slate-700 tracking-wide border-l-4 border-slate-400 pl-2 leading-none"
+          className="font-black text-slate-700 tracking-wide border-l-4 border-slate-400 pl-2 leading-none mt-1.5"
           style={{ fontSize: hdrSize }}
         >
           {t('activeOrders')}
         </h2>
-        <span
-          className="font-black text-orange-600 leading-none mt-1.5 block pl-2 tabular-nums"
-          style={{ fontSize: numSize }}
-        >
-          {activeOrders.filter((o) => o.status !== 'CANCELLED').length}
-        </span>
       </div>
 
       <div
-        className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col"
+        className="flex-1 min-h-0 overflow-y-auto p-1.5 flex flex-col"
         style={{ rowGap: layout.ordersRowGap }}
       >
         {activeOrders.length === 0 && (
@@ -957,10 +1228,19 @@ export default function CashierPage() {
           const isEditing = editingOrder?.id === order.id;
           const badgeCls = typeBadgeCls(order.order_type);
           const badgeLabel = typeLabelFor(order.order_type);
+          const isEdited =
+            !isCancelled &&
+            !isEditing &&
+            (editedIds.has(order.id) ||
+              (order.order_items ?? []).some(
+                (i) => i.is_added_later || i.is_removed
+              ));
           const cls = isCancelled
             ? 'bg-red-50 border-l-red-400 opacity-60'
             : isEditing
-            ? 'bg-orange-100 border-l-orange-500 ring-2 ring-orange-300 shadow-md'
+            ? 'edit-blink border-l-yellow-500 ring-2 ring-yellow-400 shadow-md'
+            : isEdited
+            ? 'bg-yellow-100 border-l-yellow-500 ring-1 ring-yellow-300 shadow-sm'
             : order.status === 'READY'
             ? 'bg-green-50 border-l-green-500 shadow-sm'
             : order.status === 'PREPARING'
@@ -971,42 +1251,119 @@ export default function CashierPage() {
               key={order.id}
               onClick={() => handleEditOrder(order)}
               disabled={isCancelled}
-              className={`w-full text-left p-3.5 rounded-xl border border-slate-200 border-l-[6px] transition-all ${cls} ${
+              style={{ padding: `${oz(6)}px ${oz(8)}px` }}
+              className={`relative overflow-hidden w-full text-left rounded-lg border border-slate-200 border-l-4 transition-all ${cls} ${
                 isCancelled
                   ? 'cursor-not-allowed'
                   : 'cursor-pointer hover:shadow-md active:scale-[0.97]'
               }`}
             >
-              <div className="flex items-center justify-between gap-2">
-                <span
-                  className="font-black text-slate-900 tabular-nums"
-                  style={{ fontSize: numSize }}
-                >
-                  #{order.order_number}
-                </span>
-                <span
-                  className={`text-[0.6875rem] px-2 py-0.5 rounded-full font-bold whitespace-nowrap ${badgeCls}`}
-                >
-                  {typeEmoji(order.order_type)} {badgeLabel}
-                </span>
-              </div>
-              <div className="mt-1 text-[0.6875rem] font-bold text-slate-500">
-                {statusLabel(order.status)}
-              </div>
-              <div className="flex items-center justify-between mt-1">
-                <span className="text-[0.6875rem] text-slate-500">
-                  {formatTimeAgo(order.created_at, lang)}
-                </span>
-                <span className="text-sm font-black text-slate-700 tabular-nums">
-                  {formatYen(order.total_amount)}
-                </span>
-              </div>
-              {isEditing && (
-                <div className="mt-1.5 text-[0.6875rem] text-orange-700 font-bold flex items-center gap-1">
-                  <Pencil className="w-3 h-3" />
-                  {t('editingOrder')}
-                </div>
+              {/* Прозрачная иконка типа заказа в правом нижнем углу */}
+              <span
+                className="absolute bottom-0 right-1 leading-none opacity-20 pointer-events-none select-none"
+                style={{ fontSize: oz(34) }}
+                aria-hidden="true"
+              >
+                {typeEmoji(order.order_type)}
+              </span>
+              {prefs.ordersExpanded ? (
+                <>
+                  <div className="flex items-center justify-between gap-1">
+                    <span
+                      className="font-black text-slate-900 tabular-nums leading-none"
+                      style={{ fontSize: Math.round(numSize * 0.75 * os) }}
+                    >
+                      #{order.order_number}
+                    </span>
+                    <span
+                      className={`rounded-full font-bold whitespace-nowrap leading-none ${badgeCls}`}
+                      style={{
+                        fontSize: oz(10),
+                        padding: `${oz(2)}px ${oz(6)}px`,
+                      }}
+                    >
+                      {typeEmoji(order.order_type)} {badgeLabel}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-1 mt-1">
+                    <span
+                      className="text-slate-500 font-bold truncate"
+                      style={{ fontSize: oz(10) }}
+                    >
+                      {statusLabel(order.status)} ·{' '}
+                      {formatTimeAgo(order.created_at, lang)}
+                      {isEditing && (
+                        <span className="text-yellow-800"> · {t('editingOrder')}</span>
+                      )}
+                      {isEdited && (
+                        <span className="text-yellow-800"> · {t('orderEdited')}</span>
+                      )}
+                    </span>
+                    <span
+                      className="font-black text-slate-700 tabular-nums shrink-0"
+                      style={{ fontSize: oz(12) }}
+                    >
+                      {formatYen(order.total_amount)}
+                    </span>
+                  </div>
+
+                  {(order.order_items ?? []).filter((i) => !i.is_removed).length > 0 && (
+                    <div className="mt-1.5 pt-1.5 border-t border-slate-200 flex flex-col gap-0.5">
+                      {(order.order_items ?? [])
+                        .filter((i) => !i.is_removed)
+                        .map((i) => (
+                          <div
+                            key={i.id}
+                            className="flex items-baseline justify-between gap-1 text-slate-600 font-semibold"
+                            style={{ fontSize: oz(10) }}
+                          >
+                            <span className="truncate">
+                              {i.quantity}× {i.short_name || i.name}
+                              {i.variant ? ` · ${i.variant}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Свёрнутый вид: номер рядом с ценой, снизу время */}
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span
+                      className="font-black text-slate-900 tabular-nums leading-none"
+                      style={{ fontSize: Math.round(numSize * 0.7 * os) }}
+                    >
+                      #{order.order_number}{' '}
+                      <span style={{ fontSize: '0.7em' }}>
+                        {typeEmoji(order.order_type)}
+                      </span>
+                    </span>
+                    <span
+                      className="font-black text-slate-700 tabular-nums shrink-0 leading-none"
+                      style={{ fontSize: oz(12) }}
+                    >
+                      {formatYen(order.total_amount)}
+                    </span>
+                  </div>
+                  <div
+                    className="text-slate-400 font-semibold leading-none mt-1 flex items-center gap-1"
+                    style={{ fontSize: oz(10) }}
+                  >
+                    <span className="truncate">
+                      {formatTimeAgo(order.created_at, lang)}
+                    </span>
+                    {(isEditing || isEdited) && (
+                      <span className="text-yellow-800 font-bold flex items-center gap-1 shrink-0">
+                        <Pencil style={{ width: oz(10), height: oz(10) }} />
+                        {isEditing ? t('editingOrder') : t('orderEdited')}
+                      </span>
+                    )}
+                  </div>
+                </>
               )}
+
             </button>
           );
         })}
@@ -1029,7 +1386,7 @@ export default function CashierPage() {
       <div
         className={`px-4 py-3 border-b shrink-0 ${
           editingOrder
-            ? 'bg-orange-50 border-orange-300'
+            ? 'bg-yellow-100 border-yellow-400'
             : 'border-slate-200'
         }`}
       >
@@ -1039,18 +1396,11 @@ export default function CashierPage() {
               ? `${t('editingOrder')} #${editingOrder.order_number}`
               : t('currentOrder')}
           </h2>
-          <span
-            className={`text-[0.6875rem] px-2.5 py-1 rounded-full font-bold shrink-0 ml-2 ${typeBadgeCls(
-              orderType
-            )}`}
-          >
-            {typeEmoji(orderType)} {typeLabelFor(orderType)}
-          </span>
         </div>
         {editingOrder && (
           <button
             onClick={handleCancelEdit}
-            className="mt-2 flex items-center gap-1 text-xs text-orange-700 font-bold px-2 py-1 rounded-lg hover:bg-orange-100"
+            className="mt-2 flex items-center gap-1 text-xs text-yellow-800 font-bold px-2 py-1 rounded-lg hover:bg-yellow-200"
           >
             <RotateCcw className="w-3 h-3" />
             {t('cancelEdit')}
@@ -1064,7 +1414,7 @@ export default function CashierPage() {
       </div>
 
       <div
-        className="flex-1 min-h-0 overflow-y-auto p-2 bg-slate-50 flex flex-col"
+        className="flex-1 min-h-0 overflow-y-auto p-1.5 bg-slate-50 flex flex-col"
         style={{ rowGap: layout.cartItemGap }}
       >
         {cart.length === 0 && (
@@ -1093,18 +1443,26 @@ export default function CashierPage() {
             item.options.reduce((s, o) => s + o.price * o.quantity, 0) *
               item.quantity;
 
+          const btn = cz(34);
+
           return (
             <div
               key={item.id}
-              className={`rounded-2xl p-3 border-2 shadow-sm ${cardClass}`}
+              role="button"
+              onClick={() => handleEditCartItem(item)}
+              className={`rounded-xl border shadow-sm cursor-pointer ${cardClass}`}
+              style={{ padding: cz(8) }}
             >
-              <div className="flex items-start justify-between gap-2 mb-2">
+              <div className="flex items-start justify-between gap-2">
                 <div
                   className={`flex-1 min-w-0 ${
                     removed ? 'line-through' : ''
                   }`}
                 >
-                  <div className="text-sm font-bold text-slate-900 truncate">
+                  <div
+                    className="font-bold text-slate-900 leading-tight"
+                    style={{ fontSize: cz(13) }}
+                  >
                     {item.name}
                     {item.variant && (
                       <span className="ml-1 text-orange-600">
@@ -1114,27 +1472,35 @@ export default function CashierPage() {
                   </div>
                 </div>
                 <button
-                  onClick={() => removeItem(item.id)}
-                  className={`w-11 h-11 flex items-center justify-center rounded-xl transition-colors ${
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeItem(item.id);
+                  }}
+                  style={{ width: btn, height: btn }}
+                  className={`flex items-center justify-center rounded-lg transition-colors shrink-0 ${
                     removed
                       ? 'text-green-600 hover:bg-green-50'
                       : 'text-slate-400 hover:text-red-600 hover:bg-red-50 active:scale-90'
                   }`}
                 >
                   {removed ? (
-                    <RotateCcw className="w-5 h-5" />
+                    <RotateCcw style={{ width: cz(16), height: cz(16) }} />
                   ) : (
-                    <Trash2 className="w-5 h-5" />
+                    <Trash2 style={{ width: cz(16), height: cz(16) }} />
                   )}
                 </button>
               </div>
 
               {item.options.length > 0 && !removed && (
-                <div className="mb-2 flex flex-wrap gap-1">
+                <div className="mt-1 flex flex-wrap gap-1">
                   {item.options.map((opt, i) => (
                     <span
                       key={i}
-                      className="px-2 py-1 rounded-md bg-orange-100 text-orange-800 text-[0.6875rem] font-bold"
+                      className="rounded bg-orange-100 text-orange-800 font-bold leading-none"
+                      style={{
+                        fontSize: cz(10),
+                        padding: `${cz(3)}px ${cz(6)}px`,
+                      }}
                     >
                       + {opt.name}
                     </span>
@@ -1142,60 +1508,59 @@ export default function CashierPage() {
                 </div>
               )}
 
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
+              <div
+                className="flex items-center justify-between gap-2 mt-1.5 cursor-default"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-1">
                   <button
                     onClick={() => decrementItem(item.id)}
                     disabled={removed}
-                    className="w-12 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 active:scale-90 flex items-center justify-center transition-all disabled:opacity-40"
+                    style={{ width: btn, height: btn }}
+                    className="rounded-lg bg-slate-100 hover:bg-slate-200 active:scale-90 flex items-center justify-center transition-all disabled:opacity-40"
                   >
-                    <Minus className="w-5 h-5" />
+                    <Minus style={{ width: cz(16), height: cz(16) }} />
                   </button>
-                  <span className="text-xl font-black w-10 text-center tabular-nums">
+                  <span
+                    className="font-black text-center tabular-nums"
+                    style={{ fontSize: cz(16), width: cz(28) }}
+                  >
                     {removed ? 0 : item.quantity}
                   </span>
                   <button
                     onClick={() => incrementItem(item.id)}
                     disabled={removed}
-                    className="w-12 h-12 rounded-2xl bg-orange-100 hover:bg-orange-200 active:scale-90 flex items-center justify-center text-orange-700 transition-all disabled:opacity-40"
+                    style={{ width: btn, height: btn }}
+                    className="rounded-lg bg-orange-100 hover:bg-orange-200 active:scale-90 flex items-center justify-center text-orange-700 transition-all disabled:opacity-40"
                   >
-                    <Plus className="w-5 h-5" />
+                    <Plus style={{ width: cz(16), height: cz(16) }} />
                   </button>
                 </div>
                 <span
-                  className={`text-base font-black tabular-nums ${
+                  className={`font-black tabular-nums ${
                     removed
                       ? 'text-slate-400 line-through'
                       : 'text-slate-900'
                   }`}
+                  style={{ fontSize: cz(14) }}
                 >
                   {removed ? formatYen(0) : formatYen(lineTotal)}
                 </span>
               </div>
 
               {qtyChanged && (
-                <div className="mt-2 text-[0.6875rem] text-orange-700 font-bold">
+                <div
+                  className="mt-1 text-orange-700 font-bold"
+                  style={{ fontSize: cz(10) }}
+                >
                   {t('qtyChangedFromTo')
-                    .replace(
-                      '{from}',
-                      String(item.original_quantity ?? 0)
-                    )
+                    .replace('{from}', String(item.original_quantity ?? 0))
                     .replace('{to}', String(item.quantity))}
                 </div>
               )}
             </div>
           );
         })}
-      </div>
-
-      <div className="p-2 border-t border-slate-200 bg-white shrink-0">
-        <input
-          type="text"
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          placeholder={t('addComment')}
-          className="form-input text-sm !py-3"
-        />
       </div>
 
       <div className="p-3 border-t border-slate-200 space-y-3 bg-white shrink-0 shadow-[0_-8px_16px_-12px_rgba(0,0,0,0.2)]">
@@ -1209,47 +1574,30 @@ export default function CashierPage() {
         </div>
 
         {editingOrder ? (
-          <button
+          <SendToKitchenButton
             onClick={handleSaveChanges}
-            disabled={!hasActiveItems || sending}
-            className="w-full h-16 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 active:scale-[0.98] disabled:opacity-40 disabled:shadow-none transition-all"
-          >
-            {sending ? (
-              <>
-                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                {t('sending')}
-              </>
-            ) : (
-              <>
-                <Save className="w-5 h-5" />
-                {t('saveChanges')}
-              </>
-            )}
-          </button>
+            disabled={!hasActiveItems}
+            loading={sending}
+            loadingLabel={t('sending')}
+            icon={<Save className="w-5 h-5" />}
+            label={t('saveChanges')}
+          />
         ) : (
-          <button
+          <SendToKitchenButton
             onClick={handleSendToKitchen}
-            disabled={!hasActiveItems || sending}
-            className="w-full h-16 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-black text-base flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 active:scale-[0.98] disabled:opacity-40 disabled:shadow-none transition-all"
-          >
-            {sending ? (
-              <>
-                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                {t('sending')}
-              </>
-            ) : (
-              <>
-                <Send className="w-5 h-5" />
-                {t('sendToKitchen')}
-              </>
-            )}
-          </button>
+            disabled={!hasActiveItems}
+            loading={sending}
+            loadingLabel={t('sending')}
+            icon={<Send className="w-5 h-5" />}
+            label={t('sendToKitchen')}
+          />
         )}
 
-        {cart.length > 0 && !editingOrder && (
+        {!editingOrder && (
           <button
             onClick={() => setCart([])}
-            className="w-full py-2.5 text-xs text-slate-500 hover:text-red-600 font-bold"
+            disabled={cart.length === 0}
+            className="w-full py-2.5 text-xs text-slate-500 hover:text-red-600 font-bold disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-slate-500"
           >
             {t('clearAll')}
           </button>
@@ -1272,14 +1620,6 @@ export default function CashierPage() {
     <>
       {hasDishSet ? (
         <div className="flex-1 min-h-0 overflow-y-auto p-3">
-          <div className="mb-3 px-3 py-2 rounded-lg bg-orange-100 border-l-4 border-orange-500">
-            <h3
-              className="font-black text-orange-800 tracking-wide truncate leading-none"
-              style={{ fontSize: hdrSize }}
-            >
-              {t('bludiAndSet')}
-            </h3>
-          </div>
           {renderGrid('dishset', layout.dishCardSize, false)}
         </div>
       ) : (
@@ -1290,34 +1630,58 @@ export default function CashierPage() {
     </>
   );
 
-  const toppingBlock = (
-    <>
-      {hasTopping && (
-        <>
-          <Resizer
-            direction="horizontal"
-            onStart={beginResize}
-            onResize={handleResizeToppings}
-            onEnd={endResize}
-          />
-          <div
-            className="shrink-0 bg-white px-2 py-1.5 overflow-hidden border-t-2 border-purple-300"
-            style={{ height: layout.toppingsHeight }}
-          >
-            <h3
-              className="font-black text-purple-800 tracking-wide mb-1 border-l-4 border-purple-500 pl-2 leading-none"
-              style={{ fontSize: hdrSize }}
-            >
-              {t('type_topping')}
-            </h3>
-            <div className="overflow-y-auto h-[calc(100%-16px)]">
-              {renderGrid('topping', layout.toppingCardSize, true)}
-            </div>
-          </div>
-        </>
-      )}
-    </>
+  const panelSplit = splitPanelCats(layout.bottomMask, layout.leftMask);
+
+  // Планшеты/узкие окна: если колонки не оставляют места меню — временно сужаем
+  // боковые панели категорий, затем корзину (настройки при этом не меняются).
+  const eff = fitColumns(
+    vw,
+    Math.round(300 * ui),
+    (prefs.ordersOpen && prefs.ordersPinned ? layout.ordersWidth : 0) + 40,
+    {
+      left: panelSplit.left.length > 0 ? layout.menuLeftWidth : 0,
+      right: panelSplit.side.length > 0 ? layout.menuRightWidth : 0,
+      cart: layout.cartWidth,
+    },
+    { side: Math.round(90 * ui), cart: Math.round(240 * ui) }
   );
+  const hasCat: Record<PanelCat, boolean> = {
+    drink: hasDrink,
+    sauce: hasSauce,
+    topping: hasTopping,
+  };
+  const catLabelOf = (c: PanelCat) =>
+    c === 'drink' ? t('type_drink') : c === 'sauce' ? t('type_sauce') : t('type_topping');
+  const catSizeOf = (c: PanelCat) =>
+    c === 'drink'
+      ? layout.drinkCardSize
+      : c === 'sauce'
+      ? layout.sauceCardSize
+      : layout.toppingCardSize;
+  const renderCatBody = (c: PanelCat) =>
+    hasCat[c] ? (
+      renderGrid(c, catSizeOf(c), true)
+    ) : (
+      <div className="h-full flex items-center justify-center text-xs text-slate-300">—</div>
+    );
+
+  const toppingBlock = panelSplit.bottom.some((c) => hasCat[c]) ? (
+    <BottomPanelCats
+      cats={panelSplit.bottom}
+      hdrSize={hdrSize}
+      labelFor={catLabelOf}
+      renderBody={renderCatBody}
+      height={layout.toppingsHeight}
+      splitter={
+        <Resizer
+          direction="horizontal"
+          onStart={beginResize}
+          onResize={handleResizeToppings}
+          onEnd={endResize}
+        />
+      }
+    />
+  ) : null;
 
   const fluidMenu = (
     <>
@@ -1363,19 +1727,19 @@ export default function CashierPage() {
   }[] = [
     {
       key: 'menu',
-      label: lang === 'ru' ? 'Меню' : 'Menu',
+      label: t('menu'),
       icon: <UtensilsCrossed className="w-5 h-5" />,
       badge: 0,
     },
     {
       key: 'cart',
-      label: lang === 'ru' ? 'Корзина' : 'Cart',
+      label: t('cart'),
       icon: <ShoppingCart className="w-5 h-5" />,
       badge: cartQty,
     },
     {
       key: 'orders',
-      label: lang === 'ru' ? 'Заказы' : 'Orders',
+      label: t('orders'),
       icon: <ClipboardList className="w-5 h-5" />,
       badge: ordersCount,
     },
@@ -1451,7 +1815,7 @@ export default function CashierPage() {
             className="shrink-0 flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-sm font-black text-slate-700 active:scale-95 transition-all"
           >
             <ClipboardList className="w-4 h-4" />
-            {lang === 'ru' ? 'Заказы' : 'Orders'}
+            {t('orders')}
             {ordersCount > 0 && (
               <span className="text-[0.6875rem] bg-orange-500 text-white px-2 py-0.5 rounded-full tabular-nums">
                 {ordersCount}
@@ -1476,7 +1840,7 @@ export default function CashierPage() {
             <div className="flex justify-end p-1 border-b border-slate-200 shrink-0">
               <button
                 onClick={() => setOrdersOpen(false)}
-                aria-label="Close"
+                aria-label={t('close')}
                 className="w-11 h-11 rounded-xl hover:bg-slate-100 active:scale-90 flex items-center justify-center text-slate-600"
               >
                 <X className="w-5 h-5" />
@@ -1485,7 +1849,7 @@ export default function CashierPage() {
             <div className="flex-1 min-h-0 flex flex-col">{ordersInner}</div>
           </div>
           <button
-            aria-label="Close"
+            aria-label={t('close')}
             className="flex-1 bg-black/40"
             onClick={() => setOrdersOpen(false)}
           />
@@ -1496,11 +1860,33 @@ export default function CashierPage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-slate-200/70">
+      <style>{`
+        @keyframes editBlink {
+          0%, 100% { background-color: #fef08a; box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.7); }
+          50%      { background-color: #facc15; box-shadow: 0 0 14px 4px rgba(234, 179, 8, 0.9); }
+        }
+        .edit-blink { animation: editBlink 1s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .edit-blink { animation: none; background-color: #fde047; }
+        }
+      `}</style>
       <PageActions forRole="cashier">
+        {!isPhone && (
+          <OrdersHeaderButton
+            active={isDesktop ? prefs.ordersOpen : ordersOpen}
+            count={ordersCount}
+            onClick={() =>
+              isDesktop
+                ? setPrefs({ ordersOpen: !prefs.ordersOpen })
+                : setOrdersOpen((v) => !v)
+            }
+          />
+        )}
+        <GroupViewToggle />
         <button
           onClick={askUndo}
           disabled={undoStack.length === 0}
-          className="ml-auto flex items-center gap-2 px-3 py-2 sm:px-5 sm:py-3 rounded-xl text-sm font-bold border-2 border-slate-200 bg-white hover:border-orange-400 hover:bg-orange-50 text-slate-700 active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
+          className="ml-auto flex items-center gap-2 px-2.5 py-1 sm:px-3 sm:py-1 rounded-lg text-xs font-bold border-2 border-slate-200 bg-white hover:border-orange-400 hover:bg-orange-50 text-slate-700 active:scale-95 transition-all disabled:opacity-40 disabled:pointer-events-none"
         >
           <Undo2 className="w-4 h-4" />
           <span className="hidden sm:inline">{t('undoLast')}</span>
@@ -1513,20 +1899,73 @@ export default function CashierPage() {
       </PageActions>
 
       {isDesktop ? (
-        <div className="flex-1 min-h-0 flex overflow-hidden">
-          {/* LEFT: ORDERS */}
-          <div
-            className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
-            style={{ width: layout.ordersWidth }}
-          >
-            {ordersInner}
-          </div>
+        <div className="flex-1 min-h-0 flex overflow-hidden relative">
+          {/* LEFT: ORDERS — закреплённая колонка */}
+          {prefs.ordersOpen && prefs.ordersPinned && (
+            <>
+              <div
+                className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
+                style={{ width: layout.ordersWidth }}
+              >
+                {ordersInner}
+              </div>
 
-          <Resizer
-            onStart={beginResize}
-            onResize={handleResizeOrders}
-            onEnd={endResize}
-          />
+              <Resizer
+                onStart={beginResize}
+                onResize={handleResizeOrders}
+                onEnd={endResize}
+              />
+            </>
+          )}
+
+          {/* LEFT: ORDERS — выезжает поверх меню */}
+          {prefs.ordersOpen && !prefs.ordersPinned && (
+            <div className="absolute inset-0 z-40 flex">
+              <div
+                className="bg-white shadow-2xl border-r border-slate-300 flex flex-col min-h-0"
+                style={{ width: layout.ordersWidth }}
+              >
+                {ordersInner}
+              </div>
+              <button
+                aria-label={t('close')}
+                className="flex-1 bg-black/30"
+                onClick={() => setPrefs({ ordersOpen: false })}
+              />
+            </div>
+          )}
+
+          {/* LEFT: категории, поставленные слева */}
+          {panelSplit.left.length > 0 && (
+            <>
+              <div
+                ref={leftWrapRef}
+                className="shrink-0 bg-white border-r border-slate-300 flex flex-col min-h-0"
+                style={{ width: eff.left }}
+              >
+                <SidePanelCats
+                  cats={panelSplit.left}
+                  hdrSize={hdrSize}
+                  labelFor={catLabelOf}
+                  renderBody={renderCatBody}
+                  share={layout.leftShare}
+                  splitter={
+                    <Resizer
+                      direction="horizontal"
+                      onStart={beginResize}
+                      onResize={handleResizeLeftShare}
+                      onEnd={endResize}
+                    />
+                  }
+                />
+              </div>
+              <Resizer
+                onStart={beginResize}
+                onResize={handleResizeMenuLeft}
+                onEnd={endResize}
+              />
+            </>
+          )}
 
           {/* CENTER */}
           <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-slate-100">
@@ -1535,68 +1974,37 @@ export default function CashierPage() {
             {toppingBlock}
           </div>
 
-          <Resizer
-            onStart={beginResize}
-            onResize={handleResizeMenuRight}
-            onEnd={endResize}
-          />
-
           {/* RIGHT */}
-          <div
-            ref={drinksWrapRef}
-            className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
-            style={{ width: layout.menuRightWidth }}
-          >
-            <div
-              className="flex flex-col border-b-2 border-cyan-300"
-              style={{ height: `${layout.drinksShare}%` }}
-            >
-              <div className="px-2 py-1.5 border-b border-cyan-200 shrink-0 bg-cyan-50">
-                <h3
-                  className="font-black text-cyan-800 tracking-wide border-l-4 border-cyan-500 pl-2 leading-none"
-                  style={{ fontSize: hdrSize }}
-                >
-                  {t('type_drink')}
-                </h3>
+          {panelSplit.side.length > 0 && (
+            <>
+              <Resizer
+                onStart={beginResize}
+                onResize={handleResizeMenuRight}
+                onEnd={endResize}
+              />
+              <div
+                ref={drinksWrapRef}
+                className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
+                style={{ width: eff.right }}
+              >
+                <SidePanelCats
+                  cats={panelSplit.side}
+                  hdrSize={hdrSize}
+                  labelFor={catLabelOf}
+                  renderBody={renderCatBody}
+                  share={layout.drinksShare}
+                  splitter={
+                    <Resizer
+                      direction="horizontal"
+                      onStart={beginResize}
+                      onResize={handleResizeDrinks}
+                      onEnd={endResize}
+                    />
+                  }
+                />
               </div>
-              {hasDrink ? (
-                <div className="flex-1 min-h-0 overflow-y-auto p-2">
-                  {renderGrid('drink', layout.drinkCardSize, true)}
-                </div>
-              ) : (
-                <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
-                  —
-                </div>
-              )}
-            </div>
-
-            <Resizer
-              direction="horizontal"
-              onStart={beginResize}
-              onResize={handleResizeDrinks}
-              onEnd={endResize}
-            />
-
-            <div className="flex-1 min-h-0 flex flex-col">
-              <div className="px-2 py-1.5 border-b border-red-200 shrink-0 bg-red-50">
-                <h3
-                  className="font-black text-red-800 tracking-wide border-l-4 border-red-500 pl-2 leading-none"
-                  style={{ fontSize: hdrSize }}
-                >
-                  {t('type_sauce')}
-                </h3>
-              </div>
-              {hasSauce ? (
-                <div className="flex-1 min-h-0 overflow-y-auto p-2">
-                  {renderGrid('sauce', layout.sauceCardSize, true)}
-                </div>
-              ) : (
-                <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-slate-300">
-                  —
-                </div>
-              )}
-            </div>
-          </div>
+            </>
+          )}
 
           <Resizer
             onStart={beginResize}
@@ -1607,7 +2015,7 @@ export default function CashierPage() {
           {/* CART */}
           <div
             className="shrink-0 bg-white border-l border-slate-300 flex flex-col min-h-0"
-            style={{ width: layout.cartWidth }}
+            style={{ width: eff.cart }}
           >
             {cartInner}
           </div>
@@ -1622,9 +2030,19 @@ export default function CashierPage() {
         open={builder !== null}
         item={builder?.item ?? null}
         initialVariantId={builder?.variantId}
+        initialOptions={builder?.initialOptions}
+        confirmLabel={builder?.editCartId ? t('saveChanges') : undefined}
         onConfirm={({ variant, price, options }) => {
-          if (builder)
+          if (builder?.editCartId) {
+            const id = builder.editCartId;
+            setCart((prev) =>
+              prev.map((c) =>
+                c.id === id ? { ...c, variant, price, options } : c
+              )
+            );
+          } else if (builder) {
             addToCartFromBuilder(builder.item, variant, price, options);
+          }
           setBuilder(null);
         }}
         onCancel={() => setBuilder(null)}
@@ -1635,7 +2053,7 @@ export default function CashierPage() {
       {/* ============================================ */}
       {showTypePicker && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
           onClick={() => setShowTypePicker(false)}
         >
           <div

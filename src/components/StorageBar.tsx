@@ -11,8 +11,7 @@ export function StorageBar({
 }: {
   onImportComplete?: () => void;
 }) {
-  const { lang } = useI18n();
-  const ru = lang === 'ru';
+  const { t } = useI18n();
 
   const [info, setInfo] = useState(getStorageInfo);
   const [syncStatus, setSyncStatus] =
@@ -62,7 +61,7 @@ export function StorageBar({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1 font-bold text-slate-600">
           <Image className="w-3 h-3 text-orange-500" />
-          {ru ? 'Фото' : 'Photos'}
+          {t('photos')}
         </div>
         <div className="font-mono tabular-nums text-slate-500">
           {info.imagesCount} → Supabase
@@ -73,7 +72,7 @@ export function StorageBar({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1 font-bold text-slate-600">
           <Cloud className="w-3 h-3 text-blue-500" />
-          {ru ? 'Заказы в Sheets' : 'Orders to Sheets'}
+          {t('ordersToSheets')}
         </div>
         <div
           className={`font-mono tabular-nums ${
@@ -92,7 +91,7 @@ export function StorageBar({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1 font-bold text-slate-600">
           <ListChecks className="w-3 h-3 text-purple-500" />
-          {ru ? 'Меню в Sheets' : 'Menu to Sheets'}
+          {t('menuToSheets')}
         </div>
         <div
           className={`font-mono tabular-nums ${
@@ -119,7 +118,7 @@ export function StorageBar({
             })}
           </span>
           {!syncStatus.isOnline && (
-            <span className="text-red-500 font-bold ml-auto">OFFLINE</span>
+            <span className="text-red-500 font-bold ml-auto">{t('offline')}</span>
           )}
         </div>
       )}

@@ -145,123 +145,726 @@ a {
 
 
 /* ============================================================
-   ТЁМНАЯ ТЕМА
+   ТЁМНАЯ ТЕМА  (v2)
    Включается классом "dark" на <html> (см. src/lib/theme.ts).
-   Переопределяет цвета Tailwind, поэтому компоненты менять не нужно.
+   Нейтральный графит вместо синевато-«чернильного» фона, 4 уровня
+   поверхностей, приглушённые полупрозрачные плашки и мягкий оранжевый
+   акцент. Компоненты менять не нужно — переопределяем классы Tailwind.
    ============================================================ */
-html.dark,
-html.dark body {
-  background-color: #0b1220;
-  color: #e2e8f0;
+html.dark {
+  --d-base:    #0c0e12;  /* фон страницы            */
+  --d-surface: #151922;  /* панели, карточки        */
+  --d-raised:  #1b202a;  /* шапки панелей, поля     */
+  --d-hover:   #232a36;  /* hover / вложенные блоки */
+  --d-strong:  #2c3442;  /* сильные заливки         */
+  --d-line:    #262c37;  /* тонкие границы          */
+  --d-line-2:  #343c4b;  /* обычные границы         */
+  --d-text:    #e9edf3;
+  --d-text-2:  #b4bdca;
+  --d-text-3:  #8792a3;
+  --d-accent:  #fb923c;
+  --card-ring: #2c3442;
+  color-scheme: dark;
 }
 
-/* фоны */
-html.dark .bg-white { background-color: #1e293b !important; }
-html.dark .bg-slate-50,
-html.dark .bg-gray-50 { background-color: #17213a !important; }
-html.dark .bg-slate-50\/60,
-html.dark .bg-slate-50\/80 { background-color: #17213acc !important; }
-html.dark .bg-slate-100,
-html.dark .bg-gray-100 { background-color: #0f172a !important; }
-html.dark .bg-slate-200,
-html.dark .bg-gray-200 { background-color: #263349 !important; }
-html.dark .bg-slate-200\/70 { background-color: #0b1220 !important; }
-html.dark .bg-slate-300 { background-color: #334155 !important; }
-html.dark .bg-slate-300\/70 { background-color: #334155b3 !important; }
+html.dark,
+html.dark body {
+  background-color: var(--d-base);
+  color: var(--d-text);
+}
 
-/* градиенты шапок карточек и панелей */
+/* ---- фоны ---- */
+html.dark .bg-white { background-color: var(--d-surface) !important; }
+html.dark .bg-white\/95,
+html.dark .bg-white\/90 { background-color: rgb(21 25 34 / 0.94) !important; }
+html.dark .bg-slate-50,
+html.dark .bg-gray-50 { background-color: var(--d-raised) !important; }
+html.dark .bg-slate-50\/60,
+html.dark .bg-slate-50\/80 { background-color: rgb(27 32 42 / 0.8) !important; }
+html.dark .bg-slate-100,
+html.dark .bg-gray-100 { background-color: var(--d-base) !important; }
+html.dark .bg-slate-200,
+html.dark .bg-gray-200 { background-color: var(--d-hover) !important; }
+html.dark .bg-slate-200\/70 { background-color: #080a0d !important; }
+html.dark .bg-slate-300 { background-color: var(--d-strong) !important; }
+html.dark .bg-slate-300\/70 { background-color: rgb(44 52 66 / 0.7) !important; }
+
+/* шапка приложения и нижние панели — чуть выше фона, с тонкой линией */
+html.dark header.bg-white,
+html.dark footer.bg-white,
+html.dark nav.bg-white {
+  background-color: #11151c !important;
+  border-color: var(--d-line) !important;
+}
+
+/* ---- градиенты ---- */
 html.dark .from-slate-50,
 html.dark .from-slate-100,
-html.dark .from-gray-100 { --tw-gradient-from: #1e293b !important; }
+html.dark .from-gray-100 { --tw-gradient-from: var(--d-surface) !important; --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important; }
 html.dark .to-slate-50,
 html.dark .to-slate-100,
 html.dark .to-slate-200,
-html.dark .to-gray-200 { --tw-gradient-to: #0f172a !important; }
-html.dark .via-slate-50 { --tw-gradient-stops: #0f172a, #0f172a, #1e293b !important; }
-html.dark .from-slate-300\/80 { --tw-gradient-from: #334155 !important; }
-html.dark .to-slate-300 { --tw-gradient-to: #334155 !important; }
+html.dark .to-gray-200 { --tw-gradient-to: var(--d-base) !important; }
+html.dark .via-slate-50 { --tw-gradient-stops: var(--d-base), var(--d-base), var(--d-surface) !important; }
+html.dark .from-slate-300\/80 { --tw-gradient-from: var(--d-strong) !important; }
+html.dark .to-slate-300 { --tw-gradient-to: var(--d-strong) !important; }
+html.dark .hover\:from-orange-100:hover { --tw-gradient-from: rgb(251 146 60 / 0.18) !important; }
+html.dark .hover\:to-orange-100:hover { --tw-gradient-to: rgb(251 146 60 / 0.18) !important; }
 
-/* цветные «светлые» плашки */
+/* ---- цветные «светлые» плашки: полупрозрачные, не кислотные ---- */
 html.dark .bg-orange-50,
-html.dark .bg-orange-100 { background-color: #3b2412 !important; }
-html.dark .bg-amber-50 { background-color: #3a2f12 !important; }
+html.dark .bg-orange-100 { background-color: rgb(251 146 60 / 0.14) !important; }
+html.dark .bg-amber-50,
+html.dark .bg-amber-100 { background-color: rgb(245 158 11 / 0.14) !important; }
 html.dark .bg-yellow-50,
-html.dark .bg-yellow-100 { background-color: #3a3512 !important; }
+html.dark .bg-yellow-100 { background-color: rgb(234 179 8 / 0.15) !important; }
 html.dark .bg-green-50,
-html.dark .bg-green-100 { background-color: #12321f !important; }
+html.dark .bg-green-100 { background-color: rgb(34 197 94 / 0.13) !important; }
+html.dark .bg-emerald-50 { background-color: rgb(16 185 129 / 0.13) !important; }
 html.dark .bg-red-50,
-html.dark .bg-red-100 { background-color: #3b1717 !important; }
+html.dark .bg-red-100 { background-color: rgb(239 68 68 / 0.14) !important; }
 html.dark .bg-blue-50,
-html.dark .bg-blue-100 { background-color: #12243f !important; }
+html.dark .bg-blue-100 { background-color: rgb(59 130 246 / 0.15) !important; }
+html.dark .bg-purple-50,
 html.dark .bg-purple-100,
-html.dark .bg-violet-50 { background-color: #281a40 !important; }
-html.dark .bg-cyan-50 { background-color: #102f38 !important; }
-html.dark .bg-emerald-50 { background-color: #0f2f26 !important; }
+html.dark .bg-violet-50 { background-color: rgb(168 85 247 / 0.15) !important; }
+html.dark .bg-cyan-50 { background-color: rgb(6 182 212 / 0.13) !important; }
 
-/* границы */
+/* ---- границы ---- */
 html.dark .border-gray-100,
-html.dark .border-slate-100 { border-color: #1e293b !important; }
+html.dark .border-slate-100 { border-color: var(--d-line) !important; }
 html.dark .border-gray-200,
 html.dark .border-slate-200,
-html.dark .border-slate-200\/70,
+html.dark .border-slate-200\/70 { border-color: var(--d-line) !important; }
 html.dark .border-gray-300,
-html.dark .border-slate-300 { border-color: #334155 !important; }
-html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) { border-color: #334155 !important; }
+html.dark .border-slate-300,
+html.dark .border-slate-400 { border-color: var(--d-line-2) !important; }
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) { border-color: var(--d-line) !important; }
+html.dark .border-orange-200,
+html.dark .border-orange-300 { border-color: rgb(251 146 60 / 0.35) !important; }
+html.dark .border-red-200,
+html.dark .border-red-300 { border-color: rgb(239 68 68 / 0.35) !important; }
+html.dark .border-cyan-200,
+html.dark .border-cyan-300 { border-color: rgb(6 182 212 / 0.35) !important; }
+html.dark .border-blue-200,
+html.dark .border-blue-300 { border-color: rgb(59 130 246 / 0.35) !important; }
+html.dark .border-purple-200,
+html.dark .border-violet-200 { border-color: rgb(168 85 247 / 0.35) !important; }
+html.dark .ring-slate-400\/70,
+html.dark .ring-slate-300 { --tw-ring-color: var(--d-line-2) !important; }
 
-/* текст */
+/* ---- текст ---- */
 html.dark .text-gray-900,
 html.dark .text-slate-900,
 html.dark .text-slate-800,
-html.dark .text-gray-800 { color: #f1f5f9 !important; }
+html.dark .text-gray-800 { color: var(--d-text) !important; }
 html.dark .text-gray-700,
 html.dark .text-slate-700,
 html.dark .text-gray-600,
-html.dark .text-slate-600 { color: #cbd5e1 !important; }
+html.dark .text-slate-600 { color: var(--d-text-2) !important; }
 html.dark .text-gray-500,
 html.dark .text-slate-500,
 html.dark .text-gray-400,
 html.dark .text-slate-400,
 html.dark .text-gray-300,
-html.dark .text-slate-300 { color: #94a3b8 !important; }
+html.dark .text-slate-300 { color: var(--d-text-3) !important; }
 html.dark .text-orange-800,
-html.dark .text-orange-700 { color: #fdba74 !important; }
+html.dark .text-orange-700,
+html.dark .text-orange-600,
+html.dark .text-orange-500 { color: var(--d-accent) !important; }
 html.dark .text-purple-800,
-html.dark .text-purple-700 { color: #d8b4fe !important; }
+html.dark .text-purple-700,
+html.dark .text-purple-600 { color: #c4a5fb !important; }
 html.dark .text-cyan-800,
-html.dark .text-cyan-700 { color: #67e8f9 !important; }
+html.dark .text-cyan-700,
+html.dark .text-cyan-600 { color: #67e0f2 !important; }
 html.dark .text-red-800,
-html.dark .text-red-700 { color: #fca5a5 !important; }
+html.dark .text-red-700,
+html.dark .text-red-600 { color: #fca5a5 !important; }
 html.dark .text-green-800,
-html.dark .text-green-700 { color: #86efac !important; }
+html.dark .text-green-700,
+html.dark .text-green-600 { color: #86efac !important; }
 html.dark .text-blue-800,
-html.dark .text-blue-700 { color: #93c5fd !important; }
+html.dark .text-blue-700,
+html.dark .text-blue-600 { color: #93c5fd !important; }
 html.dark .text-yellow-900,
 html.dark .text-yellow-800,
 html.dark .text-yellow-700,
-html.dark .text-amber-700 { color: #fde68a !important; }
+html.dark .text-amber-700 { color: #fcd980 !important; }
+/* белый текст на заливке (кнопки, бейджи) не трогаем */
+html.dark .text-white { color: #fff !important; }
 
-/* hover */
+/* ---- hover ---- */
 html.dark .hover\:bg-slate-100:hover,
-html.dark .hover\:bg-gray-100:hover { background-color: #263349 !important; }
+html.dark .hover\:bg-gray-100:hover { background-color: var(--d-hover) !important; }
 html.dark .hover\:bg-slate-200:hover,
-html.dark .hover\:bg-gray-200:hover { background-color: #334155 !important; }
+html.dark .hover\:bg-gray-200:hover { background-color: var(--d-strong) !important; }
 html.dark .hover\:bg-slate-50:hover,
-html.dark .hover\:bg-gray-50:hover { background-color: #1e293b !important; }
-html.dark .hover\:bg-orange-50:hover { background-color: #3b2412 !important; }
+html.dark .hover\:bg-gray-50:hover { background-color: var(--d-raised) !important; }
+html.dark .hover\:bg-orange-50:hover,
+html.dark .hover\:bg-orange-100:hover { background-color: rgb(251 146 60 / 0.18) !important; }
+html.dark .hover\:bg-red-100:hover,
+html.dark .hover\:bg-red-200:hover { background-color: rgb(239 68 68 / 0.24) !important; }
+html.dark .hover\:bg-blue-50:hover { background-color: rgb(59 130 246 / 0.2) !important; }
+html.dark .hover\:bg-violet-50:hover { background-color: rgb(168 85 247 / 0.2) !important; }
+html.dark .hover\:text-gray-900:hover,
+html.dark .hover\:text-slate-700:hover { color: var(--d-text) !important; }
 
-/* поля ввода */
+/* ---- тени: в тёмной теме — глубокие и чёрные, а не серые ---- */
+html.dark .shadow-sm { box-shadow: 0 1px 2px rgb(0 0 0 / 0.5) !important; }
+html.dark .shadow,
+html.dark .shadow-md { box-shadow: 0 4px 10px -2px rgb(0 0 0 / 0.55) !important; }
+html.dark .shadow-lg,
+html.dark .shadow-xl,
+html.dark .shadow-2xl { box-shadow: 0 14px 34px -8px rgb(0 0 0 / 0.7) !important; }
+
+/* ---- мигание редактируемого заказа (тёмный янтарь вместо ярко-жёлтого) ---- */
+@keyframes editBlinkDark {
+  0%, 100% { background-color: #4a3a0d; box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.55); }
+  50%      { background-color: #6b520f; box-shadow: 0 0 12px 3px rgba(234, 179, 8, 0.6); }
+}
+html.dark .edit-blink { animation-name: editBlinkDark !important; }
+@media (prefers-reduced-motion: reduce) {
+  html.dark .edit-blink { animation: none !important; background-color: #5a4510; }
+}
+
+/* ---- поля ввода ---- */
 html.dark .form-input,
 html.dark input,
 html.dark textarea,
 html.dark select {
-  background-color: #0f172a;
-  border-color: #334155;
-  color: #f1f5f9;
+  background-color: var(--d-raised);
+  border-color: var(--d-line-2);
+  color: var(--d-text);
+}
+html.dark .form-input:focus,
+html.dark input:focus,
+html.dark textarea:focus,
+html.dark select:focus {
+  border-color: var(--d-accent);
+  box-shadow: 0 0 0 2px rgb(251 146 60 / 0.25);
 }
 html.dark .form-input::placeholder,
 html.dark input::placeholder,
-html.dark textarea::placeholder { color: #64748b; }
+html.dark textarea::placeholder { color: #5d6778; }
 
-/* скроллбар */
-html.dark ::-webkit-scrollbar-thumb { background: #475569; background-clip: padding-box; }
-html.dark ::-webkit-scrollbar-thumb:hover { background: #64748b; background-clip: padding-box; }
+/* ---- скроллбар ---- */
+html.dark ::-webkit-scrollbar-thumb { background: #3a4252; background-clip: padding-box; }
+html.dark ::-webkit-scrollbar-thumb:hover { background: #596378; background-clip: padding-box; }
+
+
+/* ============================================================
+   ТЁМНАЯ ТЕМА  (v3 — добивка)
+   Классы, которые v2 не покрывал, + аккуратные детали.
+   ============================================================ */
+html.dark ::selection { background: rgb(251 146 60 / 0.35); color: #fff; }
+
+/* сдвиг кольца (ring-offset) по умолчанию белый — делаем цвет поверхности */
+html.dark [class*='ring-offset'] { --tw-ring-offset-color: var(--d-surface); }
+
+/* фоны */
+html.dark .bg-gray-300 { background-color: var(--d-strong) !important; }
+html.dark .bg-white\/85,
+html.dark .bg-white\/80 { background-color: rgb(21 25 34 / 0.88) !important; }
+html.dark .bg-orange-50\/60 { background-color: rgb(251 146 60 / 0.08) !important; }
+html.dark .bg-orange-100\/80 { background-color: rgb(251 146 60 / 0.16) !important; }
+html.dark .bg-orange-200 { background-color: rgb(251 146 60 / 0.26) !important; }
+html.dark .bg-orange-300 { background-color: rgb(251 146 60 / 0.5) !important; }
+html.dark .bg-yellow-300 { background-color: rgb(234 179 8 / 0.5) !important; }
+html.dark .bg-yellow-200 { background-color: rgb(234 179 8 / 0.28) !important; }
+html.dark .bg-green-200,
+html.dark .bg-emerald-100 { background-color: rgb(34 197 94 / 0.24) !important; }
+html.dark .bg-violet-100 { background-color: rgb(168 85 247 / 0.22) !important; }
+html.dark .bg-cyan-100 { background-color: rgb(6 182 212 / 0.2) !important; }
+html.dark .bg-red-200 { background-color: rgb(239 68 68 / 0.28) !important; }
+html.dark .bg-blue-200 { background-color: rgb(59 130 246 / 0.28) !important; }
+
+/* градиенты светлых плашек */
+html.dark .from-white { --tw-gradient-from: var(--d-surface) !important; --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important; }
+html.dark .to-white { --tw-gradient-to: var(--d-surface) !important; }
+html.dark .from-orange-50,
+html.dark .from-blue-50,
+html.dark .from-green-50,
+html.dark .from-purple-50,
+html.dark .from-cyan-50 { --tw-gradient-from: var(--d-raised) !important; --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important; }
+html.dark .from-yellow-100 { --tw-gradient-from: rgb(234 179 8 / 0.22) !important; --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important; }
+html.dark .to-amber-200 { --tw-gradient-to: rgb(245 158 11 / 0.14) !important; }
+html.dark .from-green-100 { --tw-gradient-from: rgb(34 197 94 / 0.22) !important; --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important; }
+html.dark .to-emerald-200 { --tw-gradient-to: rgb(16 185 129 / 0.14) !important; }
+html.dark .to-slate-200\/60 { --tw-gradient-to: var(--d-base) !important; }
+html.dark .to-orange-300 { --tw-gradient-to: rgb(251 146 60 / 0.6) !important; }
+
+/* границы и кольца */
+html.dark .border-yellow-300,
+html.dark .border-yellow-400 { border-color: rgb(234 179 8 / 0.45) !important; }
+html.dark .border-amber-200 { border-color: rgb(245 158 11 / 0.35) !important; }
+html.dark .border-orange-400 { border-color: rgb(251 146 60 / 0.55) !important; }
+html.dark .border-green-200,
+html.dark .border-green-300,
+html.dark .border-green-400,
+html.dark .border-emerald-300 { border-color: rgb(34 197 94 / 0.4) !important; }
+html.dark .border-purple-300,
+html.dark .border-violet-300 { border-color: rgb(168 85 247 / 0.4) !important; }
+html.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: var(--d-line) !important; }
+html.dark .ring-slate-200 { --tw-ring-color: var(--d-line-2) !important; }
+html.dark .ring-orange-300,
+html.dark .ring-orange-400,
+html.dark .ring-orange-400\/60 { --tw-ring-color: rgb(251 146 60 / 0.55) !important; }
+html.dark .ring-yellow-300,
+html.dark .ring-yellow-400 { --tw-ring-color: rgb(234 179 8 / 0.55) !important; }
+html.dark .ring-purple-300,
+html.dark .group:hover .group-hover\:ring-purple-300 { --tw-ring-color: rgb(168 85 247 / 0.55) !important; }
+html.dark .group:hover .group-hover\:ring-orange-300 { --tw-ring-color: rgb(251 146 60 / 0.55) !important; }
+html.dark .group:hover .group-hover\:ring-yellow-300 { --tw-ring-color: rgb(234 179 8 / 0.55) !important; }
+html.dark .group:hover .group-hover\:ring-blue-300 { --tw-ring-color: rgb(59 130 246 / 0.55) !important; }
+html.dark .focus\:ring-orange-400:focus { --tw-ring-color: rgb(251 146 60 / 0.55) !important; }
+
+/* текст */
+html.dark .text-amber-600,
+html.dark .text-amber-800,
+html.dark .text-yellow-600 { color: #fcd980 !important; }
+html.dark .text-violet-600,
+html.dark .text-violet-700,
+html.dark .text-violet-800,
+html.dark .text-violet-700\/80 { color: #c4a5fb !important; }
+html.dark .text-green-900,
+html.dark .text-emerald-800 { color: #86efac !important; }
+html.dark .text-orange-900 { color: #fdba74 !important; }
+html.dark .text-gray-200 { color: var(--d-text-3) !important; }
+
+/* hover / focus */
+html.dark .hover\:bg-white:hover { background-color: var(--d-hover) !important; }
+html.dark .hover\:bg-slate-300:hover { background-color: var(--d-strong) !important; }
+html.dark .hover\:bg-red-50:hover,
+html.dark .focus\:bg-red-50:focus { background-color: rgb(239 68 68 / 0.16) !important; }
+html.dark .hover\:bg-green-50:hover,
+html.dark .hover\:bg-green-100:hover { background-color: rgb(34 197 94 / 0.2) !important; }
+html.dark .hover\:bg-orange-200:hover { background-color: rgb(251 146 60 / 0.28) !important; }
+html.dark .hover\:bg-violet-100:hover { background-color: rgb(168 85 247 / 0.26) !important; }
+html.dark .hover\:bg-yellow-200:hover { background-color: rgb(234 179 8 / 0.3) !important; }
+html.dark .focus\:bg-slate-100:focus { background-color: var(--d-hover) !important; }
+html.dark .hover\:border-orange-300:hover,
+html.dark .hover\:border-orange-400:hover { border-color: rgb(251 146 60 / 0.6) !important; }
+html.dark .hover\:border-violet-300:hover { border-color: rgb(168 85 247 / 0.5) !important; }
+html.dark .hover\:border-slate-300:hover { border-color: var(--d-line-2) !important; }
+html.dark .hover\:text-red-600:hover { color: #fca5a5 !important; }
+html.dark .hover\:text-orange-600:hover { color: var(--d-accent) !important; }
+html.dark .hover\:text-slate-800:hover,
+html.dark .hover\:text-slate-900:hover { color: var(--d-text) !important; }
+html.dark .hover\:ring-orange-400:hover { --tw-ring-color: rgb(251 146 60 / 0.55) !important; }
+
+/* диалоги и подложки */
+html.dark .backdrop-blur-sm { -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+
+/* мягкий «стеклянный» контур карточек: тонкая светлая линия сверху */
+html.dark .rounded-2xl.bg-white,
+html.dark .rounded-3xl.bg-white {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 1px 2px rgb(0 0 0 / 0.5);
+}
+
+
+/* ============================================================
+   СТАТИСТИКА  (минималистичный стиль, светлая + тёмная тема)
+   Цвета — через переменные, поэтому страница не зависит от
+   переопределений Tailwind выше.
+   ============================================================ */
+.st {
+  --st-bg: #f3f5f8;
+  --st-card: #ffffff;
+  --st-card-2: #f7f8fb;
+  --st-line: #e7eaf0;
+  --st-text: #0f172a;
+  --st-text-2: #475569;
+  --st-muted: #8a94a6;
+  --st-track: #edf0f5;
+  --st-accent: #f97316;
+  --st-accent-soft: rgb(249 115 22 / 0.1);
+  --st-inside: #6366f1;
+  --st-takeaway: #f97316;
+  --st-way: #14b8a6;
+  --st-cash: #10b981;
+  --st-cash-soft: rgb(16 185 129 / 0.1);
+  --st-shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px -8px rgb(15 23 42 / 0.08);
+  background: var(--st-bg);
+  color: var(--st-text);
+}
+html.dark .st {
+  --st-bg: #0c0e12;
+  --st-card: #151922;
+  --st-card-2: #1b202a;
+  --st-line: #262c37;
+  --st-text: #e9edf3;
+  --st-text-2: #b4bdca;
+  --st-muted: #8792a3;
+  --st-track: #222833;
+  --st-accent: #fb923c;
+  --st-accent-soft: rgb(251 146 60 / 0.14);
+  --st-inside: #818cf8;
+  --st-takeaway: #fb923c;
+  --st-way: #2dd4bf;
+  --st-cash: #34d399;
+  --st-cash-soft: rgb(52 211 153 / 0.12);
+  --st-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 1px 2px rgb(0 0 0 / 0.5);
+}
+
+.st-card {
+  background: var(--st-card);
+  border: 1px solid var(--st-line);
+  border-radius: 1.25rem;
+  box-shadow: var(--st-shadow);
+}
+.st-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-muted);
+}
+.st-num {
+  color: var(--st-text);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.st-muted { color: var(--st-muted); }
+.st-text2 { color: var(--st-text-2); }
+.st-track { background: var(--st-track); }
+.st-line-t { border-top: 1px solid var(--st-line); }
+.st-line-l { border-left: 1px solid var(--st-line); }
+
+/* сегментированный переключатель */
+.st-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 0.875rem;
+  background: var(--st-track);
+}
+.st-seg-btn {
+  padding: 0.4rem 0.9rem;
+  border-radius: 0.65rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--st-muted);
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+.st-seg-btn:hover { color: var(--st-text); }
+.st-seg-btn:active { transform: scale(0.96); }
+.st-seg-btn[data-on='true'] {
+  background: var(--st-card);
+  color: var(--st-text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
+
+/* чип периода */
+.st-chip {
+  flex-shrink: 0;
+  text-align: left;
+  padding: 0.5rem 0.9rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--st-line);
+  background: var(--st-card);
+  color: var(--st-text);
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+.st-chip:hover { border-color: var(--st-accent); }
+.st-chip:active { transform: scale(0.97); }
+.st-chip[data-on='true'] {
+  border-color: var(--st-accent);
+  background: var(--st-accent-soft);
+}
+
+/* круглые кнопки-стрелки */
+.st-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--st-line);
+  background: var(--st-card);
+  color: var(--st-text-2);
+  transition: background 0.15s, transform 0.1s, opacity 0.15s;
+}
+.st-icon-btn:hover:not(:disabled) { background: var(--st-card-2); color: var(--st-text); }
+.st-icon-btn:active:not(:disabled) { transform: scale(0.94); }
+.st-icon-btn:disabled { opacity: 0.35; }
+
+/* главная кнопка «Взять деньги» */
+.st-cash-btn {
+  width: 100%;
+  height: 3.5rem;
+  border-radius: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  font-weight: 800;
+  font-size: 1rem;
+  color: #fff;
+  background: linear-gradient(135deg, #10b981, #059669);
+  box-shadow: 0 8px 20px -8px rgb(16 185 129 / 0.7);
+  transition: transform 0.1s, filter 0.15s, opacity 0.15s;
+}
+.st-cash-btn:hover:not(:disabled) { filter: brightness(1.08); }
+.st-cash-btn:active:not(:disabled) { transform: scale(0.97); }
+.st-cash-btn:disabled { opacity: 0.4; box-shadow: none; }
+
+/* график */
+.st-grid-line { border-top: 1px dashed var(--st-line); }
+.st-grid-base { border-top: 1px solid var(--st-line); }
+.st-bar-col:hover .st-bar-stack { filter: brightness(1.08); }
+.st-legend-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--st-line);
+  background: var(--st-card);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--st-text-2);
+  transition: opacity 0.15s, background 0.15s;
+}
+.st-legend-btn[data-on='false'] { opacity: 0.4; }
+.st-dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; display: inline-block; }
+
+
+/* ===== Статистика: шапка, hero-итого, иконки, рейтинг ===== */
+.st-top {
+  background: var(--st-card);
+  border-bottom: 1px solid var(--st-line);
+}
+.st-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1.5rem;
+  color: #fff;
+  background: linear-gradient(135deg, #fb923c 0%, #f97316 45%, #ea580c 100%);
+  box-shadow: 0 14px 30px -14px rgb(249 115 22 / 0.65);
+}
+.st-hero::after {
+  content: '';
+  position: absolute;
+  right: -3rem;
+  top: -3rem;
+  width: 10rem;
+  height: 10rem;
+  border-radius: 9999px;
+  background: rgb(255 255 255 / 0.14);
+  pointer-events: none;
+}
+.st-hero-label {
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+.st-ico {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.st-ico[data-tone='accent'] { color: var(--st-accent); background: var(--st-accent-soft); }
+.st-ico[data-tone='inside'] { color: var(--st-inside); background: rgb(99 102 241 / 0.12); }
+.st-ico[data-tone='way'] { color: var(--st-way); background: rgb(20 184 166 / 0.12); }
+.st-rank {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: var(--st-muted);
+  background: var(--st-track);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.st-rank-1 { color: #fff; background: linear-gradient(135deg, #fbbf24, #f59e0b); }
+.st-rank-2 { color: #fff; background: linear-gradient(135deg, #cbd5e1, #94a3b8); }
+.st-rank-3 { color: #fff; background: linear-gradient(135deg, #fb923c, #c2410c); }
+.st-fill { background: linear-gradient(90deg, #fb923c, #f97316); }
+
+/* вкладки левой части: Общий продукт / По категориям */
+.st-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 1rem;
+  background: var(--st-track);
+}
+.st-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 2.75rem;
+  border-radius: 0.8rem;
+  font-size: 0.875rem;
+  font-weight: 800;
+  color: var(--st-muted);
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+.st-tab:hover { color: var(--st-text); }
+.st-tab:active { transform: scale(0.98); }
+.st-tab[data-on='true'] {
+  background: var(--st-card);
+  color: var(--st-accent);
+  box-shadow: var(--st-shadow);
+}
+
+/* ---- Листание картинок в иконке (как страница книги) ---- */
+@keyframes pageFlip {
+  0%   { transform: rotateY(0deg); }
+  100% { transform: rotateY(-180deg); }
+}
+@keyframes pageShade {
+  0%   { opacity: 0; }
+  40%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes pageUnder {
+  0%   { opacity: 0.45; }
+  100% { opacity: 0; }
+}
+.page-flip       { animation: pageFlip 700ms cubic-bezier(0.645, 0.045, 0.355, 1) forwards; }
+.page-flip-shade { animation: pageShade 700ms ease-in-out forwards; }
+.page-flip-under { animation: pageUnder 700ms ease-out forwards; pointer-events: none; }
+
+/* ============================================================
+   СТРАНИЦА «ПРОДУКТЫ»  (pp-*)
+   Свои переменные для светлой и тёмной темы — без переопределения
+   tailwind-классов. Акцент категории приходит через --accent.
+   ============================================================ */
+.pp-root {
+  --pp-bg: #e9edf3;
+  --pp-bar: rgb(255 255 255 / 0.82);
+  --pp-surface: #ffffff;
+  --pp-raised: #f1f5f9;
+  --pp-line: #d9dfe8;
+  --pp-text: #0f172a;
+  --pp-text-2: #475569;
+  --pp-text-3: #94a3b8;
+  --pp-price: #ea580c;
+  --pp-free: #16a34a;
+  --pp-shadow: 0 1px 2px rgb(15 23 42 / 0.06), 0 8px 20px -10px rgb(15 23 42 / 0.2);
+  --pp-shadow-hover: 0 2px 4px rgb(15 23 42 / 0.08), 0 18px 32px -12px rgb(15 23 42 / 0.3);
+  background: var(--pp-bg);
+}
+html.dark .pp-root {
+  --pp-bg: #0c0e12;
+  --pp-bar: rgb(21 25 34 / 0.88);
+  --pp-surface: #151922;
+  --pp-raised: #1b202a;
+  --pp-line: #262c37;
+  --pp-text: #e9edf3;
+  --pp-text-2: #b4bdca;
+  --pp-text-3: #8792a3;
+  --pp-price: #fb923c;
+  --pp-free: #4ade80;
+  --pp-shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 10px 24px -10px rgb(0 0 0 / 0.75);
+  --pp-shadow-hover: 0 2px 4px rgb(0 0 0 / 0.6), 0 20px 36px -12px rgb(0 0 0 / 0.9);
+}
+.pp-bar {
+  background: var(--pp-bar);
+  border-bottom: 1px solid var(--pp-line);
+  backdrop-filter: blur(10px);
+}
+.pp-body { background: var(--pp-bg); }
+.pp-title { color: var(--pp-text); }
+.pp-sub { color: var(--pp-text-3); }
+.pp-count { color: var(--pp-text-3); }
+.pp-rule { background: var(--pp-line); }
+.pp-search {
+  padding: 0.65rem 0.75rem 0.65rem 2.25rem;
+  border-radius: 0.75rem;
+  background: var(--pp-raised);
+  border: 1px solid var(--pp-line);
+  color: var(--pp-text);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.pp-search::placeholder { color: var(--pp-text-3); }
+.pp-search:focus { border-color: #fb923c; box-shadow: 0 0 0 3px rgb(251 146 60 / 0.25); }
+
+.pp-pill {
+  background: var(--pp-surface);
+  color: var(--pp-text-2);
+  border: 1px solid var(--pp-line);
+}
+.pp-pill:hover { color: var(--pp-text); border-color: var(--accent, var(--pp-text-3)); }
+.pp-pill.is-active {
+  background: var(--accent, #fb923c);
+  border-color: var(--accent, #fb923c);
+  color: #fff;
+  box-shadow: 0 6px 14px -6px var(--accent, #fb923c);
+}
+.pp-pill-count { background: rgb(128 138 156 / 0.18); }
+.pp-pill.is-active .pp-pill-count { background: rgb(255 255 255 / 0.25); }
+
+.pp-seg { background: var(--pp-raised); border: 1px solid var(--pp-line); }
+.pp-seg-btn { color: var(--pp-text-3); }
+.pp-seg-btn:hover { color: var(--pp-text); }
+.pp-seg-btn.is-active { background: var(--pp-surface); color: var(--pp-text); box-shadow: var(--pp-shadow); }
+
+.pp-sec-icon {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.pp-card {
+  background: var(--pp-surface);
+  border: 1px solid var(--pp-line);
+  border-radius: 1rem;
+  box-shadow: var(--pp-shadow);
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+}
+.pp-card:hover,
+.pp-card:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: var(--pp-shadow-hover);
+  border-color: var(--accent);
+}
+.pp-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pp-card.is-set { border: 2px solid #eab308; }
+.pp-thumb { background: var(--pp-raised); }
+.pp-ph {
+  color: var(--accent);
+  background:
+    radial-gradient(circle at 30% 20%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 60%),
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--pp-surface)), var(--pp-surface));
+}
+.pp-type {
+  color: #fff;
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.35);
+}
+.pp-name { color: var(--pp-text); }
+.pp-name.is-free { color: var(--pp-free); }
+.pp-price { color: var(--pp-price); }
+.pp-free { color: var(--pp-free); }
+.pp-chip { background: var(--pp-raised); color: var(--pp-text-2); border: 1px solid var(--pp-line); }
+.pp-edit { color: var(--pp-text-3); }
+.pp-card:hover .pp-edit { color: var(--accent); }
+.pp-iconbtn {
+  background: rgb(255 255 255 / 0.94);
+  color: #334155;
+  box-shadow: 0 4px 10px rgb(0 0 0 / 0.35);
+  transition: background 0.15s, color 0.15s;
+}
+html.dark .pp-iconbtn { background: rgb(27 32 42 / 0.94); color: #e9edf3; border: 1px solid #343c4b; }
+.pp-iconbtn:hover { background: #0f172a; color: #fff; }
+.pp-iconbtn.is-danger { color: #dc2626; }
+html.dark .pp-iconbtn.is-danger { color: #fca5a5; }
+.pp-iconbtn.is-danger:hover { background: #dc2626; color: #fff; }

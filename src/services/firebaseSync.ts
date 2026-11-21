@@ -14,6 +14,10 @@ import {
   update,
   remove,
   runTransaction,
+  get,
+  query,
+  limitToFirst,
+  orderByKey,
   Unsubscribe,
 } from 'firebase/database';
 import { db } from '@/lib/firebase';
@@ -240,4 +244,36 @@ export async function cleanupSyncQueue(
   for (const id of toRemove) {
     await remove(ref(db, `sync_queue/${id}`));
   }
+}
+
+// ============================================================
+// ДИАГНОСТИКА
+// ============================================================
+/**
+ * Разовое чтение узлов orders и sync_queue (не больше `limit` записей каждого,
+ * чтобы не качать всю базу).
+ */
+export async function fetchFirebaseDiag(limit = 500): Promise<{
+  orders: Order[];
+  ordersCapped: boolean;
+  queue: SyncOperation[];
+  queueCapped: boolean;
+}> {
+  const [o, q] = await Promise.all([
+    get(query(ref(db, 'orders'), orderByKey(), limitToFirst(limit))),
+    get(query(ref(db, 'sync_queue'), orderByKey(), limitToFirst(limit))),
+  ]);
+  const od = (o.val() ?? {}) as Record<string, Order>;
+  const qd = (q.val() ?? {}) as Record<string, SyncOperation>;
+  const orders = Object.entries(od).map(([id, x]) => ({ ...x, id }));
+  const queue = Object.entries(qd).map(([id, x]) => ({
+    ...x,
+    operationId: id,
+  }));
+  return {
+    orders,
+    ordersCapped: orders.length >= limit,
+    queue,
+    queueCapped: queue.length >= limit,
+  };
 }

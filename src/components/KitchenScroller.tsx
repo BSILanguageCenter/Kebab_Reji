@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { useI18n } from '@/locale';
 
 /**
  * Красивая горизонтальная лента для кухни:
@@ -18,6 +19,7 @@ export function KitchenScroller({
   /** ширина карточки + отступ — на сколько листают стрелки */
   itemWidth?: number;
 }) {
+  const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const thumbRef = useRef<HTMLDivElement | null>(null);
@@ -321,7 +323,7 @@ export function KitchenScroller({
           type="button"
           onClick={() => page(-1)}
           tabIndex={canLeft ? 0 : -1}
-          aria-label="Влево"
+          aria-label={t('scrollLeft')}
           className={`absolute left-3 top-1/2 -translate-y-1/2 z-10 w-14 h-14 rounded-full bg-white text-slate-800 border-2 border-slate-200 shadow-xl hidden md:flex items-center justify-center transition-all duration-300 hover:bg-orange-500 hover:text-white hover:border-orange-500 active:scale-90 ${
             canLeft
               ? 'opacity-100 scale-100'
@@ -334,7 +336,7 @@ export function KitchenScroller({
           type="button"
           onClick={() => page(1)}
           tabIndex={canRight ? 0 : -1}
-          aria-label="Вправо"
+          aria-label={t('scrollRight')}
           className={`absolute right-3 top-1/2 -translate-y-1/2 z-10 w-14 h-14 rounded-full bg-white text-slate-800 border-2 border-slate-200 shadow-xl hidden md:flex items-center justify-center transition-all duration-300 hover:bg-orange-500 hover:text-white hover:border-orange-500 active:scale-90 ${
             canRight
               ? 'opacity-100 scale-100'

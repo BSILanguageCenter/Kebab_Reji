@@ -1,4 +1,5 @@
 // src/components/LoadStyleDialog.tsx
+import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import {
   Download,
@@ -9,6 +10,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { useI18n } from '@/locale';
+import { dateLocale } from '@/locale/format';
 import {
   fetchAllStyles,
   deleteStyle,
@@ -24,7 +26,7 @@ export function LoadStyleDialog({
   onCancel: () => void;
   onPick: (style: SavedStyle) => void;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [styles, setStyles] = useState<SavedStyle[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,9 +64,10 @@ export function LoadStyleDialog({
     }
   };
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      style={{ zIndex: 100000 }}
       onClick={onCancel}
     >
       <div
@@ -130,8 +133,13 @@ export function LoadStyleDialog({
                       <div className="text-sm font-bold text-slate-900 truncate">
                         {s.name}
                       </div>
+                      <div className="text-[10px] font-bold mt-0.5 text-violet-600">
+                        {s.layoutSingle
+                          ? t('styleFormatBoth')
+                          : t('styleFormatLegacy')}
+                      </div>
                       <div className="text-[11px] text-slate-500 mt-0.5">
-                        {new Date(s.updatedAt).toLocaleString('ru-RU', {
+                        {new Date(s.updatedAt).toLocaleString(dateLocale(lang), {
                           day: '2-digit',
                           month: '2-digit',
                           year: 'numeric',
@@ -185,6 +193,7 @@ export function LoadStyleDialog({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

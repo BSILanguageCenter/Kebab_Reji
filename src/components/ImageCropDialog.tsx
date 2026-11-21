@@ -227,7 +227,7 @@ export function ImageCropDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[10020] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
       onClick={processing ? undefined : onCancel}
     >
       <div
